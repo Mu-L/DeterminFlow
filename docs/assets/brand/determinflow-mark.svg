@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DeterminFlow mark</title>
+  <desc id="desc">Three workflow paths converge into one controlled output.</desc>
+  <defs>
+    <mask id="flow-cutouts" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <g fill="none" stroke="#000" stroke-width="40" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M40 172H198C248 172 267 229 318 256"/>
+        <path d="M40 256H318"/>
+        <path d="M40 340H198C248 340 267 283 318 256"/>
+        <path d="M300 256H472"/>
+      </g>
+    </mask>
+  </defs>
+  <rect x="64" y="64" width="384" height="384" rx="40" fill="#111318" mask="url(#flow-cutouts)"/>
+</svg>

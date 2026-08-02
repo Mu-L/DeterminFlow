@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 320" role="img" aria-labelledby="title desc">
+  <title id="title">Determin Flow</title>
+  <desc id="desc">A modular workflow converges into the DeterminFlow mark and wordmark.</desc>
+  <defs>
+    <mask id="flow-cutouts" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <g fill="none" stroke="#000" stroke-width="40" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M40 172H198C248 172 267 229 318 256"/>
+        <path d="M40 256H318"/>
+        <path d="M40 340H198C248 340 267 283 318 256"/>
+        <path d="M300 256H472"/>
+      </g>
+    </mask>
+  </defs>
+
+  <g fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M84 88H180M232 88H302C330 88 342 118 367 118" stroke="#8B73E6"/>
+    <path d="M84 160H180M232 160H367" stroke="#AEB8C5"/>
+    <path d="M84 232H180M232 232H302C330 232 342 202 367 202" stroke="#44C4EF"/>
+  </g>
+
+  <g>
+    <rect x="32" y="62" width="52" height="52" rx="14" fill="#8B73E6"/>
+    <rect x="180" y="62" width="52" height="52" rx="14" fill="#8B73E6"/>
+    <rect x="32" y="134" width="52" height="52" rx="14" fill="#AEB8C5"/>
+    <rect x="180" y="134" width="52" height="52" rx="14" fill="#AEB8C5"/>
+    <rect x="32" y="206" width="52" height="52" rx="14" fill="#44C4EF"/>
+    <rect x="180" y="206" width="52" height="52" rx="14" fill="#44C4EF"/>
+  </g>
+
+  <g transform="translate(335 32) scale(.5)">
+    <rect x="64" y="64" width="384" height="384" rx="40" fill="#F8FAFC" mask="url(#flow-cutouts)"/>
+  </g>
+
+  <text x="620" y="209" fill="#F8FAFC"
+        font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="148" font-weight="500" letter-spacing="-5">Determin Flow</text>
+</svg>
