@@ -1,0 +1,208 @@
+@import 'highlight.js/styles/github-dark.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 6.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 6.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 239 84% 67%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 239 84% 67%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "DIN Next", "Inter", system-ui, sans-serif;
+  }
+}
+
+/* Custom scrollbar */
+:root {
+  --scrollbar-track: hsl(222.2 84% 4.9% / 0.5);
+  --scrollbar-thumb: hsl(var(--primary) / 0.3);
+  --scrollbar-thumb-hover: hsl(var(--primary) / 0.5);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Surface utilities (solid semi-transparent backgrounds) */
+.surface {
+  @apply bg-slate-800/60 border border-primary/15;
+}
+
+.surface-card {
+  @apply bg-slate-800/40 border border-primary/10 rounded-xl;
+}
+
+/* Legacy aliases — prefer .surface / .surface-card */
+.glass {
+  @apply bg-slate-800/60 border border-primary/15;
+}
+
+.glass-card {
+  @apply bg-slate-800/40 border border-primary/10 rounded-xl;
+}
+
+/* Glow effects (use sparingly for status indication) */
+.glow-border {
+  box-shadow: 0 0 10px hsl(var(--primary) / 0.2),
+              inset 0 0 10px hsl(var(--primary) / 0.05);
+}
+
+.glow-green {
+  box-shadow: 0 0 10px hsl(142 71% 45% / 0.3);
+}
+
+.glow-red {
+  box-shadow: 0 0 10px hsl(0 84% 60% / 0.3);
+}
+
+.glow-amber {
+  box-shadow: 0 0 10px hsl(38 92% 50% / 0.3);
+}
+
+/* Pulse animation for running status */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-running {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+/* React Flow custom styles */
+.react-flow__node {
+  cursor: pointer;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+/* Markdown rendering styles */
+.markdown-body {
+  @apply text-foreground;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+.markdown-body code {
+  @apply bg-primary/15 rounded px-[0.4em] py-[0.2em] text-xs;
+}
+
+.markdown-body pre {
+  @apply bg-background/80 border border-primary/20 rounded-lg p-4;
+  overflow-x: auto;
+}
+
+.markdown-body pre code {
+  @apply bg-transparent p-0;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  @apply text-slate-200 mt-4 mb-2;
+}
+
+.markdown-body ul, .markdown-body ol {
+  padding-left: 1.5em;
+}
+
+.markdown-body li {
+  margin: 0.3em 0;
+}
+
+.markdown-body blockquote {
+  @apply bg-emerald-500/5 border border-emerald-500/20 rounded-lg pl-4 py-1 text-slate-400;
+}
+
+.markdown-body a {
+  @apply text-emerald-400 underline;
+}
+
+.markdown-body a:hover {
+  @apply text-emerald-300;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.markdown-body th, .markdown-body td {
+  @apply border border-primary/20 py-2 px-3;
+  white-space: nowrap;
+}
+
+.markdown-body th {
+  @apply bg-primary/10;
+}
+
+/* Accessibility: reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .status-running {
+    animation: none;
+  }
+}
+
+/* Accessibility: keyboard focus styles */
+:focus-visible {
+  @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-background;
+}
+
+/* Accessibility: high-contrast support */
+@media (forced-colors: active) {
+  .glow-border,
+  .glow-green,
+  .glow-red,
+  .glow-amber {
+    box-shadow: none;
+  }
+}

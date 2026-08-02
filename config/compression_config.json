@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-06-03T15:00:24.305092+00:00",
+  "description": "上下文压缩配置 - 管理压缩策略参数",
+  "general": {
+    "compactionThreshold": 0.8,
+    "enabled": true
+  },
+  "micro_compact": {
+    "maxToolResults": 13,
+    "toolResultTokenRatio": 0.35,
+    "keepRecentToolResults": 5,
+    "placeholder": "[Content compacted]"
+  },
+  "full_compact": {
+    "keepRecentTokens": 5120,
+    "maxRetryCount": 2,
+    "summaryTokenBudget": 20000
+  },
+  "reactive_compact": {
+    "maxRetryCount": 5
+  },
+  "post_compact": {
+    "maxFilesToRead": 5,
+    "maxTokensPerFile": 5000
+  },
+  "transcript": {
+    "logsDir": "./logs/compression"
+  }
+}

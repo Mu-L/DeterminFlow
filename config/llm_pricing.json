@@ -1,0 +1,36 @@
+{
+  "version": "deepseek-direct-v4-usd-2026-07-18-v1",
+  "currency": "USD",
+  "timezone": "UTC",
+  "unit_tokens": 1000000,
+  "rules": [
+    {
+      "id": "deepseek-direct-v4-flash-2026-07-18",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "effective_from": "2026-07-18T00:00:00+08:00",
+      "effective_to": null,
+      "timezone": "UTC",
+      "rates": {
+        "prompt": "0.14",
+        "cached_prompt": "0.0028",
+        "completion": "0.28"
+      },
+      "time_bands": []
+    },
+    {
+      "id": "deepseek-direct-v4-pro-2026-07-18",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "effective_from": "2026-07-18T00:00:00+08:00",
+      "effective_to": null,
+      "timezone": "UTC",
+      "rates": {
+        "prompt": "0.435",
+        "cached_prompt": "0.003625",
+        "completion": "0.87"
+      },
+      "time_bands": []
+    }
+  ]
+}

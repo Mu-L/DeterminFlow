@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "description": "Skills 配置",
+  "groups": [
+    {
+      "id": "default",
+      "name": "默认技能组",
+      "description": "默认可见的 Skills"
+    }
+  ],
+  "skill_configs": {
+    "workflow-guide": {
+      "enabled": true,
+      "priority": 50,
+      "auto_inject": true,
+      "workflow_only": false
+    }
+  },
+  "skills": {
+    "workflow-guide": {
+      "group_ids": [
+        "default"
+      ],
+      "auto_inject": true
+    }
+  }
+}

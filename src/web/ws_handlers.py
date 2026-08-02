@@ -1,0 +1,491 @@
+"""
+WebSocket 处理模块 - 实现对话流式推送和系统事件广播
+
+两个 WebSocket 端点：
+- /ws/chat: 对话通道，接收用户消息，委托 session.send_message() 处理，推送流式事件
+- /ws/events: 事件通道，推送会话状态变更、子会话通知等系统事件
+
+消息处理改为后台任务 + event_bus 推送，支持多 session 并发通信。
+"""
+import asyncio
+import json
+import logging
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+from src.web.event_bus import event_bus
+from src.core.utils import is_visible_to_frontend
+
+logger = logging.getLogger(__name__)
+
+
+# ============ 后台消息处理 ============
+
+async def _validate_session(session_mgr, session_id: str, action_label: str):
+    """通用会话前置校验：存在性、graph 初始化、状态检查。
+
+    返回 (session, None) 校验通过；返回 (None, error_dict) 校验失败。
+    """
+    session = session_mgr.get_session(session_id)
+    if not session:
+        return None, {"type": "error", "message": f"未找到会话 {session_id}", "session_id": session_id}
+    if session.compiled_graph is None:
+        return None, {"type": "error", "message": f"会话 {session_id} Graph 未初始化", "session_id": session_id}
+    if session.status == "error":
+        return None, {"type": "error", "message": f"会话 {session_id} 状态为 error，无法{action_label}", "session_id": session_id}
+    if session.status == "streaming":
+        return None, {"type": "error", "message": f"会话 {session_id} 正在处理中，请稍后再试", "session_id": session_id}
+    return session, None
+
+
+def _make_stream_callback(session_id: str, session):
+    """构造流式事件回调：chat 通道推送 token/tool 事件，events 通道推送状态变更。"""
+    async def callback(event: dict):
+        event["session_id"] = session_id
+        event_type = event.get("type", "")
+        if event_type in ("stream_start", "stream_end", "token", "reasoning_token",
+                          "tool_call_delta", "error", "tool_start", "tool_end",
+                          "llm_usage"):
+            await event_bus.emit_chat(event)
+        if event_type == "stream_start":
+            await event_bus.emit_event({
+                "type": "session_update", "action": "status_changed",
+                "session_id": session_id, "status": "streaming",
+            })
+        elif event_type == "stream_end":
+            await event_bus.emit_event({
+                "type": "session_update", "action": "status_changed",
+                "session_id": session_id, "status": session.status,
+            })
+    return callback
+
+
+async def _execute_with_events(session, session_id: str, action_coro, action_label: str):
+    """通用执行包装：执行 action_coro → 推送 chain_end → 统一异常/清理处理。"""
+    from datetime import datetime, timezone
+
+    try:
+        await action_coro
+        serialized = [m for m in session.record if is_visible_to_frontend(m)]
+        chain_end_event: dict = {
+            "type": "chain_end",
+            "messages": serialized,
+            "session_id": session_id,
+        }
+        if session.token_usage:
+            chain_end_event["token_usage"] = session.token_usage
+        await event_bus.emit_chat(chain_end_event)
+    except asyncio.CancelledError:
+        session.status = "completed"
+        logger.info(f"会话 {session_id} {action_label}后台任务被取消，标记为 completed")
+    except Exception as e:
+        logger.error(f"会话 {session_id} {action_label}失败: {e}", exc_info=True)
+        session.status = "error"
+        await event_bus.emit_chat({
+            "type": "error",
+            "message": str(e),
+            "session_id": session_id,
+        })
+    finally:
+        session.updated_at = datetime.now(timezone.utc).isoformat()
+        await session.async_save()
+
+
+async def _process_session_message(session_mgr, session_id: str, content: str):
+    """后台任务：处理会话消息并通过 event_bus 推送所有事件。"""
+    session, err = await _validate_session(session_mgr, session_id, "发送消息")
+    if err:
+        await event_bus.emit_chat(err)
+        return
+    callback = _make_stream_callback(session_id, session)
+    await _execute_with_events(
+        session, session_id,
+        session.send_message(content=content, event_callback=callback, source="human"),
+        action_label="处理消息",
+    )
+
+
+async def _process_edit_message(session_mgr, session_id: str, message_id: str, new_content: str):
+    """后台任务：编辑消息后重新发送，通过 event_bus 推送所有事件。"""
+    session, err = await _validate_session(session_mgr, session_id, "编辑消息")
+    if err:
+        await event_bus.emit_chat(err)
+        return
+    callback = _make_stream_callback(session_id, session)
+    await _execute_with_events(
+        session, session_id,
+        session.edit_message_and_resend(
+            message_id=message_id,
+            new_content=new_content,
+            event_callback=callback,
+        ),
+        action_label="编辑消息",
+    )
+
+
+# ============ 对话 WebSocket ============
+
+async def handle_chat_ws(ws: WebSocket, app_state):
+    """
+    处理 /ws/chat WebSocket 连接
+
+    协议：
+    - 客户端发送:
+      - {"type": "message", "content": "用户消息"} — 发送到默认主会话
+      - {"type": "message", "content": "...", "session_id": "xxx"} — 发送到指定会话
+    - 服务端推送（通过 event_bus 自动广播）:
+      - {"type": "token", "content": "...", "session_id": "..."} 流式 token
+      - {"type": "chain_end", "messages": [...], "session_id": "..."}
+      - {"type": "stream_start" / "stream_end", "session_id": "..."}
+      - {"type": "error", "message": "..."}
+      - {"type": "notification", "data": {...}}
+    """
+    await ws.accept()
+    await event_bus.subscribe("chat", ws)
+
+    session_mgr = app_state.session_manager
+
+    # 提取查询参数中的 session_id（如 /ws/chat?session_id=xxx）
+    target_session_id = ws.query_params.get("session_id")
+
+    # Per-session 订阅：如果有 session_id，只接收该 session 的事件（多租户隔离）
+    subscribed_session_ids: set[str] = set()
+    if target_session_id:
+        await event_bus.subscribe_session(target_session_id, ws)
+        subscribed_session_ids.add(target_session_id)
+
+    # 连接建立后立即推送对应会话的历史消息
+    try:
+        target_session = None
+        if target_session_id:
+            target_session = session_mgr.get_session(target_session_id)
+
+        if target_session:
+            history_messages = [
+                m for m in target_session.record
+                if is_visible_to_frontend(m)
+            ]
+            if history_messages:
+                history_event: dict = {
+                    "type": "history",
+                    "messages": history_messages,
+                    "session_id": target_session_id,
+                }
+                if target_session.token_usage:
+                    history_event["token_usage"] = target_session.token_usage
+                await ws.send_text(json.dumps(history_event, ensure_ascii=False))
+        else:
+            # 兜底：推送当前主会话的历史（向后兼容不带 session_id 的连接）
+            main_session = session_mgr.get_main_session()
+            if main_session:
+                history_messages = [
+                    m for m in main_session.record
+                    if is_visible_to_frontend(m)
+                ]
+                if history_messages:
+                    history_event: dict = {
+                        "type": "history",
+                        "messages": history_messages,
+                    }
+                    if main_session.token_usage:
+                        history_event["token_usage"] = main_session.token_usage
+                    await ws.send_text(json.dumps(history_event, ensure_ascii=False))
+    except Exception as e:
+        logger.error(f"推送历史消息失败: {e}")
+
+    # 启动后台任务：实时推送 notification 到 Chat WS（使用广播器）
+    notif_queue = session_mgr.notification_broadcaster.subscribe()
+
+    async def _push_sub_notifications():
+        while True:
+            try:
+                notif = await asyncio.wait_for(
+                    notif_queue.get(), timeout=1.0
+                )
+                await asyncio.wait_for(
+                    ws.send_text(json.dumps({
+                        "type": "notification",
+                        "data": notif,
+                    }, ensure_ascii=False)),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                continue
+            except (asyncio.CancelledError, WebSocketDisconnect):
+                break
+            except Exception:
+                await asyncio.sleep(1)
+
+    notif_push_task = asyncio.create_task(_push_sub_notifications())
+    # 跟踪后台消息处理任务
+    bg_tasks: set[asyncio.Task] = set()
+
+    async def _spawn_and_track(coro):
+        """创建后台任务并自动清理。"""
+        task = asyncio.create_task(coro)
+        bg_tasks.add(task)
+        task.add_done_callback(bg_tasks.discard)
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                try:
+                    await ws.send_text(json.dumps({"type": "error", "message": "无效的 JSON"}))
+                except WebSocketDisconnect:
+                    break
+                continue
+
+            msg_type = data.get("type", "")
+
+            if msg_type == "message":
+                content = data.get("content", "").strip()
+                if not content:
+                    continue
+
+                msg_session_id = data.get("session_id")
+
+                if msg_session_id:
+                    # 向指定会话发消息（后台异步，不阻塞消息循环）
+                    # 同时订阅该 session 的事件（如果尚未订阅）
+                    if msg_session_id not in subscribed_session_ids:
+                        await event_bus.subscribe_session(msg_session_id, ws)
+                        subscribed_session_ids.add(msg_session_id)
+                    await _spawn_and_track(
+                        _process_session_message(session_mgr, msg_session_id, content)
+                    )
+                else:
+                    # 向默认主会话发消息（后台异步）
+                    main = session_mgr.get_main_session()
+                    if main:
+                        await _spawn_and_track(
+                            _process_session_message(session_mgr, main.session_id, content)
+                        )
+
+            elif msg_type == "edit_message":
+                message_id = data.get("message_id", "")
+                edit_content = data.get("content", "").strip()
+                if not message_id or not edit_content:
+                    await _safe_send(ws, {"type": "error", "message": "缺少 message_id 或 content"})
+                    continue
+
+                target_sid = data.get("session_id")
+                if target_sid:
+                    await _spawn_and_track(
+                        _process_edit_message(session_mgr, target_sid, message_id, edit_content)
+                    )
+                else:
+                    main = session_mgr.get_main_session()
+                    if main:
+                        await _spawn_and_track(
+                            _process_edit_message(session_mgr, main.session_id, message_id, edit_content)
+                        )
+
+            elif msg_type == "ping":
+                try:
+                    await ws.send_text(json.dumps({"type": "pong"}))
+                except WebSocketDisconnect:
+                    break
+
+            elif msg_type == "rt_start":
+                rt_id = data.get("roundtable_id", "")
+                if rt_id and hasattr(app_state, "roundtable_manager"):
+                    result = await app_state.roundtable_manager.start(rt_id)
+                    await _safe_send(ws, {"type": "rt_start_result", **result})
+
+            elif msg_type == "rt_inject":
+                rt_id = data.get("roundtable_id", "")
+                inject_content = data.get("content", "").strip()
+                if rt_id and inject_content and hasattr(app_state, "roundtable_manager"):
+                    result = await app_state.roundtable_manager.inject(rt_id, inject_content)
+                    await _safe_send(ws, {
+                        "type": "rt_inject_result",
+                        "success": result["success"],
+                        "message": result.get("message", ""),
+                    })
+                else:
+                    await _safe_send(ws, {"type": "error", "message": "缺少 roundtable_id 或 content"})
+
+            elif msg_type == "rt_nominate":
+                rt_id = data.get("roundtable_id", "")
+                target_seat_id = data.get("target_seat_id")
+                target_name = data.get("target_name")
+                nominate_content = data.get("content", "")
+                if rt_id and (target_seat_id or target_name) and hasattr(app_state, "roundtable_manager"):
+                    result = await app_state.roundtable_manager.nominate(
+                        rt_id, target_seat_id=target_seat_id, target_name=target_name, content=nominate_content,
+                    )
+                    await _safe_send(ws, {"type": "rt_nominate_result", **result})
+                else:
+                    await _safe_send(ws, {"type": "error", "message": "缺少 roundtable_id 或目标席位信息"})
+
+            elif msg_type == "rt_pause":
+                rt_id = data.get("roundtable_id", "")
+                if rt_id and hasattr(app_state, "roundtable_manager"):
+                    result = await app_state.roundtable_manager.pause(rt_id)
+                    await _safe_send(ws, {"type": "rt_pause_result", **result})
+
+            elif msg_type == "rt_resume":
+                rt_id = data.get("roundtable_id", "")
+                if rt_id and hasattr(app_state, "roundtable_manager"):
+                    result = await app_state.roundtable_manager.resume(rt_id)
+                    await _safe_send(ws, {"type": "rt_resume_result", **result})
+
+            elif msg_type == "diagnose_content_safety":
+                target_id = data.get("session_id", "")
+                if not target_id:
+                    await _safe_send(ws, {"type": "error", "message": "缺少 session_id"})
+                    continue
+
+                session = session_mgr.get_session(target_id)
+                if not session:
+                    await _safe_send(ws, {"type": "error", "message": f"未找到会话 {target_id}"})
+                    continue
+
+                # 运行诊断（后台异步，不阻塞消息循环）
+                async def _run_diagnostic(sess, sid):
+                    try:
+                        result = await sess.run_content_safety_diagnostic()
+                        if result.get("success"):
+                            # 诊断成功：推送更新后的 record（含诊断结果消息）
+                            serialized = [
+                                m for m in sess.record
+                                if is_visible_to_frontend(m)
+                            ]
+                            await event_bus.emit_chat({
+                                "type": "chain_end",
+                                "messages": serialized,
+                                "session_id": sid,
+                            })
+                        else:
+                            await event_bus.emit_chat({
+                                "type": "error",
+                                "message": result.get("message", "诊断失败"),
+                                "session_id": sid,
+                            })
+                    except Exception as e:
+                        logger.error(f"会话 {sid} 诊断异常: {e}", exc_info=True)
+                        await event_bus.emit_chat({
+                            "type": "error",
+                            "message": f"诊断执行异常: {e}",
+                            "session_id": sid,
+                        })
+
+                await _spawn_and_track(_run_diagnostic(session, target_id))
+
+    except WebSocketDisconnect:
+        logger.info("Chat WebSocket 客户端断开")
+    except Exception as e:
+        logger.error(f"Chat WebSocket 错误: {e}", exc_info=True)
+    finally:
+        notif_push_task.cancel()
+        session_mgr.notification_broadcaster.unsubscribe(notif_queue)
+        # 不取消 bg_tasks（_process_session_message 使用 event_bus 推送事件，
+        # event_bus 已自动处理 WS 断线清理，取消会导致运行中 session 被错误标记为 error）
+        await event_bus.unsubscribe("chat", ws)
+
+
+async def _safe_send(ws: WebSocket, data: dict):
+    """安全发送 WS 消息，忽略断线错误。"""
+    try:
+        await ws.send_text(json.dumps(data, ensure_ascii=False))
+    except WebSocketDisconnect:
+        pass
+
+
+# ============ 事件 WebSocket ============
+
+async def handle_events_ws(ws: WebSocket, app_state):
+    """
+    处理 /ws/events WebSocket 连接
+
+    持续推送系统事件（会话状态变更、子会话通知等）
+    客户端只需保持连接即可接收事件
+    """
+    await ws.accept()
+    await event_bus.subscribe("events", ws)
+
+    session_mgr = app_state.session_manager
+
+    try:
+        notification_task = asyncio.create_task(
+            _consume_notifications(ws, session_mgr)
+        )
+
+        status_task = asyncio.create_task(
+            _push_status_updates(ws, app_state)
+        )
+
+        while True:
+            try:
+                raw = await ws.receive_text()
+                data = json.loads(raw)
+                if data.get("type") == "ping":
+                    await ws.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                continue
+
+    except WebSocketDisconnect:
+        logger.info("Events WebSocket 客户端断开")
+    except Exception as e:
+        logger.error(f"Events WebSocket 错误: {e}", exc_info=True)
+    finally:
+        notification_task.cancel()
+        status_task.cancel()
+        await event_bus.unsubscribe("events", ws)
+
+
+async def _consume_notifications(ws: WebSocket, session_mgr):
+    """消费 notification_queue 并推送到 WebSocket（使用广播器）"""
+    notif_queue = session_mgr.notification_broadcaster.subscribe()
+    try:
+        while True:
+            try:
+                notif = await asyncio.wait_for(
+                    notif_queue.get(), timeout=1.0
+                )
+                await ws.send_text(json.dumps({
+                    "type": "notification",
+                    "data": notif,
+                }, ensure_ascii=False))
+                await event_bus.emit_event({
+                    "type": "notification",
+                    "data": notif,
+                })
+            except asyncio.TimeoutError:
+                continue
+            except (asyncio.CancelledError, WebSocketDisconnect):
+                break
+            except Exception:
+                await asyncio.sleep(1)
+    finally:
+        session_mgr.notification_broadcaster.unsubscribe(notif_queue)
+
+
+async def _push_status_updates(ws: WebSocket, app_state):
+    """定期推送系统状态到 Events WebSocket"""
+    while True:
+        try:
+            sm = app_state.session_manager
+            status = {
+                "type": "status_update",
+                "data": {
+                    "sessions": [s.get_summary() for s in sm.sessions.values()],
+                    "active_sub_count": sm.get_active_sub_count(),
+                    "total_sessions": len(sm.sessions),
+                    "main_session_id": sm.main_session_id,
+                    "main_sessions": [s.get_summary() for s in sm.get_main_sessions()],
+                },
+            }
+            # 增加 5s 超时保护：防止僵死客户端阻塞状态推送循环
+            await asyncio.wait_for(
+                ws.send_text(json.dumps(status, ensure_ascii=False)),
+                timeout=5.0,
+            )
+            await asyncio.sleep(2)
+        except (asyncio.CancelledError, WebSocketDisconnect, asyncio.TimeoutError):
+            break
+        except Exception:
+            await asyncio.sleep(5)

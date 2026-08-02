@@ -1,0 +1,169 @@
+{
+  "version": "1.0",
+  "description": "Agent 定义配置 - 所有 Agent 类型的定义",
+  "agents": {
+    "main": {
+      "description": "主代理，负责与用户交互、协调子代理、管理整体任务流程。拥有完整的工具权限，包括创建和管理子会话。",
+      "prompt_template": "main",
+      "tools": [
+        "*"
+      ],
+      "disallowed_tools": null,
+      "model": "deepseek:deepseek-v4-pro",
+      "max_turns": 100,
+      "system_prompt_template": "",
+      "copy_main_workspace": null,
+      "available_for_sub_session": true,
+      "visible_skill_group_ids": [
+        "default"
+      ],
+      "visible_rule_group_ids": [
+        "default"
+      ],
+      "model_params": {
+        "thinking_enabled": true,
+        "reasoning_effort": "max",
+        "temperature": 0.7,
+        "top_p": 1,
+        "presence_penalty": 0,
+        "thinking_budget": null,
+        "response_format": null
+      },
+      "extension_options": null
+    },
+    "default": {
+      "description": "通用子代理，仅具备向主代理通信的能力。适用于简单的文本生成、分析、总结等不需要工具的任务。",
+      "prompt_template": "subagent",
+      "tools": [],
+      "disallowed_tools": null,
+      "model": "deepseek:deepseek-v4-flash",
+      "max_turns": 10,
+      "system_prompt_template": "",
+      "copy_main_workspace": null,
+      "available_for_sub_session": true,
+      "visible_skill_group_ids": [
+        "default"
+      ],
+      "visible_rule_group_ids": [
+        "default"
+      ],
+      "model_params": {
+        "thinking_enabled": false,
+        "temperature": 0.8,
+        "top_p": 1,
+        "response_format": null
+      }
+    },
+    "researcher": {
+      "description": "研究型子代理",
+      "prompt_template": "subagent",
+      "tools": [
+        "read_file",
+        "list_files",
+        "search_file",
+        "search_files",
+        "list_code_definitions",
+        "send_message",
+        "write_to_file"
+      ],
+      "disallowed_tools": null,
+      "model": "deepseek:deepseek-v4-flash",
+      "max_turns": 150,
+      "system_prompt_template": "你擅长信息检索和分析。",
+      "copy_main_workspace": false,
+      "available_for_sub_session": true,
+      "visible_skill_group_ids": [
+        "default"
+      ],
+      "visible_rule_group_ids": [
+        "default"
+      ],
+      "model_params": {
+        "thinking_enabled": false,
+        "temperature": 0.8,
+        "top_p": 1,
+        "response_format": null
+      },
+      "extension_options": null
+    },
+    "reviewer": {
+      "description": "审查型子代理，审查代码、验证修改、运行测试。适用于代码审查、PR review、测试验证、质量检查等需要读代码并运行验证的任务。",
+      "prompt_template": "subagent",
+      "tools": [
+        "read_file",
+        "search_files",
+        "list_files",
+        "list_code_definitions",
+        "execute_command",
+        "send_message"
+      ],
+      "disallowed_tools": [
+        "write_to_file",
+        "replace_in_file",
+        "apply_diff"
+      ],
+      "model": "deepseek:deepseek-v4-flash",
+      "max_turns": 50,
+      "system_prompt_template": "你是审查型子代理。你的职责是审查代码质量、验证修改正确性、发现问题而非创造问题。\n\n### 审查原则\n- 先读代码理解意图，再对照任务要求逐项检查\n- 用具体文件路径、行号、代码片段作为证据\n- 区分「必须修改的问题」和「可选的建议」\n- NEVER 修改任何文件，只报告发现\n\n### 验证流程\n1. 读取被修改的文件，理解改动内容\n2. 运行相关测试，确认通过\n3. 运行类型检查/lint，确认无新增问题\n4. 检查边界情况和错误路径\n5. 报告：通过项 + 问题项 + 建议项",
+      "copy_main_workspace": false,
+      "available_for_sub_session": true,
+      "visible_skill_group_ids": [],
+      "visible_rule_group_ids": [],
+      "model_params": {
+        "thinking_enabled": false,
+        "temperature": 0.8,
+        "top_p": 1,
+        "response_format": null
+      },
+      "extension_options": null
+    },
+    "coder": {
+      "description": "编码型子代理，可读写文件、执行命令、搜索代码。适用于编写代码、修改文件、运行构建/测试命令、代码重构等开发任务。",
+      "prompt_template": "subagent",
+      "tools": [
+        "read_file",
+        "write_to_file",
+        "replace_in_file",
+        "search_files",
+        "list_files",
+        "list_code_definitions",
+        "execute_command"
+      ],
+      "disallowed_tools": null,
+      "model": "deepseek:deepseek-v4-flash",
+      "max_turns": 100,
+      "system_prompt_template": "你是一个专业的编码助手。在执行任务时，先用 list_files 和 read_file 了解项目结构，用 search_files 搜索相关代码，然后用 write_to_file 或 replace_in_file 进行修改，必要时用 execute_command 运行命令。",
+      "copy_main_workspace": true,
+      "available_for_sub_session": true,
+      "visible_skill_group_ids": [],
+      "visible_rule_group_ids": [
+        "default"
+      ],
+      "model_params": {
+        "thinking_enabled": false,
+        "temperature": 0.8,
+        "top_p": 1,
+        "response_format": null
+      }
+    },
+    "compressor": {
+      "description": "压缩型代理，专门用于生成上下文摘要。不执行任何工具调用，仅生成结构化摘要。",
+      "prompt_template": "compressor",
+      "tools": [],
+      "disallowed_tools": [
+        "*"
+      ],
+      "model": "deepseek:deepseek-v4-flash",
+      "max_turns": 1,
+      "system_prompt_template": "{{compressor_prompt}}",
+      "copy_main_workspace": false,
+      "available_for_sub_session": false,
+      "model_params": {
+        "thinking_enabled": false,
+        "temperature": 0.8,
+        "top_p": 1,
+        "response_format": null
+      }
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "groups": [
+    {
+      "id": "coding",
+      "name": "编码工具",
+      "description": "文件读写、搜索和命令执行",
+      "tool_ids": [
+        "read_file",
+        "write_to_file",
+        "replace_in_file",
+        "search_files",
+        "search_file",
+        "list_files",
+        "list_code_definitions",
+        "apply_diff",
+        "execute_command",
+        "ask_user"
+      ]
+    },
+    {
+      "id": "session_main",
+      "name": "会话管理",
+      "description": "会话创建、监控和通信",
+      "tool_ids": [
+        "create_sub_session",
+        "check_sub_progress",
+        "check_main_progress",
+        "send_message",
+        "delete_session"
+      ]
+    },
+    {
+      "id": "config",
+      "name": "配置工具",
+      "description": "运行时参数查看和调整",
+      "tool_ids": [
+        "get_temperature",
+        "set_temperature",
+        "get_system_prompt",
+        "update_system_prompt",
+        "list_agent_types"
+      ]
+    },
+    {
+      "id": "skills",
+      "name": "Skills 工具",
+      "description": "访问 Skills 知识系统",
+      "tool_ids": [
+        "get_skills",
+        "skill_manage",
+        "skill_group_manage"
+      ]
+    },
+    {
+      "id": "rules",
+      "name": "Rules 工具",
+      "description": "访问和管理 Rules 规则系统",
+      "tool_ids": [
+        "get_rules",
+        "rule_manage",
+        "rule_group_manage"
+      ]
+    },
+    {
+      "id": "workflow",
+      "name": "工作流控制",
+      "description": "工作流发现、创建、启动、审批、监控和停止",
+      "tool_ids": [
+        "list_workflows",
+        "get_workflow",
+        "create_and_attach_task",
+        "set_workflow_variable",
+        "start_workflow_task",
+        "approve_node",
+        "list_tasks",
+        "get_task_status",
+        "stop_task"
+      ]
+    },
+    {
+      "id": "cron",
+      "name": "定时任务工具",
+      "description": "定时任务的创建、管理和监控",
+      "tool_ids": [
+        "cronjob"
+      ]
+    }
+  ]
+}

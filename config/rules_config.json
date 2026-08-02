@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "description": "Rules 配置",
+  "groups": [
+    {
+      "id": "default",
+      "name": "默认规则组",
+      "description": "默认可见的 Rules"
+    }
+  ],
+  "rule_configs": {},
+  "rules": {}
+}

@@ -1,0 +1,23 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: determinflow:latest
+    ports:
+      - "8020:8020"
+    environment:
+      WEB_HOST: "0.0.0.0"
+      WEB_PORT: "8020"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      CODING_WORKSPACE_COPY_ON_CREATE: "${CODING_WORKSPACE_COPY_ON_CREATE:-true}"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

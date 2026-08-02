@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local workflow and prototype output
+cache/
+outline/
+story/
+tasks/
+
+# Frontend (will be built in Docker)
+web/node_modules/
+web/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+
+# Runtime data is mounted or created at runtime, never baked into an image.
+data/
+config/extension-overrides/
+# Model provider credentials are supplied as a host-only read-only mount.
+config/models_config.json
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.yml.*
+
+# Tests
+tests/
+pytest.ini
+TESTING.md
+
+# Backup files
+*.bak
+*.backup

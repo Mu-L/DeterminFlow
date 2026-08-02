@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "description": "用户消息注入配置 - 管理自动注入到用户消息的元信息",
+  "sections": [
+    {
+      "name": "timestamp",
+      "content": "当前时间: {{timestamp}}",
+      "token_estimate": 15,
+      "cache_break": true,
+      "cache_break_reason": "时间信息每次对话不同",
+      "enabled": true,
+      "order": 0
+    }
+  ]
+}

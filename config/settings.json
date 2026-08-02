@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "description": "运行时配置 - 非敏感设置。同名环境变量会覆盖此处值",
+  "coding": {
+    "CODING_TOOLS_ENABLED": "true",
+    "CODING_PATH_SANDBOX_ENABLED": "false",
+    "CODING_WORKSPACE_BASE": "data/workspaces",
+    "CODING_CMD_MODE": "blacklist",
+    "CODING_CMD_BLACKLIST": "rm -rf /,format,mkfs,dd if=",
+    "CODING_CMD_WHITELIST": "npm,node,python,pip,git,ls,cat,echo,cd,mkdir,cp,mv",
+    "CODING_CMD_TIMEOUT": 300,
+    "CODING_APPROVAL_TIMEOUT": 600,
+    "CODING_MAX_FILE_SIZE": 1048576,
+    "CODING_WORKSPACE_COPY_ON_CREATE": "true",
+    "CODING_WORKSPACE_COPY_EXCLUDES": ".git,node_modules,__pycache__,.venv,dist,build",
+    "CODING_WORKSPACE_MAX_SIZE": 104857600
+  },
+  "agent": {
+    "MAX_SUB_SESSIONS": 50,
+    "SUB_AGENT_MAX_ROUNDS": 10,
+    "AGENT_MESSAGE_HEADER": "[来自 {source_type} {source_id} 的消息{task_info}]"
+  },
+  "roundtable": {
+    "ROUNDTABLE_MAX_SEATS": 6,
+    "ROUNDTABLE_MAX_ROUNDS": 10,
+    "ROUNDTABLE_SEAT_MAX_TOOL_ROUNDS": 3,
+    "ROUNDTABLE_DEFAULT_STRATEGY": "round_robin",
+    "ROUNDTABLE_COMPRESSOR_ENABLED": "false",
+    "ROUNDTABLE_COMPRESSOR_WINDOW": 20,
+    "ROUNDTABLE_COMPRESSOR_INTERVAL": 3
+  },
+  "system": {
+    "MAX_CONTEXT_TOKENS": 1000000,
+    "LANGGRAPH_RECURSION_LIMIT": 250
+  }
+}
