@@ -1,4 +1,4 @@
-"""Stable contracts exposed to optional ai-company extensions."""
+"""Stable contracts exposed to optional DeterminFlow extensions."""
 
 from .models import (
     CoreRuntime,

@@ -27,7 +27,9 @@ script_libraries = "resources/script-library"
 
 `dependencies` 当前只接受 Extension ID，Host 会自动启用传递依赖并检测环。
 
-第三方 Python 包使用 `ai_company.extensions` entry point 时，entry point 名称必须与 `manifest.extension_id` 相同；未启用的 entry point 不会被 import。
+第三方 Python 包使用 `determinflow.extensions` Entry Point 时，名称必须与
+`manifest.extension_id` 相同；未启用的 Entry Point 不会被 import。历史包使用的
+`ai_company.extensions` 仍受支持，但新项目不应继续采用旧名称。
 
 ## Backend
 

@@ -13,14 +13,17 @@ from pathlib import Path
 def find_repo_root(script_path: Path) -> Path:
     """Find the checkout root from both bundled and provisioned Skill layouts."""
     candidates = list(script_path.resolve().parents)
-    configured_root = os.getenv("AI_COMPANY_ROOT", "").strip()
+    configured_root = (
+        os.getenv("DETERMINFLOW_ROOT")
+        or os.getenv("AI_COMPANY_ROOT", "")
+    ).strip()
     if configured_root:
         candidates.append(Path(configured_root).expanduser().resolve())
     for candidate in dict.fromkeys(candidates):
         if (candidate / "src" / "workflow" / "definition.py").is_file():
             return candidate
     raise RuntimeError(
-        "无法定位 ai-company 仓库根目录；应在仓库内运行已安装的 workflow-guide"
+        "无法定位 DeterminFlow 仓库根目录；应在仓库内运行已安装的 workflow-guide"
     )
 
 

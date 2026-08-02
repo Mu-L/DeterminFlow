@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 320" role="img" aria-labelledby="title desc">
-  <title id="title">Determin Flow</title>
+  <title id="title">DeterminFlow</title>
   <desc id="desc">A modular workflow converges into the DeterminFlow mark and wordmark.</desc>
   <defs>
     <mask id="flow-cutouts" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
@@ -34,5 +34,5 @@
 
   <text x="620" y="209" fill="#111318"
         font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
-        font-size="148" font-weight="500" letter-spacing="-5">Determin Flow</text>
+        font-size="148" font-weight="500" letter-spacing="-5">DeterminFlow</text>
 </svg>

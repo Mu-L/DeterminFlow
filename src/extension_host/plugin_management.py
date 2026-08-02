@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from src.extension_api.models import ExtensionManifest
+from src.environment import determinflow_env_is_set, get_determinflow_env
 from src.plugin_system import (
     PluginLockRecord,
     PluginStoreError,
@@ -37,8 +38,9 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _read_boolean_environment(name: str) -> bool:
-    value = os.getenv(name, "").strip().lower()
+def _read_boolean_environment(suffix: str) -> bool:
+    name = f"DETERMINFLOW_{suffix}"
+    value = (get_determinflow_env(suffix, "") or "").strip().lower()
     if value in {"", "0", "false", "no", "off"}:
         return False
     if value in {"1", "true", "yes", "on"}:
@@ -58,7 +60,7 @@ class PluginManagement:
         self._applied_enabled = frozenset(manager._load_order)
         self._applied_settings = self._settings_snapshot()
         self.package_management_read_only = _read_boolean_environment(
-            "AI_COMPANY_PLUGIN_PACKAGES_READ_ONLY"
+            "PLUGIN_PACKAGES_READ_ONLY"
         )
         self._catalog = PluginCatalogService(manager.plugin_sources)
 
@@ -454,7 +456,7 @@ class PluginManagement:
         }
 
     def _explicit_desired_enabled(self) -> list[str]:
-        if os.getenv("AI_COMPANY_EXTENSIONS") is not None:
+        if determinflow_env_is_set("EXTENSIONS"):
             return list(self.manager._configured_enabled)
         return self._read_extension_config()["enabled"]
 
@@ -519,9 +521,9 @@ class PluginManagement:
         self._write_json_atomic(self.manager.config_file, document)
 
     def _ensure_file_managed_enabled_state(self) -> None:
-        if os.getenv("AI_COMPANY_EXTENSIONS") is not None:
+        if determinflow_env_is_set("EXTENSIONS"):
             raise ValueError(
-                "AI_COMPANY_EXTENSIONS 正在覆盖文件配置，不能通过管理 API 修改启用状态"
+                "DETERMINFLOW_EXTENSIONS 正在覆盖文件配置，不能通过管理 API 修改启用状态"
             )
 
     def _settings_snapshot(self) -> dict[str, str]:

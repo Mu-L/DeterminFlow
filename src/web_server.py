@@ -502,8 +502,8 @@ def create_app(extension_manager: ExtensionManager | None = None) -> FastAPI:
         plugin_logs_dir=LOGS_DIR / "plugins",
     )
     application = FastAPI(
-        title="AI Agent Control Panel",
-        description="AI Agent 编排与工作流平台",
+        title="DeterminFlow",
+        description="可恢复、可审计的 AI 工作流运行框架",
         version="1.0.0",
         lifespan=lifespan,
     )

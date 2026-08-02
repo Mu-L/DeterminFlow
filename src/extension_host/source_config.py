@@ -174,7 +174,7 @@ def fetch_plugin_catalog(
             "error": "",
         }
         try:
-            with tempfile.TemporaryDirectory(prefix="ai-company-plugin-catalog-") as raw:
+            with tempfile.TemporaryDirectory(prefix="determinflow-plugin-catalog-") as raw:
                 repository = Path(raw) / "repository"
                 _run_git(
                     "clone",

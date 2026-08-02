@@ -2,8 +2,8 @@
 
 <h1>
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/determinflow-lockup-dark.svg">
-    <img src="docs/assets/brand/determinflow-lockup.svg" alt="Determin Flow" width="720">
+    <source media="(prefers-color-scheme: dark)" srcset="web/public/brand/determinflow-lockup-dark.svg">
+    <img src="web/public/brand/determinflow-lockup.svg" alt="DeterminFlow" width="720">
   </picture>
 </h1>
 
@@ -208,7 +208,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.lock
 cp .env.example .env
 # Add the API key for your default model to .env
-AI_COMPANY_EXTENSIONS=none python run.py
+DETERMINFLOW_EXTENSIONS=none python run.py
 ```
 
 Then open:
@@ -223,8 +223,9 @@ Or start with Docker:
 docker compose up --build
 ```
 
-The project is still completing its rename from `AI Company` to `DeterminFlow`, so some environment
-variables, Python paths, and configuration keys still use the `AI_COMPANY_*` compatibility prefix.
+New configuration uses the `DETERMINFLOW_*` prefix. Existing `AI_COMPANY_*` environment variables
+and the `ai_company.extensions` entry-point group remain supported as compatibility aliases; the new
+name wins when both are set.
 
 ## Documentation
 

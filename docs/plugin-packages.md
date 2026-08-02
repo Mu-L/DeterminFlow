@@ -304,13 +304,16 @@ Script Library 在 Task 创建时冻结 owner、Plugin revision、entrypoint 和
 
 所有写操作都不得在当前进程中加载、卸载或替换 Plugin。
 
-不可变 Release 可以设置 `AI_COMPANY_PLUGIN_PACKAGES_READ_ONLY=true`。此模式下
+不可变 Release 可以设置 `DETERMINFLOW_PLUGIN_PACKAGES_READ_ONLY=true`。此模式下
 安装、更新、回退、卸载和 Catalog 获取被关闭，`GET /api/plugins` 会返回
 `package_management_read_only=true`；启用、停用和配置仍写入持久目标状态，并在
 主进程重启后生效。它用于不在运行容器内提供 Git 和可写 checkout 的生产发布，不是
 通用本地部署的默认行为。
 
 写操作默认只接受本机回环连接。经局域网或反向代理管理时，服务端必须配置
-`AI_COMPANY_PLUGIN_ADMIN_TOKEN`，客户端通过 `Authorization: Bearer <token>`
+`DETERMINFLOW_PLUGIN_ADMIN_TOKEN`，客户端通过 `Authorization: Bearer <token>`
 提交；建议使用至少 32 bytes 的随机值。状态查询和已启用 Plugin 的静态页面不要求
 该管理令牌。
+
+旧版 `AI_COMPANY_*` 环境变量仍作为兼容别名读取；新旧名称同时存在时，
+`DETERMINFLOW_*` 优先。

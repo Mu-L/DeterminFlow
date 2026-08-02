@@ -3,6 +3,7 @@ import { MessageSquare, LayoutDashboard, GitBranch, Users, Layers, Settings, Boo
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { CORE_TAB_IDS, isCoreTabId, type CoreTabId } from "@/core-tabs";
+import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
 import { useGlobalEvents } from "./hooks/useGlobalEvents";
 import { useExtensions } from "./extensions/context-value";
 
@@ -107,13 +108,18 @@ function App() {
       {/* Top Navigation Bar */}
       <header className="fixed top-0 left-0 right-0 z-50 h-14 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50">
         <div className="h-full flex items-center gap-3 px-4">
-          {/* Logo & Title */}
+          {/* Brand */}
           <div className="flex shrink-0 items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-indigo-500 flex items-center justify-center">
-              <span className="text-white text-sm font-bold">AI</span>
-            </div>
-            <h1 className="hidden text-lg font-bold text-slate-100 2xl:block">
-              Agent Control Panel
+            <img
+              src={BRAND_MARK_DARK}
+              alt={PRODUCT_NAME}
+              className="h-8 w-8 shrink-0"
+            />
+            <h1
+              className="hidden text-lg font-semibold tracking-tight text-slate-100 2xl:block"
+              aria-hidden="true"
+            >
+              {PRODUCT_NAME}
             </h1>
           </div>
 

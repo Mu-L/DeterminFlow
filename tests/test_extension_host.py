@@ -1184,6 +1184,7 @@ def test_removed_workflow_resource_declaration_deactivates_old_marker(
 
 def test_disabled_entry_point_is_not_imported(tmp_path: Path, monkeypatch):
     loads = []
+    groups = []
 
     class FakeEntryPoint:
         name = "installed-demo"
@@ -1193,9 +1194,13 @@ def test_disabled_entry_point_is_not_imported(tmp_path: Path, monkeypatch):
             loads.append(self.name)
             return _InstalledExtension
 
+    def fake_entry_points(**kwargs):
+        groups.append(kwargs["group"])
+        return [FakeEntryPoint()]
+
     monkeypatch.setattr(
         "src.extension_host.manager.metadata.entry_points",
-        lambda **kwargs: [FakeEntryPoint()],
+        fake_entry_points,
     )
 
     ExtensionManager(tmp_path, enabled=[], discover_entry_points=True)
@@ -1210,3 +1215,9 @@ def test_disabled_entry_point_is_not_imported(tmp_path: Path, monkeypatch):
 
     assert loads == ["installed-demo"]
     assert enabled_manager.is_enabled("installed-demo")
+    assert groups == [
+        "determinflow.extensions",
+        "ai_company.extensions",
+        "determinflow.extensions",
+        "ai_company.extensions",
+    ]

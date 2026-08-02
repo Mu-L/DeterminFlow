@@ -265,7 +265,7 @@ def _validate_declared_resources(
     manifest: ExtensionManifest,
     contributions: ExtensionContributions,
 ) -> None:
-    with tempfile.TemporaryDirectory(prefix="ai-company-plugin-preflight-") as temp:
+    with tempfile.TemporaryDirectory(prefix="determinflow-plugin-preflight-") as temp:
         scratch_root = Path(temp)
         source_scratch = scratch_root / "source-validation"
         _validate_json_resources(contributions, source_scratch)

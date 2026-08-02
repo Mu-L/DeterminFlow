@@ -18,7 +18,7 @@ Workflow Node 类型由 Core 独占，Extension 只能组合现有 Node 的 Work
 ## 启动流程
 
 ```text
-extensions.json / AI_COMPANY_EXTENSIONS
+extensions.json / DETERMINFLOW_EXTENSIONS
   -> discover manifests and Python entry points
   -> validate Extension API version
   -> resolve dependencies topologically

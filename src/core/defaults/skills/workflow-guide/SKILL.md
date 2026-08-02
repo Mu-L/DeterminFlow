@@ -196,7 +196,7 @@ data/workflows/{workflow_id}/
 
 | 变量 Key | 值示例 | 说明 |
 |---------|--------|------|
-| `_system.workspace_path` | `/home/user/determinflow/data/workspaces/wf-xxx/` | 实际工作空间路径（含覆盖） |
+| `_system.workspace_path` | `/home/user/DeterminFlow/data/workspaces/wf-xxx/` | 实际工作空间路径（含覆盖） |
 | `_system.workflow_id` | `wf-8d6b785f` | 工作流 ID |
 | `_system.task_id` | `task-5aeece34` | 任务 ID |
 | `_system.task_name` | `novel_20260601_113000` | 任务名称 |

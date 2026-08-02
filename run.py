@@ -1,6 +1,6 @@
-"""
-AI 自适应记忆系统 - 开发环境启动入口
-生产环境请使用 Dockerfile 中的 gunicorn 启动
+"""DeterminFlow development entry point.
+
+Production uses the Gunicorn command declared by the Docker image.
 """
 import sys
 from pathlib import Path

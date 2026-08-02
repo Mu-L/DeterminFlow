@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: determinflow:latest
+    image: determinflow-core:latest
     ports:
       - "8020:8020"
     environment:

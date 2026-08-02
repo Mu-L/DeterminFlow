@@ -7,6 +7,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from src.core.default_resources import provision_core_skills
+from src.environment import determinflow_env_is_set, get_determinflow_env
 
 load_dotenv()
 
@@ -16,9 +17,9 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent.parent
 
 # 运行数据可重定向，便于测试实例、容器和多环境隔离。
-DATA_DIR = Path(os.getenv("AI_COMPANY_DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
-LOGS_DIR = Path(os.getenv("AI_COMPANY_LOGS_DIR", str(BASE_DIR / "logs"))).expanduser().resolve()
-CONFIG_DIR = Path(os.getenv("AI_COMPANY_CONFIG_DIR", str(BASE_DIR / "config"))).expanduser().resolve()
+DATA_DIR = Path(get_determinflow_env("DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
+LOGS_DIR = Path(get_determinflow_env("LOGS_DIR", str(BASE_DIR / "logs"))).expanduser().resolve()
+CONFIG_DIR = Path(get_determinflow_env("CONFIG_DIR", str(BASE_DIR / "config"))).expanduser().resolve()
 SKILLS_DIR = DATA_DIR / "skills"
 RULES_DIR = DATA_DIR / "rules"
 SCRIPT_LIBRARY_DIR = DATA_DIR / "script-library"
@@ -128,7 +129,7 @@ CODING_TOOLS_ENABLED = _get_bool_config("CODING_TOOLS_ENABLED", True)
 CODING_PATH_SANDBOX_ENABLED = _get_bool_config("CODING_PATH_SANDBOX_ENABLED", False)
 if os.getenv("CODING_WORKSPACE_BASE"):
     CODING_WORKSPACE_BASE = os.environ["CODING_WORKSPACE_BASE"]
-elif os.getenv("AI_COMPANY_DATA_DIR"):
+elif determinflow_env_is_set("DATA_DIR"):
     CODING_WORKSPACE_BASE = str(DATA_DIR / "workspaces")
 else:
     CODING_WORKSPACE_BASE = _get_config_value("CODING_WORKSPACE_BASE", "data/workspaces")

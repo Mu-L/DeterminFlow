@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 
 from dotenv import load_dotenv, dotenv_values
+from src.environment import get_determinflow_env
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ PROVIDER_SCHEMAS = {
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_ROOT = Path(
-    os.getenv("AI_COMPANY_CONFIG_DIR", str(_PROJECT_ROOT / "config"))
+    get_determinflow_env("CONFIG_DIR", str(_PROJECT_ROOT / "config"))
 ).expanduser().resolve()
 _DEFAULT_CONFIG_PATH = str(_CONFIG_ROOT / "models_config.json")
 _AGENTS_CONFIG_PATH = _CONFIG_ROOT / "agents_config.json"

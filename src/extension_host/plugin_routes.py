@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 import secrets
 from typing import Any
 
@@ -14,6 +13,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from src.plugin_system import PluginStoreError, SourceTrustError
+from src.environment import get_determinflow_env
 
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
@@ -56,7 +56,7 @@ def _is_loopback_request(request: Request) -> bool:
 
 def require_plugin_write_access(request: Request) -> None:
     """Allow local administration, or require the configured remote token."""
-    configured_token = os.getenv("AI_COMPANY_PLUGIN_ADMIN_TOKEN", "")
+    configured_token = get_determinflow_env("PLUGIN_ADMIN_TOKEN", "") or ""
     if not configured_token:
         if _is_loopback_request(request):
             return
@@ -64,7 +64,7 @@ def require_plugin_write_access(request: Request) -> None:
             status_code=403,
             detail=(
                 "远程 Plugin 管理默认关闭；请配置 "
-                "AI_COMPANY_PLUGIN_ADMIN_TOKEN 并使用 Bearer token"
+                "DETERMINFLOW_PLUGIN_ADMIN_TOKEN 并使用 Bearer token"
             ),
         )
     scheme, supplied_token = get_authorization_scheme_param(

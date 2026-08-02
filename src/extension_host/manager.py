@@ -24,6 +24,7 @@ from src.extension_api.models import (
     PromptContribution,
 )
 from src.extension_api.registrar import ExtensionContributions, ExtensionRegistrar, OwnedPath
+from src.environment import get_determinflow_env
 from src.plugin_system import (
     PluginStore,
     ProcessManager,
@@ -59,6 +60,7 @@ from .workflow_provisioning import provision_plugin_workflows
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_RESOURCE_TYPES = SUPPORTED_RESOURCE_TYPES
+_ENTRY_POINT_GROUPS = ("determinflow.extensions", "ai_company.extensions")
 
 
 EXTENSION_DISABLED = "disabled"
@@ -270,29 +272,34 @@ class ExtensionManager:
         }
 
     def _discover_entry_points(self) -> None:
-        try:
-            entry_points = metadata.entry_points(group="ai_company.extensions")
-        except TypeError:
-            entry_points = metadata.entry_points().get("ai_company.extensions", [])
-        for entry_point in entry_points:
-            extension_id = str(entry_point.name).strip()
-            if not extension_id:
-                raise ValueError("Extension entry point 缺少名称")
-            if extension_id in self._manifests:
-                logger.debug("本地扩展覆盖已安装 entry point: %s", extension_id)
-                continue
-            distribution = getattr(entry_point, "dist", None)
-            self._manifests[extension_id] = ExtensionManifest(
-                extension_id=extension_id,
-                name=extension_id,
-                version=str(getattr(distribution, "version", "0.0.0")),
-                description="Installed Python extension",
-            )
-            self._entry_points[extension_id] = entry_point
-            self._states[extension_id] = {
-                "status": EXTENSION_DISABLED,
-                "error": "",
-            }
+        for group in _ENTRY_POINT_GROUPS:
+            try:
+                entry_points = metadata.entry_points(group=group)
+            except TypeError:
+                entry_points = metadata.entry_points().get(group, [])
+            for entry_point in entry_points:
+                extension_id = str(entry_point.name).strip()
+                if not extension_id:
+                    raise ValueError("Extension entry point 缺少名称")
+                if extension_id in self._manifests:
+                    logger.debug(
+                        "更高优先级的扩展定义覆盖 entry point: %s (%s)",
+                        extension_id,
+                        group,
+                    )
+                    continue
+                distribution = getattr(entry_point, "dist", None)
+                self._manifests[extension_id] = ExtensionManifest(
+                    extension_id=extension_id,
+                    name=extension_id,
+                    version=str(getattr(distribution, "version", "0.0.0")),
+                    description="Installed Python extension",
+                )
+                self._entry_points[extension_id] = entry_point
+                self._states[extension_id] = {
+                    "status": EXTENSION_DISABLED,
+                    "error": "",
+                }
 
     def _load_entry_point(self, extension_id: str) -> None:
         entry_point = self._entry_points.get(extension_id)
@@ -316,7 +323,7 @@ class ExtensionManager:
                 config = json.load(handle)
         self._strict_startup = bool(config.get("strict_startup", False))
 
-        env_value = os.getenv("AI_COMPANY_EXTENSIONS")
+        env_value = get_determinflow_env("EXTENSIONS")
         if enabled is not None:
             requested = list(enabled)
         elif env_value is not None:

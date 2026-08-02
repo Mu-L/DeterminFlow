@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
-  Send, Zap, Trash2, X,
+  Send, Trash2, X,
   Square, Edit3, Minimize2,
 } from "lucide-react";
 
@@ -34,6 +34,7 @@ function useDialogFocus(open: boolean, containerRef: React.RefObject<HTMLDivElem
   }, [open, containerRef]);
 }
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
 
 import { useChat } from "../hooks/useChat";
 import { useSessions } from "../hooks/useSessions";
@@ -533,16 +534,21 @@ export default function ChatPage() {
           <div className="w-full max-w-4xl mx-auto">
             {mergedMessages.length === 0 && !isStreamingForCurrentView && !loadingSession && (
               <div className="flex flex-col items-center justify-center h-64 text-center" role="status" aria-label="暂无消息">
-                <div className="w-16 h-16 rounded-2xl bg-indigo-500 flex items-center justify-center mb-4 animate-float motion-reduce:animate-none">
-                  <Zap size={32} className="text-white" aria-hidden="true" />
+                <div className="mb-4 h-16 w-16 animate-float motion-reduce:animate-none">
+                  <img
+                    src={BRAND_MARK_DARK}
+                    alt=""
+                    className="h-full w-full"
+                    aria-hidden="true"
+                  />
                 </div>
                 <h2 className="text-xl font-semibold text-slate-200 mb-2">
-                  {isViewingOther ? "此会话暂无消息" : "DeterminFlow"}
+                  {isViewingOther ? "此会话暂无消息" : PRODUCT_NAME}
                 </h2>
                 <p className="text-muted-foreground text-sm">
                   {isViewingOther
                     ? "可以在下方输入框向此会话发送消息"
-                    : "从对话开始，或把复杂流程交给 Workflow 稳定执行"
+                    : "输入消息开始对话，或切换到 Workflow 构建可恢复的 AI 流程"
                   }
                 </p>
               </div>

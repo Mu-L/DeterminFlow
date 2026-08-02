@@ -2,8 +2,8 @@
 
 <h1>
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/determinflow-lockup-dark.svg">
-    <img src="docs/assets/brand/determinflow-lockup.svg" alt="Determin Flow" width="720">
+    <source media="(prefers-color-scheme: dark)" srcset="web/public/brand/determinflow-lockup-dark.svg">
+    <img src="web/public/brand/determinflow-lockup.svg" alt="DeterminFlow" width="720">
   </picture>
 </h1>
 
@@ -198,7 +198,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.lock
 cp .env.example .env
 # 在 .env 中填写默认模型所需的 API Key
-AI_COMPANY_EXTENSIONS=none python run.py
+DETERMINFLOW_EXTENSIONS=none python run.py
 ```
 
 启动后可以访问：
@@ -213,8 +213,8 @@ AI_COMPANY_EXTENSIONS=none python run.py
 docker compose up --build
 ```
 
-项目仍在完成从 `AI Company` 到 `DeterminFlow` 的内部命名迁移，因此部分环境变量、
-Python 路径和配置键暂时保留 `AI_COMPANY_*` 兼容前缀。
+新配置统一使用 `DETERMINFLOW_*` 前缀；已有的 `AI_COMPANY_*` 环境变量和
+`ai_company.extensions` Entry Point 继续作为兼容别名使用，新旧配置同时存在时以新名称为准。
 
 ## 文档
 
