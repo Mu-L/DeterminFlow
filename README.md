@@ -150,7 +150,7 @@ Core 只负责通用运行能力，具体业务由 Plugin 带进来。一个 Plu
 - Agent、Prompt、Skill、Rule 和预设短语
 - 配置、数据迁移、健康检查和轻量页面
 
-首个官方案例随 `determinflow-plugins` 一起发布：
+首个官方案例随 [`determinflow-plugins`](https://github.com/alikon-art/determinflow-plugins) 一起发布：
 
 | Plugin | 用它展示什么 |
 |---|---|
