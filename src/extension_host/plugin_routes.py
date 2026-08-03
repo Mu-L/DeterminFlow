@@ -40,6 +40,12 @@ class ConfigRequest(BaseModel):
     settings: dict[str, Any]
 
 
+class PluginSourceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    url: str = Field(min_length=1, max_length=4096)
+    ref: str = Field(default="HEAD", min_length=1, max_length=512)
+
+
 def _management(request: Request):
     return request.app.state.extension_manager.plugin_management
 
@@ -107,11 +113,74 @@ async def list_plugins(request: Request):
 
 
 @router.get("/catalog")
-async def list_plugin_catalog(request: Request):
+async def list_plugin_catalog(request: Request, refresh: bool = False):
     try:
         return await run_in_threadpool(
-            _management(request).catalog_response
+            _management(request).catalog_response,
+            refresh=refresh,
         )
+    except Exception as exc:
+        _raise_http_error(exc)
+
+
+@router.get("/sources")
+async def list_plugin_sources(request: Request):
+    try:
+        return _management(request).sources_response()
+    except Exception as exc:
+        _raise_http_error(exc)
+
+
+@router.post(
+    "/sources",
+    dependencies=[Depends(require_plugin_write_access)],
+)
+async def create_plugin_source(
+    payload: PluginSourceRequest,
+    request: Request,
+):
+    manager = _management(request)
+    try:
+        return await run_in_threadpool(
+            manager.create_source,
+            name=payload.name,
+            url=payload.url,
+            ref=payload.ref,
+        )
+    except Exception as exc:
+        _raise_http_error(exc)
+
+
+@router.put(
+    "/sources/{source_id}",
+    dependencies=[Depends(require_plugin_write_access)],
+)
+async def update_plugin_source(
+    source_id: str,
+    payload: PluginSourceRequest,
+    request: Request,
+):
+    manager = _management(request)
+    try:
+        return await run_in_threadpool(
+            manager.update_source,
+            source_id,
+            name=payload.name,
+            url=payload.url,
+            ref=payload.ref,
+        )
+    except Exception as exc:
+        _raise_http_error(exc)
+
+
+@router.delete(
+    "/sources/{source_id}",
+    dependencies=[Depends(require_plugin_write_access)],
+)
+async def delete_plugin_source(source_id: str, request: Request):
+    manager = _management(request)
+    try:
+        return await run_in_threadpool(manager.delete_source, source_id)
     except Exception as exc:
         _raise_http_error(exc)
 

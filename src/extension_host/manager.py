@@ -140,7 +140,9 @@ class ExtensionManager:
             self.plugin_store = PluginStore(
                 self.plugins_dir,
                 official_sources=(
-                    source.url for source in self.plugin_sources
+                    source.url
+                    for source in self.plugin_sources
+                    if source.kind == "official"
                 ),
             )
         self._applied_plugin_records = self.plugin_store.apply_pending()

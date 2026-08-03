@@ -814,3 +814,64 @@ def test_remote_plugin_writes_require_valid_admin_token(
         json=payload,
     )
     assert installed.status_code == 200
+
+
+def test_plugin_source_routes_persist_custom_repository_and_refresh_catalog(
+    tmp_path: Path,
+    admin_headers: dict[str, str],
+):
+    repo = _create_repo(tmp_path)
+    (repo / "plugin-repository.toml").write_text(
+        """
+schema_version = "1"
+
+[[plugins]]
+id = "demo-plugin"
+subdirectory = ""
+""",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "plugin-repository.toml")
+    _git(repo, "commit", "-m", "add catalog")
+    base_dir = tmp_path / "core"
+    store = PluginStore(tmp_path / "runtime" / "plugins")
+    client = TestClient(create_app(_manager(base_dir, store)))
+
+    assert client.get("/api/plugins/sources").json()["sources"] == []
+    denied = client.post(
+        "/api/plugins/sources",
+        json={"name": "Team Plugins", "url": str(repo), "ref": "main"},
+    )
+    assert denied.status_code == 401
+
+    created = client.post(
+        "/api/plugins/sources",
+        headers=admin_headers,
+        json={"name": "Team Plugins", "url": str(repo), "ref": "main"},
+    )
+    assert created.status_code == 200
+    body = created.json()
+    source_id = body["source"]["id"]
+    assert body["source"]["kind"] == "custom"
+    assert body["catalog"]["plugins"][0]["name"] == "Demo Plugin"
+    persisted = json.loads(
+        (base_dir / "config" / "plugin-sources.json").read_text(
+            encoding="utf-8",
+        )
+    )
+    assert persisted["custom_sources"][0]["id"] == source_id
+
+    updated = client.put(
+        f"/api/plugins/sources/{source_id}",
+        headers=admin_headers,
+        json={"name": "Team Stable", "url": str(repo), "ref": "main"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["source"]["name"] == "Team Stable"
+
+    deleted = client.delete(
+        f"/api/plugins/sources/{source_id}",
+        headers=admin_headers,
+    )
+    assert deleted.status_code == 200
+    assert client.get("/api/plugins/sources").json()["sources"] == []

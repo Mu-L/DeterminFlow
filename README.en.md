@@ -198,18 +198,36 @@ checkpoint recovery. Plugins are the best way to package and deliver a complete 
 
 ## Quick start 🚀
 
-Python 3.11 is required.
+Python 3.11+, Node.js 22.12+, and npm are required. Choose the commands for your system.
+
+### macOS / Linux
 
 ```bash
 git clone https://github.com/alikon-art/DeterminFlow.git
 cd DeterminFlow
-python3.11 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.lock
 cp .env.example .env
-# Add the API key for your default model to .env
-DETERMINFLOW_EXTENSIONS=none python run.py
+cp config/models_config.example.json config/models_config.json
+python run.py
 ```
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/alikon-art/DeterminFlow.git
+Set-Location DeterminFlow
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+Copy-Item .env.example .env
+Copy-Item config\models_config.example.json config\models_config.json
+.\.venv\Scripts\python.exe run.py
+```
+
+You can start first and enter the API key on the Settings page. Alternatively, set
+`DEEPSEEK_API_KEY` in `.env`; the model configuration reads it through
+`${DEEPSEEK_API_KEY}`.
 
 Then open:
 

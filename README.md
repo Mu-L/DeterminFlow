@@ -188,18 +188,35 @@ SSE Job、PostgreSQL 迁移和断点恢复。Plugin 是你打包交付一套完�
 
 ## 快速开始 🚀
 
-要求 Python 3.11。
+要求 Python 3.11+、Node.js 22.12+ 和 npm。根据你的系统选择一组命令。
+
+### macOS / Linux
 
 ```bash
 git clone https://github.com/alikon-art/DeterminFlow.git
 cd DeterminFlow
-python3.11 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.lock
 cp .env.example .env
-# 在 .env 中填写默认模型所需的 API Key
-DETERMINFLOW_EXTENSIONS=none python run.py
+cp config/models_config.example.json config/models_config.json
+python run.py
 ```
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/alikon-art/DeterminFlow.git
+Set-Location DeterminFlow
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+Copy-Item .env.example .env
+Copy-Item config\models_config.example.json config\models_config.json
+.\.venv\Scripts\python.exe run.py
+```
+
+可以先启动再到设置页面填写 API Key；也可以在 `.env` 中填写
+`DEEPSEEK_API_KEY`，模型配置通过 `${DEEPSEEK_API_KEY}` 读取它。
 
 启动后可以访问：
 

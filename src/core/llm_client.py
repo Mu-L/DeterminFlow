@@ -19,6 +19,10 @@ import warnings
 logger = logging.getLogger(__name__)
 
 
+class ModelCredentialNotConfiguredError(ValueError):
+    """The selected model provider has no usable API credential."""
+
+
 # ============================================================
 # Monkey Patch 版本兼容性检查
 # ============================================================
@@ -136,7 +140,10 @@ def _resolve_provider_config(
         raise ValueError(f"Provider {provider_id} not found")
     api_key = provider_config.get("api_key", "")
     if not api_key:
-        raise ValueError(f"Provider {provider_id} 的 api_key 未配置，请在模型配置中设置")
+        raise ModelCredentialNotConfiguredError(
+            f"Provider {provider_id} 的 api_key 未配置；"
+            "请在模型设置页面填写，或在 models_config.json 中引用环境变量"
+        )
     return provider_id, model_name, api_key, provider_config["base_url"], provider_config
 
 
@@ -433,6 +440,50 @@ def _wrap_llm_with_retry(llm: ChatOpenAI, retry_config: dict) -> ChatOpenAI:
     return llm
 
 
+class DeferredChatModel:
+    """Delay model construction until a request needs the provider credential."""
+
+    def __init__(
+        self,
+        factory_options: dict[str, Any],
+        *,
+        tools: list[Any] | None = None,
+        bind_options: dict[str, Any] | None = None,
+    ) -> None:
+        self._factory_options = dict(factory_options)
+        self._tools = list(tools) if tools is not None else None
+        self._bind_options = dict(bind_options or {})
+        self._delegate: Any = None
+
+    def bind_tools(self, tools: list[Any], **kwargs) -> "DeferredChatModel":
+        return DeferredChatModel(
+            self._factory_options,
+            tools=tools,
+            bind_options=kwargs,
+        )
+
+    def _resolve(self) -> Any:
+        if self._delegate is None:
+            delegate = create_llm(**self._factory_options)
+            if self._tools is not None:
+                delegate = delegate.bind_tools(self._tools, **self._bind_options)
+            self._delegate = delegate
+        return self._delegate
+
+    def invoke(self, *args, **kwargs):
+        return self._resolve().invoke(*args, **kwargs)
+
+    async def ainvoke(self, *args, **kwargs):
+        return await self._resolve().ainvoke(*args, **kwargs)
+
+    def stream(self, *args, **kwargs):
+        yield from self._resolve().stream(*args, **kwargs)
+
+    async def astream(self, *args, **kwargs):
+        async for chunk in self._resolve().astream(*args, **kwargs):
+            yield chunk
+
+
 def create_llm(
     model_override: str | None = None,
     model: str | None = None,
@@ -497,3 +548,27 @@ def create_llm(
         f"streaming={streaming}"
     )
     return llm
+
+
+def create_startup_llm(
+    model_override: str | None = None,
+    model: str | None = None,
+    streaming: bool = True,
+    model_params: dict | None = None,
+    **kwargs,
+) -> ChatOpenAI | DeferredChatModel:
+    """Create the startup model, deferring only missing-credential failures."""
+    options = {
+        "model_override": model_override,
+        "model": model,
+        "streaming": streaming,
+        "model_params": model_params,
+        **kwargs,
+    }
+    try:
+        return create_llm(**options)
+    except ModelCredentialNotConfiguredError:
+        logger.warning(
+            "模型凭据尚未配置，服务将继续启动；可在模型设置页面完成配置"
+        )
+        return DeferredChatModel(options)

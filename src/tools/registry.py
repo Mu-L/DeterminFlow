@@ -653,6 +653,15 @@ def register_all_tool_factories(registry: ToolRegistry, *,
         create_get_task_status_tool,
         create_stop_task_tool,
     )
+    from src.workflow.main_result_tools import (
+        create_get_task_result_tool,
+        create_read_task_artifact_tool,
+        create_get_node_messages_tool,
+    )
+    from src.workflow.main_node_control_tools import (
+        create_retry_node_tool,
+        create_skip_node_tool,
+    )
     sm = session_manager  # 从函数参数获取
 
     # 通用单参数工厂：仅需 workflow_manager
@@ -701,6 +710,11 @@ def register_all_tool_factories(registry: ToolRegistry, *,
         create_list_tasks_tool,
         create_get_task_status_tool,
         create_stop_task_tool,
+        create_get_task_result_tool,
+        create_read_task_artifact_tool,
+        create_get_node_messages_tool,
+        create_retry_node_tool,
+        create_skip_node_tool,
     ]
     for creator in binding_tool_creators:
         tool_instance = creator(wf_mgr, sm)

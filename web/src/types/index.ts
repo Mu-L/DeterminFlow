@@ -700,6 +700,7 @@ export interface WorkflowTask {
   run_id: string | null;
   main_session_id?: string | null;  // 预启动时创建的 main session ID
   created_at: string;
+  updated_at?: string;
   started_at: string | null;
   completed_at: string | null;
   node_states: Record<string, NodeExecutionInfo>;
@@ -708,6 +709,9 @@ export interface WorkflowTask {
   disabled_node_ids?: string[];  // 任务创建时被取消勾选的节点ID
   scheme_id?: string | null;  // 任务来源执行方案 ID
   workspace_override?: string | null;  // 用户指定的工作空间覆盖路径（空则使用默认路径）
+  workspace_mode?: "task_isolated" | "named_shared" | "legacy_shared";
+  workspace_ref?: string | null;
+  progress?: { completed: number; total: number };
   workflow_name?: string;  // 仅全局任务历史接口附带
 }
 
@@ -833,11 +837,24 @@ export interface WfTaskUpdateEvent {
   type: "wf_task_update";
   workflow_id: string;
   task_id: string;
-  status: string;
+  status: WorkflowTask["status"];
   current_node_id: string | null;
   node_states: Record<string, NodeExecutionInfo>;
   started_at: string | null;
   completed_at: string | null;
+  created_at?: string;
+  updated_at?: string;
+  name?: string;
+  main_session_id?: string | null;
+  workspace_mode?: "task_isolated" | "named_shared" | "legacy_shared";
+  workspace_ref?: string | null;
+  progress?: { completed: number; total: number };
+}
+
+/** Chat Main 会话通道中的后台工作流任务更新。 */
+export interface WorkflowTaskUpdateEvent extends Omit<WfTaskUpdateEvent, "type"> {
+  type: "workflow_task_update";
+  session_id: string;
 }
 
 /** 审批节点文件信息 */

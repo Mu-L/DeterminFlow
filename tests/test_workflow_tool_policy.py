@@ -60,16 +60,16 @@ class _ToolPolicyManager:
     def create_and_attach_task_for_session(self, **kwargs):
         return self._called("create_and_attach_task_for_session")
 
-    def list_tasks(self, *args, **kwargs):
-        self._called("list_tasks")
+    def list_all_tasks(self, *args, **kwargs):
+        self._called("list_all_tasks")
         return {"tasks": [], "total": 0}
 
     def get_task(self, *args, **kwargs):
-        self._called("get_task")
         return {
             "name": "task",
             "status": "running",
             "node_states": {},
+            "main_session_id": "session-1",
         }
 
     async def stop_task(self, *args, **kwargs):
@@ -124,7 +124,12 @@ def test_every_workflow_agent_tool_denies_internal_only_before_action_call():
         (create_start_workflow_task_tool(manager, sessions), {}),
         (
             create_approve_node_tool(manager, sessions),
-            {"node_id": "node-1", "approved": True, "feedback": ""},
+            {
+                "node_id": "node-1",
+                "approved": True,
+                "feedback": "",
+                "expected_attempt_count": 1,
+            },
         ),
         (
             create_list_tasks_tool(manager, sessions),
@@ -164,7 +169,12 @@ def test_public_workflow_agent_actions_keep_reaching_manager():
         (create_start_workflow_task_tool(manager, sessions), {}),
         (
             create_approve_node_tool(manager, sessions),
-            {"node_id": "node-1", "approved": True, "feedback": ""},
+            {
+                "node_id": "node-1",
+                "approved": True,
+                "feedback": "",
+                "expected_attempt_count": 1,
+            },
         ),
         (
             create_list_tasks_tool(manager, sessions),
@@ -188,8 +198,7 @@ def test_public_workflow_agent_actions_keep_reaching_manager():
         "set_workflow_variable",
         "start_pre_running_task",
         "approve_node",
-        "list_tasks",
-        "get_task",
+        "list_all_tasks",
         "stop_task",
     ]
 

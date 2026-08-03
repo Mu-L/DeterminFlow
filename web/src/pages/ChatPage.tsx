@@ -43,22 +43,48 @@ import { ConversationTimeline } from "../components/conversation";
 import ApprovalPanel from "../components/ApprovalPanel";
 import ResizableSidePanel from "../components/ResizableSidePanel";
 import MonitoringCard from "../components/MonitoringCard";
+import ChatWorkflowTasks, { upsertWorkflowTask } from "../components/workflow/ChatWorkflowTasks";
 
 import {
   fetchSessionDetail, fetchSessionSystemPrompt, deleteSession, killSession,
   abortSession, compressSession, createNewMainSession,
   fetchPresetPhrases, createPresetPhrase, updatePresetPhrase, deletePresetPhrase,
+  listAllTasks,
 } from "../lib/api";
-import type { Message, NotificationData, SessionDetail, PresetPhrase } from "../types";
+import { patchSearchParams } from "../hooks/useUrlParam";
+import type {
+  Message, NotificationData, SessionDetail, PresetPhrase,
+  WorkflowTask, WorkflowTaskUpdateEvent,
+} from "../types";
 
 export default function ChatPage() {
   const { sessions, mainSessionId, loadSessions } = useSessions();
   const [viewingSessionId, setViewingSessionId] = useUrlParam("session_id");
   const targetSessionId = viewingSessionId || mainSessionId;
+  const workflowTaskSessionId = sessions.find(
+    (session) => session.session_id === targetSessionId && session.type === "main",
+  )?.session_id || null;
+  const [workflowTasks, setWorkflowTasks] = useState<WorkflowTask[]>([]);
+  const [workflowTasksLoading, setWorkflowTasksLoading] = useState(false);
   const [notificationMessages, setNotificationMessages] = useState<Message[]>([]);
   const handleExtraConversationEvent = useCallback((rawEvent: unknown) => {
-    if (targetSessionId !== mainSessionId || !rawEvent || typeof rawEvent !== "object") return;
-    const event = rawEvent as { type?: string; data?: NotificationData };
+    if (!rawEvent || typeof rawEvent !== "object") return;
+    const event = rawEvent as {
+      type?: string;
+      data?: NotificationData;
+      session_id?: string;
+    };
+    if (
+      event.type === "workflow_task_update" &&
+      event.session_id === workflowTaskSessionId
+    ) {
+      setWorkflowTasks((current) => upsertWorkflowTask(
+        current,
+        event as WorkflowTaskUpdateEvent,
+      ));
+      return;
+    }
+    if (targetSessionId !== mainSessionId) return;
     if (event.type !== "notification" || !event.data) return;
     const notification = event.data;
     setNotificationMessages((current) => [
@@ -73,7 +99,7 @@ export default function ChatPage() {
           `\n\n${notification.content}`,
       },
     ]);
-  }, [mainSessionId, targetSessionId]);
+  }, [mainSessionId, targetSessionId, workflowTaskSessionId]);
   const {
     messages,
     streamingSegments,
@@ -144,6 +170,52 @@ export default function ChatPage() {
   useEffect(() => {
     setNotificationMessages([]);
   }, [targetSessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setWorkflowTasks([]);
+    if (!workflowTaskSessionId) {
+      setWorkflowTasksLoading(false);
+      return;
+    }
+    setWorkflowTasksLoading(true);
+    listAllTasks({
+      main_session_id: workflowTaskSessionId,
+      page_size: 20,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    })
+      .then((result) => {
+        if (!cancelled) {
+          setWorkflowTasks((current) => result.tasks.reduce(
+            (tasks, task) => upsertWorkflowTask(tasks, task),
+            current,
+          ));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setWorkflowTasks([]);
+      })
+      .finally(() => {
+        if (!cancelled) setWorkflowTasksLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [connected, workflowTaskSessionId]);
+
+  const handleOpenWorkflowTask = useCallback((task: WorkflowTask) => {
+    const search = patchSearchParams(window.location.search, {
+      tab: "workflow",
+      workflow_id: task.workflow_id,
+      task_id: task.task_id,
+      node_id: null,
+    });
+    window.history.pushState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${search}${window.location.hash}`,
+    );
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, []);
 
   // REST 只作为握手前的历史兜底；replaceMessages 会拒绝覆盖已到达的权威 snapshot。
   useEffect(() => {
@@ -433,6 +505,12 @@ export default function ChatPage() {
           onApprove={handleApprove}
           onReject={handleReject}
           onClearResolved={clearResolved}
+        />
+
+        <ChatWorkflowTasks
+          tasks={workflowTasks}
+          loading={workflowTasksLoading}
+          onOpenTask={handleOpenWorkflowTask}
         />
 
         <ConversationTimeline

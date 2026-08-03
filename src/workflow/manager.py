@@ -589,6 +589,7 @@ class WorkflowManager(
         task.current_node_id = None
         task.run_id = None
         self._save_task(task)
+        self._push_task_update(workflow_id, task)
 
         # 异步启动
         coro = asyncio.create_task(
@@ -622,6 +623,17 @@ class WorkflowManager(
             coro = self._running_tasks.get(task_id)
             if coro is None:
                 task = self._load_task(workflow_id, task_id)
+                if task and task.status == "pre_running":
+                    task.status = "stopped"
+                    task.current_node_id = None
+                    task.completed_at = _now_iso()
+                    self._save_task(task)
+                    self._push_task_update(workflow_id, task)
+                    return {
+                        "success": True,
+                        "message": "预启动任务已停止",
+                        "task_id": task_id,
+                    }
                 if task and task.status == "pending":
                     self._get_task_path(workflow_id, task_id).unlink(missing_ok=True)
                     logger.info("未启动任务已丢弃: %s", task_id)
@@ -637,6 +649,7 @@ class WorkflowManager(
                     task.current_node_id = None
                     task.completed_at = _now_iso()
                     self._save_task(task)
+                    self._push_task_update(workflow_id, task)
                     logger.info(
                         "无本地执行器的任务已停止: %s (工作流: %s)",
                         task_id,
@@ -669,6 +682,7 @@ class WorkflowManager(
                 task.status = "stopped"
                 task.completed_at = _now_iso()
                 self._save_task(task)
+                self._push_task_update(workflow_id, task)
 
             logger.info(f"任务已停止: {task_id} (工作流: {workflow_id})")
             return {"success": True, "message": "任务已停止", "task_id": task_id}
@@ -689,12 +703,14 @@ class WorkflowManager(
             task.status = "stopped"
             task.completed_at = _now_iso()
             self._save_task(task)
+            self._push_task_update(workflow_id, task)
             raise
         except Exception:
             logger.exception(f"任务 {task_id} (工作流 {workflow_id}) 运行异常")
             task.status = "failed"
             task.completed_at = _now_iso()
             self._save_task(task)
+            self._push_task_update(workflow_id, task)
         finally:
             self._running_tasks.pop(task_id, None)
             if result_task is not None and result_task.status == "retry_waiting":
@@ -714,6 +730,7 @@ class WorkflowManager(
 
     def _save_task(self, task: WorkflowTask):
         """持久化任务状态（原子写入，防崩溃损坏）。"""
+        task.updated_at = _now_iso()
         task_file = self._get_task_path(task.workflow_id, task.task_id)
         task_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_file = task_file.with_suffix(".tmp")
@@ -723,6 +740,12 @@ class WorkflowManager(
         except (IOError, OSError):
             logger.exception(f"任务状态持久化失败: {task_file}")
             raise
+
+    def _push_task_update(self, workflow_id: str, task: WorkflowTask) -> None:
+        """在引擎已初始化时推送任务快照，保留轻量测试与迁移兼容性。"""
+        engine = getattr(self, "_engine", None)
+        if engine is not None:
+            engine._push_wf_task_update(workflow_id, task)
 
     def _load_task(self, workflow_id: str, task_id: str) -> WorkflowTask | None:
         """从磁盘加载任务。"""
@@ -896,6 +919,7 @@ class WorkflowManager(
         task.status = "running"
         task.started_at = _now_iso()
         self._save_task(task)
+        self._push_task_update(workflow_id, task)
 
         # 使用已有的 main session
         pre_created_session_id = task.main_session_id
@@ -921,22 +945,65 @@ class WorkflowManager(
             self._save_task(result_task)
         except asyncio.CancelledError:
             task.status = "stopped"; task.completed_at = _now_iso(); self._save_task(task)
+            self._push_task_update(workflow_id, task)
             raise
         except Exception:
             logger.exception(f"任务 {task_id} 运行异常")
             task.status = "failed"; task.completed_at = _now_iso(); self._save_task(task)
+            self._push_task_update(workflow_id, task)
         finally:
             self._running_tasks.pop(task_id, None)
             if result_task is not None and result_task.status == "retry_waiting":
                 self._schedule_retry_for_task(result_task)
 
     def approve_node(self, workflow_id: str, task_id: str,
-                      node_id: str, approved: bool, feedback: str = "") -> dict:
+                      node_id: str, approved: bool, feedback: str = "",
+                      expected_attempt_count: int | None = None) -> dict:
         """审批节点完成结果。由 approve_node 工具调用。"""
         if not self.is_workflow_owner_enabled(workflow_id):
             return self._workflow_read_only_result(workflow_id)
+        if expected_attempt_count is not None:
+            task = self._load_task(workflow_id, task_id)
+            if task is None:
+                return {
+                    "success": False,
+                    "error": "task_not_found",
+                    "message": f"任务 {task_id} 不存在",
+                    "workflow_id": workflow_id,
+                    "task_id": task_id,
+                    "node_id": node_id,
+                }
+            state = task.node_states.get(node_id)
+            if state is None:
+                return {
+                    "success": False,
+                    "error": "node_not_found",
+                    "message": f"任务中不存在节点 {node_id}",
+                    "workflow_id": workflow_id,
+                    "task_id": task_id,
+                    "node_id": node_id,
+                }
+            if state.attempt_count != expected_attempt_count:
+                return {
+                    "success": False,
+                    "error": "node_control_stale",
+                    "message": (
+                        f"节点 attempt_count 已变为 {state.attempt_count}，"
+                        f"请求值为 {expected_attempt_count}"
+                    ),
+                    "workflow_id": workflow_id,
+                    "task_id": task_id,
+                    "node_id": node_id,
+                    "attempt_count": state.attempt_count,
+                }
         engine = self._engine
-        return engine.resolve_approval(
+        result = engine.resolve_approval(
             workflow_id=workflow_id, task_id=task_id,
             node_id=node_id, approved=approved, feedback=feedback,
         )
+        return {
+            **result,
+            "workflow_id": workflow_id,
+            "task_id": task_id,
+            "node_id": node_id,
+        }

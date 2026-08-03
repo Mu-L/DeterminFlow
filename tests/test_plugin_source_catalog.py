@@ -5,11 +5,14 @@ import subprocess
 import threading
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.extension_host.manager import ExtensionManager
 from src.extension_host.source_config import (
     PluginCatalogService,
+    PluginSourceConfig,
+    PluginSourceStore,
     fetch_plugin_catalog,
     load_plugin_sources,
 )
@@ -43,6 +46,20 @@ def _repository(tmp_path: Path, *, subdirectory: str = "plugins/demo-plugin") ->
         ]),
         encoding="utf-8",
     )
+    plugin_dir = repository / subdirectory
+    if ".." not in Path(subdirectory).parts and "\\" not in subdirectory:
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "extension.toml").write_text(
+            """
+[extension]
+id = "demo-plugin"
+name = "Demo Plugin"
+version = "1.2.3"
+description = "Catalog metadata"
+api_version = "1"
+""",
+            encoding="utf-8",
+        )
     _git(repository, "add", ".")
     _git(repository, "commit", "-m", "catalog")
     return repository
@@ -78,9 +95,15 @@ def test_fetches_official_repository_index_and_exposes_catalog_route(
     assert len(catalog["sources"][0]["resolved_commit"]) == 40
     assert catalog["plugins"] == [{
         "id": "demo-plugin",
+        "name": "Demo Plugin",
+        "version": "1.2.3",
+        "description": "Catalog metadata",
+        "source_id": catalog["sources"][0]["id"],
         "source_name": "Local Official",
         "source": repository.resolve().as_uri(),
+        "source_kind": "official",
         "ref": "main",
+        "resolved_commit": catalog["sources"][0]["resolved_commit"],
         "subdirectory": "plugins/demo-plugin",
     }]
 
@@ -187,6 +210,76 @@ def test_catalog_service_uses_frozen_canonical_source_snapshot(
     assert catalog["sources"][0]["name"] == "Local Official"
     assert catalog["sources"][0]["url"] == repository.resolve().as_uri()
     assert catalog["plugins"][0]["source"] == repository.resolve().as_uri()
+
+
+def test_custom_source_store_persists_crud_and_preserves_official_source(
+    tmp_path: Path,
+):
+    official_repository = _repository(tmp_path)
+    source_file = _source_file(tmp_path, official_repository)
+    custom_repository = tmp_path / "custom-repository"
+    custom_repository.mkdir()
+    _git(custom_repository, "init", "-b", "main")
+
+    store = PluginSourceStore(source_file)
+    created = store.create(
+        name="Team Plugins",
+        url=str(custom_repository),
+        ref="main",
+    )
+
+    assert created.kind == "custom"
+    assert created.builtin is False
+    persisted = load_plugin_sources(source_file)
+    assert [source.kind for source in persisted] == ["official", "custom"]
+    assert persisted[1].url == custom_repository.resolve().as_uri()
+
+    updated = store.update(created.id, name="Team Stable", ref="stable")
+    assert updated.name == "Team Stable"
+    assert updated.ref == "stable"
+    assert store.delete(created.id).id == created.id
+    assert [source.kind for source in store.list()] == ["official"]
+
+
+def test_custom_source_store_rejects_builtin_mutation_and_duplicate_url(
+    tmp_path: Path,
+):
+    repository = _repository(tmp_path)
+    source_file = _source_file(tmp_path, repository)
+    store = PluginSourceStore(source_file)
+    official = store.list()[0]
+
+    with pytest.raises(ValueError, match="内置官方"):
+        store.delete(official.id)
+    with pytest.raises(ValueError, match="已存在"):
+        store.create(name="Duplicate", url=str(repository), ref="main")
+
+
+def test_catalog_service_replaces_sources_and_forces_refresh(monkeypatch):
+    seen: list[tuple[str, ...]] = []
+
+    def fetch(sources):
+        names = tuple(source.name for source in sources)
+        seen.append(names)
+        return {"sources": [], "plugins": []}
+
+    monkeypatch.setattr(
+        "src.extension_host.source_config.fetch_plugin_catalog",
+        fetch,
+    )
+    service = PluginCatalogService(())
+    service.get()
+    service.replace_sources((
+        PluginSourceConfig(
+            id="custom-12345678",
+            name="Custom",
+            url="https://example.invalid/plugins.git",
+            kind="custom",
+        ),
+    ))
+    service.get(refresh=True)
+
+    assert seen == [(), ("Custom",)]
 
 
 def test_source_config_rejects_inline_http_credentials(tmp_path: Path):

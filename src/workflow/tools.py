@@ -1,18 +1,9 @@
 """
 Workflow 专用工具 — 供 main agent（chat main 和 workflow main）使用。
 
-已有工具（3 个）：
-1. set_workflow_variable  — 修改变量值 + 推送 WebSocket 事件到前端
-2. start_workflow_task     — 触发 engine 执行任务
-3. approve_node           — 审批节点完成（通过/拒绝）
-
-新增工具（6 个，chat main 可用的查询/操作工具）：
-4. list_workflows         — 列出所有工作流定义
-5. get_workflow           — 获取单个工作流详情
-6. create_and_attach_task — 创建 pre_running 任务并绑定到当前 chat session
-7. list_tasks             — 列出工作流任务历史（支持状态/搜索/分页）
-8. get_task_status        — 获取单个任务执行状态
-9. stop_task              — 停止运行中的任务
+所有任务控制工具接受显式 ``workflow_id + task_id``。两者同时省略时，
+才回退到会话记录的最近任务；只提供其中一个会稳定失败，避免串任务。
+任务的 ``main_session_id`` 是所有权事实来源。
 """
 from __future__ import annotations
 
@@ -118,18 +109,86 @@ def _ensure_tool_execution_allowed(
     return None
 
 
-def _require_binding(session_manager, action_desc: str) -> tuple[str, str, str | None]:
-    """从 session 读取 workflow/task 绑定，未绑定时返回错误 JSON。
+def _current_session_id() -> str:
+    return get_session_context().get("session_id", "")
 
-    Returns:
-        (workflow_id, task_id, error_json_or_None)
-        若 error_json_or_None 不为 None，调用方应直接返回该 JSON。
-    """
+
+def _resolve_task_ref(
+    session_manager,
+    workflow_id: str,
+    task_id: str,
+    action_desc: str,
+) -> tuple[str, str, str | None]:
+    """解析显式 TaskRef；两项都省略时兼容最近任务绑定。"""
+    if bool(workflow_id) != bool(task_id):
+        return "", "", _fail(
+            "workflow_id 与 task_id 必须同时提供或同时省略",
+            error="task_ref_incomplete",
+        )
+    if workflow_id and task_id:
+        return workflow_id, task_id, None
+
     binding = _get_workflow_binding(session_manager)
-    wid, tid = binding["workflow_id"], binding["task_id"]
-    if not wid or not tid:
-        return "", "", _fail(f"当前会话未关联工作流任务，无法{action_desc}")
-    return wid, tid, None
+    workflow_id = binding["workflow_id"]
+    task_id = binding["task_id"]
+    if not workflow_id or not task_id:
+        return "", "", _fail(
+            f"当前会话没有最近任务，无法{action_desc}；请提供 workflow_id 与 task_id",
+            error="task_ref_required",
+        )
+    return workflow_id, task_id, None
+
+
+def _ensure_task_owned(
+    workflow_manager: "WorkflowManager",
+    workflow_id: str,
+    task_id: str,
+) -> tuple[dict | None, str | None]:
+    """校验当前 Main 对目标任务的持久化所有权。"""
+    session_id = _current_session_id()
+    if not session_id:
+        return None, _fail("无法获取当前会话 ID", error="session_context_missing")
+    try:
+        task = workflow_manager.get_task(workflow_id, task_id)
+    except Exception:
+        logger.exception("读取任务所有权失败: %s/%s", workflow_id, task_id)
+        return None, _fail(
+            "无法读取任务所有权",
+            error="task_ownership_unavailable",
+        )
+    if task is None:
+        return None, _fail(
+            f"任务 {task_id} 不存在",
+            error="task_not_found",
+            workflow_id=workflow_id,
+            task_id=task_id,
+        )
+    if task.get("main_session_id") != session_id:
+        return None, _fail(
+            "当前 Main 无权操作该任务",
+            error="task_not_owned",
+            workflow_id=workflow_id,
+            task_id=task_id,
+        )
+    return task, None
+
+
+def _task_progress_from_dict(task: dict) -> dict:
+    definition = task.get("snapshot_definition") or {}
+    disabled = set(task.get("disabled_node_ids") or [])
+    executable_ids = {
+        node.get("id")
+        for node in definition.get("nodes", [])
+        if node.get("id") and node.get("id") not in disabled
+    }
+    terminal_statuses = {"completed", "success", "skipped"}
+    states = task.get("node_states") or {}
+    completed = sum(
+        1
+        for node_id in executable_ids
+        if (states.get(node_id) or {}).get("status") in terminal_statuses
+    )
+    return {"completed": completed, "total": len(executable_ids)}
 
 
 # ============================================================
@@ -168,18 +227,26 @@ def _get_workflow_binding(session_manager) -> dict:
 
 class SetWorkflowVariableArgs(BaseModel):
     """set_workflow_variable 工具参数"""
+    workflow_id: str = Field(default="", description="工作流 ID；必须与 task_id 同时提供")
+    task_id: str = Field(default="", description="任务 ID；必须与 workflow_id 同时提供")
     key: str = Field(description="变量 key（全局变量定义中的唯一标识）")
     value: str = Field(description="变量值")
 
 
 class StartWorkflowTaskArgs(BaseModel):
-    """start_workflow_task 参数（无参数，占位）"""
-    pass
+    """start_workflow_task 参数"""
+    workflow_id: str = Field(default="", description="工作流 ID；必须与 task_id 同时提供")
+    task_id: str = Field(default="", description="任务 ID；必须与 workflow_id 同时提供")
 
 
 class ApproveNodeArgs(BaseModel):
     """approve_node 工具参数"""
+    workflow_id: str = Field(default="", description="工作流 ID；必须与 task_id 同时提供")
+    task_id: str = Field(default="", description="任务 ID；必须与 workflow_id 同时提供")
     node_id: str = Field(description="节点 ID")
+    expected_attempt_count: int = Field(
+        description="从最新任务状态读取的节点 attempt_count，用于阻止过期审批",
+    )
     approved: bool = Field(description="是否批准：true=通过，false=拒绝")
     feedback: str = Field(
         default="",
@@ -202,15 +269,26 @@ def create_set_workflow_variable_tool(
     使左侧表单实时更新。
     """
 
-    async def _set_workflow_variable(key: str, value: str) -> str:
-        ctx = get_session_context()
-        session_id = ctx.get("session_id", "")
-        workflow_id, task_id, err = _require_binding(session_manager, "修改变量")
+    async def _set_workflow_variable(
+        key: str,
+        value: str,
+        workflow_id: str = "",
+        task_id: str = "",
+    ) -> str:
+        session_id = _current_session_id()
+        workflow_id, task_id, err = _resolve_task_ref(
+            session_manager, workflow_id, task_id, "修改变量",
+        )
         if err:
             return err
         policy_error = _ensure_tool_execution_allowed(workflow_manager, workflow_id)
         if policy_error:
             return policy_error
+        _, ownership_error = _ensure_task_owned(
+            workflow_manager, workflow_id, task_id,
+        )
+        if ownership_error:
+            return ownership_error
 
         result = workflow_manager.set_workflow_variable(
             workflow_id=workflow_id,
@@ -224,7 +302,7 @@ def create_set_workflow_variable_tool(
     return StructuredTool(
         name="set_workflow_variable",
         description=(
-            "修改当前工作流任务的全局变量值。"
+            "修改 Main 所拥有任务的全局变量值。"
             "调用后用户左侧填参表单会实时更新。"
             "参数 key 对应变量定义中的唯一标识（如 repo_url, branch 等）。"
         ),
@@ -244,13 +322,23 @@ def create_start_workflow_task_tool(
     预启动阶段（pre_running）结束后，调用此工具进入正式执行。
     """
 
-    async def _start_workflow_task() -> str:
-        workflow_id, task_id, err = _require_binding(session_manager, "启动")
+    async def _start_workflow_task(
+        workflow_id: str = "",
+        task_id: str = "",
+    ) -> str:
+        workflow_id, task_id, err = _resolve_task_ref(
+            session_manager, workflow_id, task_id, "启动",
+        )
         if err:
             return err
         policy_error = _ensure_tool_execution_allowed(workflow_manager, workflow_id)
         if policy_error:
             return policy_error
+        _, ownership_error = _ensure_task_owned(
+            workflow_manager, workflow_id, task_id,
+        )
+        if ownership_error:
+            return ownership_error
 
         try:
             result = await workflow_manager.start_pre_running_task(
@@ -265,11 +353,11 @@ def create_start_workflow_task_tool(
     return StructuredTool(
         name="start_workflow_task",
         description=(
-            "正式启动工作流任务执行。"
+            "正式启动 Main 所拥有的工作流任务。"
             "调用此工具前请确保所有必要的全局变量已填写完毕。"
             "启动后，工作流将按节点顺序依次执行，每个节点完成后你需要审批其产出。"
         ),
-        args_schema=StartWorkflowTaskArgs,  # 无参数
+        args_schema=StartWorkflowTaskArgs,
         func=lambda **kw: None,
         coroutine=_start_workflow_task,
     )
@@ -286,13 +374,27 @@ def create_approve_node_tool(
     - 拒绝：引擎回滚到上一个节点，将拒绝原因发送给 sub agent 重新执行
     """
 
-    async def _approve_node(node_id: str, approved: bool, feedback: str = "") -> str:
-        workflow_id, task_id, err = _require_binding(session_manager, "审批")
+    async def _approve_node(
+        node_id: str,
+        approved: bool,
+        expected_attempt_count: int,
+        feedback: str = "",
+        workflow_id: str = "",
+        task_id: str = "",
+    ) -> str:
+        workflow_id, task_id, err = _resolve_task_ref(
+            session_manager, workflow_id, task_id, "审批",
+        )
         if err:
             return err
         policy_error = _ensure_tool_execution_allowed(workflow_manager, workflow_id)
         if policy_error:
             return policy_error
+        _, ownership_error = _ensure_task_owned(
+            workflow_manager, workflow_id, task_id,
+        )
+        if ownership_error:
+            return ownership_error
 
         result = workflow_manager.approve_node(
             workflow_id=workflow_id,
@@ -300,6 +402,7 @@ def create_approve_node_tool(
             node_id=node_id,
             approved=approved,
             feedback=feedback,
+            expected_attempt_count=expected_attempt_count,
         )
         return json.dumps(result, ensure_ascii=False)
 
@@ -308,7 +411,8 @@ def create_approve_node_tool(
         description=(
             "审批工作流节点的完成产出。"
             "当 sub agent 调用 complete_node_task 后，你会收到审批请求。"
-            "使用此工具批准（approved=true）或拒绝（approved=false）节点产出。"
+            "显式携带 workflow_id、task_id 和最新 expected_attempt_count，"
+            "批准（approved=true）或拒绝（approved=false）节点产出。"
             "拒绝时请提供 feedback，帮助节点改进产出；最多可拒绝 3 次。"
         ),
         args_schema=ApproveNodeArgs,
@@ -338,13 +442,29 @@ class CreateAndAttachTaskArgs(BaseModel):
         default=None,
         description="可选的参数值字典，key 对应变量定义中的唯一标识",
     )
+    scheme_id: str | None = Field(
+        default=None,
+        description="可选执行方案 ID；与 selected_node_ids 二选一",
+    )
+    selected_node_ids: list[str] | None = Field(
+        default=None,
+        description="可选的执行节点 ID 列表；优先于 scheme_id",
+    )
+    workspace_mode: str = Field(
+        default="task_isolated",
+        description="工作空间模式：task_isolated（默认）、named_shared 或 legacy_shared",
+    )
+    workspace_ref: str | None = Field(
+        default=None,
+        description="named_shared 模式使用的安全共享名称",
+    )
 
 
 class ListTasksArgs(BaseModel):
     """list_tasks 工具参数"""
     workflow_id: str = Field(
         default="",
-        description="工作流 ID。不传则使用当前已绑定工作流",
+        description="可选工作流 ID；不传则列出当前 Main 的全部任务",
     )
     status: str = Field(
         default="",
@@ -377,6 +497,29 @@ class StopTaskArgs(BaseModel):
     task_id: str = Field(
         default="",
         description="任务 ID。不传则使用当前已绑定任务",
+    )
+
+
+class GetTaskResultArgs(GetTaskStatusArgs):
+    """get_task_result 工具参数。"""
+
+
+class GetNodeMessagesArgs(GetTaskStatusArgs):
+    """get_node_messages 工具参数。"""
+    node_id: str = Field(description="节点 ID")
+
+
+class ReadTaskArtifactArgs(GetTaskStatusArgs):
+    """read_task_artifact 工具参数。"""
+    artifact_ref: str = Field(description="get_task_result 返回的 artifact_ref")
+    offset: int = Field(default=0, description="从第几个字符开始读取")
+    limit: int = Field(default=20_000, description="最多读取字符数，上限 50000")
+
+
+class NodeControlArgs(GetNodeMessagesArgs):
+    """retry_node / skip_node 工具参数。"""
+    expected_attempt_count: int = Field(
+        description="从最新任务状态读取的节点 attempt_count",
     )
 
 
@@ -498,7 +641,12 @@ def create_create_and_attach_task_tool(
     """创建 create_and_attach_task 工具 — 创建 pre_running 任务并绑定当前 session。"""
 
     async def _create_and_attach_task(
-        workflow_id: str, parameter_values: dict[str, str] | None = None,
+        workflow_id: str,
+        parameter_values: dict[str, str] | None = None,
+        scheme_id: str | None = None,
+        selected_node_ids: list[str] | None = None,
+        workspace_mode: str = "task_isolated",
+        workspace_ref: str | None = None,
     ) -> str:
         ctx = get_session_context()
         session_id = ctx.get("session_id", "")
@@ -515,6 +663,10 @@ def create_create_and_attach_task_tool(
                 workflow_id=workflow_id,
                 session_id=session_id,
                 parameter_values=parameter_values,
+                scheme_id=scheme_id,
+                selected_node_ids=selected_node_ids,
+                workspace_mode=workspace_mode,
+                workspace_ref=workspace_ref,
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:
@@ -524,11 +676,11 @@ def create_create_and_attach_task_tool(
     return StructuredTool(
         name="create_and_attach_task",
         description=(
-            "创建一个工作流任务并绑定到当前会话。"
+            "为当前 Main 创建一个可独立寻址的工作流任务。"
             "创建后任务处于预启动状态（pre_running），"
             "你可以用 set_workflow_variable 填充变量，确认无误后用 start_workflow_task 启动执行。"
-            "创建新任务会自动覆盖当前会话已有的工作流绑定。"
-            "参数 parameter_values 可传入初始变量值（可选）。"
+            "会话只把新任务记录为最近任务，不影响此前任务继续运行。"
+            "默认 task_isolated 工作空间；需要跨任务共享时显式使用 named_shared。"
         ),
         args_schema=CreateAndAttachTaskArgs,
         func=lambda **kw: None,
@@ -545,24 +697,39 @@ def create_list_tasks_tool(
     async def _list_tasks(
         workflow_id: str = "", status: str = "", limit: int = 20,
     ) -> str:
-        # 优先使用显式参数，否则从 session 对象读取绑定
-        if not workflow_id:
-            binding = _get_workflow_binding(session_manager)
-            workflow_id = binding["workflow_id"]
-        if not workflow_id:
-            return _fail("请提供 workflow_id 或先通过 create_and_attach_task 绑定工作流")
-        policy_error = _ensure_tool_execution_allowed(workflow_manager, workflow_id)
-        if policy_error:
-            return policy_error
+        session_id = _current_session_id()
+        if not session_id:
+            return _fail("无法获取当前会话 ID", error="session_context_missing")
+        if workflow_id:
+            policy_error = _ensure_tool_execution_allowed(
+                workflow_manager, workflow_id,
+            )
+            if policy_error:
+                return policy_error
 
         try:
-            result = workflow_manager.list_tasks(workflow_id, limit=limit, status=status)
+            result = workflow_manager.list_all_tasks(
+                workflow_id=workflow_id,
+                main_session_id=session_id,
+                status=status,
+                page_size=max(1, min(limit, 100)),
+            )
             tasks = result["tasks"] if isinstance(result, dict) else (result or [])
-            total = result.get("total", len(tasks)) if isinstance(result, dict) else len(tasks)
+            visible_tasks = []
+            for task in tasks:
+                task_workflow_id = task.get("workflow_id", "")
+                if not task_workflow_id:
+                    continue
+                _, task_policy_error = _load_tool_visible_workflow(
+                    workflow_manager, task_workflow_id,
+                )
+                if task_policy_error:
+                    continue
+                visible_tasks.append(task)
             return _ok(
                 workflow_id=workflow_id,
-                tasks=tasks,
-                total=total,
+                tasks=visible_tasks,
+                total=len(visible_tasks),
                 status_filter=status,
             )
         except Exception as e:
@@ -572,8 +739,8 @@ def create_list_tasks_tool(
     return StructuredTool(
         name="list_tasks",
         description=(
-            "列出指定工作流的任务历史记录，支持按状态过滤和条数限制。"
-            "workflow_id 不传则使用当前已绑定的工作流。"
+            "列出当前 Main 所拥有的工作流任务，支持按 workflow_id、状态和条数过滤。"
+            "workflow_id 不传时跨工作流列出，其他 Main 的任务不会返回。"
         ),
         args_schema=ListTasksArgs,
         func=lambda **kw: None,
@@ -588,29 +755,35 @@ def create_get_task_status_tool(
     """创建 get_task_status 工具 — 获取单个任务执行状态（含节点进度）。"""
 
     async def _get_task_status(workflow_id: str = "", task_id: str = "") -> str:
-        # 优先显式参数，否则从 session 对象读取绑定
-        if not workflow_id or not task_id:
-            binding = _get_workflow_binding(session_manager)
-            if not workflow_id:
-                workflow_id = binding["workflow_id"]
-            if not task_id:
-                task_id = binding["task_id"]
-        if not workflow_id or not task_id:
-            return _fail("请提供 workflow_id/task_id 或先通过 create_and_attach_task 绑定工作流")
+        workflow_id, task_id, ref_error = _resolve_task_ref(
+            session_manager, workflow_id, task_id, "查询状态",
+        )
+        if ref_error:
+            return ref_error
         policy_error = _ensure_tool_execution_allowed(workflow_manager, workflow_id)
         if policy_error:
             return policy_error
 
         try:
-            task = workflow_manager.get_task(workflow_id, task_id)
-            if not task:
-                return _fail(f"任务 {task_id} 不存在")
+            task, ownership_error = _ensure_task_owned(
+                workflow_manager, workflow_id, task_id,
+            )
+            if ownership_error:
+                return ownership_error
+            assert task is not None
 
             nodes_summary = {}
             for nid, ns in task.get("node_states", {}).items():
                 nodes_summary[nid] = {
                     "status": ns.get("status", "pending"),
                     "summary": ns.get("summary", ""),
+                    "error": ns.get("error", ""),
+                    "attempt_count": ns.get("attempt_count", 0),
+                    "automatic_retry_count": ns.get("automatic_retry_count", 0),
+                    "next_retry_at": ns.get("next_retry_at"),
+                    "available_actions": ns.get("available_actions", []),
+                    "started_at": ns.get("started_at"),
+                    "completed_at": ns.get("completed_at"),
                 }
             return _ok(
                 task_id=task_id,
@@ -618,9 +791,11 @@ def create_get_task_status_tool(
                 name=task.get("name", ""),
                 status=task.get("status", "unknown"),
                 current_node_id=task.get("current_node_id", ""),
+                progress=_task_progress_from_dict(task),
                 node_states=nodes_summary,
                 started_at=task.get("started_at", ""),
                 completed_at=task.get("completed_at", ""),
+                updated_at=task.get("updated_at", ""),
             )
         except Exception as e:
             logger.exception("get_task_status 失败")
@@ -629,8 +804,8 @@ def create_get_task_status_tool(
     return StructuredTool(
         name="get_task_status",
         description=(
-            "获取指定任务的最新执行状态，包括每个节点的状态和摘要。"
-            "workflow_id/task_id 不传则使用当前已绑定的工作流和任务。"
+            "获取当前 Main 所拥有任务的最新状态、节点进度、错误和可用恢复动作。"
+            "建议显式提供 workflow_id/task_id；两者都省略时使用最近任务。"
         ),
         args_schema=GetTaskStatusArgs,
         func=lambda **kw: None,
@@ -645,18 +820,19 @@ def create_stop_task_tool(
     """创建 stop_task 工具 — 停止运行中的任务。"""
 
     async def _stop_task(workflow_id: str = "", task_id: str = "") -> str:
-        # 优先显式参数，否则从 session 对象读取绑定
-        if not workflow_id or not task_id:
-            binding = _get_workflow_binding(session_manager)
-            if not workflow_id:
-                workflow_id = binding["workflow_id"]
-            if not task_id:
-                task_id = binding["task_id"]
-        if not workflow_id or not task_id:
-            return _fail("请提供 workflow_id/task_id 或先通过 create_and_attach_task 绑定工作流")
+        workflow_id, task_id, ref_error = _resolve_task_ref(
+            session_manager, workflow_id, task_id, "停止任务",
+        )
+        if ref_error:
+            return ref_error
         policy_error = _ensure_tool_execution_allowed(workflow_manager, workflow_id)
         if policy_error:
             return policy_error
+        _, ownership_error = _ensure_task_owned(
+            workflow_manager, workflow_id, task_id,
+        )
+        if ownership_error:
+            return ownership_error
 
         try:
             result = await workflow_manager.stop_task(workflow_id, task_id)
@@ -669,7 +845,7 @@ def create_stop_task_tool(
         name="stop_task",
         description=(
             "停止一个正在运行的工作流任务。"
-            "workflow_id/task_id 不传则使用当前已绑定的工作流和任务。"
+            "建议显式提供 workflow_id/task_id；两者都省略时使用最近任务。"
         ),
         args_schema=StopTaskArgs,
         func=lambda **kw: None,

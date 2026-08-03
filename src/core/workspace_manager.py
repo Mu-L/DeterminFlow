@@ -170,6 +170,44 @@ class WorkspaceManager:
         logger.info(f"Workflow workspace 已创建: {workflow_root}")
         return workflow_root
 
+    def create_main_task_workspace(
+        self,
+        session_id: str,
+        task_id: str,
+        *,
+        mode: str = "task_isolated",
+        workspace_ref: str | None = None,
+    ) -> Path:
+        """为 Chat Main 创建受控的工作流任务空间。
+
+        ``task_isolated`` 为默认模式，每个任务独立目录；``named_shared``
+        仅允许同一 Main 会话下通过安全名称显式共享。路径始终位于
+        ``data/workspaces/_main`` 下，调用方不能注入任意文件系统路径。
+        """
+        safe_session_id = self._sanitize_id(session_id)
+        safe_task_id = self._sanitize_id(task_id)
+        main_root = self.base_dir / "_main" / safe_session_id
+
+        if mode == "task_isolated":
+            workspace = main_root / "tasks" / safe_task_id
+        elif mode == "named_shared":
+            if not workspace_ref:
+                raise ValueError("named_shared 模式必须提供 workspace_ref")
+            safe_ref = self._sanitize_id(workspace_ref)
+            workspace = main_root / "shared" / safe_ref
+        else:
+            raise ValueError(f"不支持的 Main 任务工作空间模式: {mode}")
+
+        workspace.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Main task workspace 已创建: session=%s task=%s mode=%s path=%s",
+            safe_session_id,
+            safe_task_id,
+            mode,
+            workspace,
+        )
+        return workspace
+
     def get_workflow_shared_workspace(self, workflow_id: str) -> Path | None:
         """获取工作流共享 workspace 路径: base_dir/{workflow_id}"""
         workflow_id = self._sanitize_id(workflow_id)
@@ -204,6 +242,7 @@ class WorkspaceManager:
                     allowed_roots = (
                         config.BASE_DIR.resolve(),
                         config.DATA_DIR.resolve(),
+                        self.base_dir.resolve(),
                     )
                     if not any(
                         ws_path.is_relative_to(root)

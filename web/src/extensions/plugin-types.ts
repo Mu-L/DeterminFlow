@@ -107,17 +107,30 @@ export interface PluginListResponse {
 
 export interface PluginCatalogEntry {
   id: string;
+  name: string;
+  version: string;
+  description: string;
+  source_id: string;
   source_name: string;
   source: string;
+  source_kind: "official" | "custom";
   ref: string;
+  resolved_commit: string;
   subdirectory: string;
 }
 
-export interface PluginCatalogSource {
+export interface PluginRepositorySource {
+  id: string;
   name: string;
   url: string;
   ref: string;
-  resolved_commit?: string;
+  kind: "official" | "custom";
+  builtin: boolean;
+}
+
+export interface PluginCatalogSource extends PluginRepositorySource {
+  resolved_commit: string;
+  plugin_count: number;
   error: string;
 }
 
@@ -131,6 +144,22 @@ export interface PluginMutationResponse {
   plugin?: PluginRecord;
   restart_required: boolean;
   message?: string;
+}
+
+export interface PluginSourceListResponse {
+  sources: PluginRepositorySource[];
+  package_management_read_only: boolean;
+}
+
+export interface PluginSourceRequest {
+  name: string;
+  url: string;
+  ref: string;
+}
+
+export interface PluginSourceMutationResponse {
+  source: PluginRepositorySource;
+  catalog?: PluginCatalogResponse;
 }
 
 export interface InstallPluginRequest {

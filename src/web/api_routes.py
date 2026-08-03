@@ -2197,7 +2197,6 @@ class UpdateModelProviderRequest(BaseModel):
     name: str | None = None
     base_url: str | None = None
     api_key: str | None = None
-    api_key_env: str | None = None
     models: list[str] | None = None
     maxContextTokens: int | None = None
     models_config: dict[str, Any] | None = None
@@ -2209,7 +2208,6 @@ class AddModelProviderRequest(BaseModel):
     name: str
     base_url: str
     api_key: str = ""
-    api_key_env: str = ""
     models: list[str] = Field(default_factory=list)
     maxContextTokens: int = 128000
     models_config: dict[str, Any] = Field(default_factory=dict)
@@ -2228,14 +2226,8 @@ async def get_model_providers():
     masked_providers = {}
     for pid, pconfig in providers.items():
         masked = dict(pconfig)
-        if masked.get("api_key"):
-            key = masked["api_key"]
-            if len(key) > 8:
-                masked["api_key"] = key[:4] + "***" + key[-4:]
-            else:
-                masked["api_key"] = "***"
-        elif (model_manager.get_provider(pid) or {}).get("api_key"):
-            masked["api_key"] = "***"
+        resolved = model_manager.get_provider(pid) or {}
+        masked["api_key"] = "***" if resolved.get("api_key") else ""
         masked_providers[pid] = masked
 
     return {
@@ -2253,10 +2245,10 @@ async def update_model_provider(provider_id: str, body: UpdateModelProviderReque
 
     try:
         updates = body.model_dump(exclude_unset=True)
-        # 防止前端把脱敏后的 api_key（含 ***）写回覆盖真实 key
-        if "api_key" in updates and "***" in str(updates["api_key"]):
+        # 脱敏值或空输入表示保持现有配置；新值会替换环境变量引用或旧 Key。
+        if updates.get("api_key") in {"", "***"}:
             del updates["api_key"]
-            logger.info(f"跳过脱敏 api_key 的回写 | provider={provider_id}")
+            logger.info(f"保持现有 api_key 配置 | provider={provider_id}")
         model_manager.update_provider(provider_id, updates)
         return {"success": True, "message": f"供应商 {provider_id} 已更新"}
     except ValueError as e:
@@ -2275,7 +2267,6 @@ async def add_model_provider(body: AddModelProviderRequest):
             "name": body.name,
             "base_url": body.base_url,
             "api_key": body.api_key,
-            "api_key_env": body.api_key_env,
             "models": body.models,
             "maxContextTokens": body.maxContextTokens,
             "models_config": body.models_config,

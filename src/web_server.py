@@ -32,7 +32,7 @@ from src.extension_host.gates import ExtensionMiddlewareGate, extension_route_gu
 from src.extension_host.plugin_routes import router as plugin_router
 from src.extension_host.routes import router as extension_router
 from src.mcp.client import MCPClient
-from src.core.llm_client import create_llm
+from src.core.llm_client import create_startup_llm
 from src.core.workspace_manager import WorkspaceManager
 from src.core.approval_manager import ApprovalManager
 from src.prompts.manager import PromptManager
@@ -226,7 +226,7 @@ async def lifespan(app: FastAPI):
 
         session_mgr.load_sessions()
 
-        llm = create_llm(streaming=True)
+        llm = create_startup_llm(streaming=True)
 
         # 初始化 WorkflowManager（必须在 ToolRegistry 之前，因为工厂闭包通过 session_mgr._workflow_manager 获取）
         from src.workflow.manager import WorkflowManager

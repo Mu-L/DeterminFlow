@@ -3,6 +3,9 @@ import test from "node:test";
 
 import {
   coerceSettingsFieldValue,
+  getPluginEnableAction,
+  getPluginCatalogUpdate,
+  getPluginTargetState,
   getRuntimeStatusMeta,
   getSettingsValue,
   isValidPluginId,
@@ -10,6 +13,40 @@ import {
   setSettingsValue,
   validatePluginSettings,
 } from "./plugin-model.ts";
+import type { PluginRecord } from "./plugin-types.ts";
+
+function plugin(overrides: Partial<PluginRecord> = {}): PluginRecord {
+  return {
+    id: "demo-plugin",
+    name: "Demo Plugin",
+    description: "",
+    resource_prefix: "demo",
+    runtime_status: "running",
+    error: "",
+    active_enabled: true,
+    desired_enabled: true,
+    active_version: "1.0.0",
+    desired_version: "1.0.0",
+    restart_required: false,
+    pending_action: null,
+    dependencies: [],
+    capabilities: [],
+    source: {
+      url: "bundled",
+      ref: "",
+      subdirectory: "",
+      trust: "official",
+      resolved_commit: "",
+      content_sha256: "",
+    },
+    settings_schema: null,
+    settings: {},
+    config_present: false,
+    page_url: null,
+    processes: [],
+    ...overrides,
+  };
+}
 
 test("accepts only lowercase kebab-case plugin IDs", () => {
   for (const pluginId of ["novel-api", "memory", "plugin-2"]) {
@@ -48,6 +85,82 @@ test("maps every host runtime status and safely falls back for unknown values", 
     label: "未知（toString）",
     variant: "outline",
   });
+});
+
+test("derives one reversible enable action from current and desired state", () => {
+  assert.deepEqual(getPluginEnableAction(plugin()), {
+    label: "停用",
+    targetEnabled: false,
+    kind: "disable",
+    disabled: false,
+  });
+  assert.deepEqual(getPluginEnableAction(plugin({
+    desired_enabled: false,
+    restart_required: true,
+  })), {
+    label: "撤销停用",
+    targetEnabled: true,
+    kind: "undo",
+    disabled: false,
+  });
+  assert.equal(getPluginEnableAction(plugin({
+    pending_action: "remove",
+    restart_required: true,
+  })).disabled, true);
+});
+
+test("describes restart target without confusing it with current runtime", () => {
+  assert.deepEqual(getPluginTargetState(plugin()), {
+    label: "启用",
+    description: "",
+    pending: false,
+  });
+  assert.deepEqual(getPluginTargetState(plugin({
+    desired_enabled: false,
+    restart_required: true,
+  })), {
+    label: "停用",
+    description: "等待停用",
+    pending: true,
+  });
+  assert.deepEqual(getPluginTargetState(plugin({
+    pending_action: "remove",
+    desired_enabled: false,
+    desired_version: null,
+    restart_required: true,
+  })), {
+    label: "卸载",
+    description: "配置与数据保留",
+    pending: true,
+  });
+});
+
+test("detects updates only from the installed plugin repository", () => {
+  const installed = plugin({
+    desired_version: "1.0.0",
+    source: {
+      ...plugin().source,
+      url: "https://example.invalid/plugins.git",
+      resolved_commit: "old-commit",
+    },
+  });
+  const update = getPluginCatalogUpdate(installed, [{
+    id: "demo-plugin",
+    name: "Demo Plugin",
+    version: "1.1.0",
+    description: "",
+    source_id: "official-demo",
+    source_name: "Official",
+    source: "https://example.invalid/plugins.git",
+    source_kind: "official",
+    ref: "main",
+    resolved_commit: "new-commit",
+    subdirectory: "plugins/demo-plugin",
+  }]);
+
+  assert.equal(update?.available, true);
+  assert.equal(update?.entry.version, "1.1.0");
+  assert.equal(getPluginCatalogUpdate(installed, []), null);
 });
 
 

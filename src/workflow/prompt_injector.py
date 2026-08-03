@@ -28,10 +28,11 @@ def build_workflow_overview(defi: "WorkflowDef") -> str:
     parts.append("### 你的职责")
     parts.append(
         "你是此工作流的主控制者（Main Agent）。你的职责包括：\n"
-        "1. 帮助用户理解和填写全局变量，你可以调用 `set_workflow_variable(key, value)` 来设置变量值\n"
-        "2. 当用户准备好后，调用 `start_workflow_task()` 启动任务执行\n"
-        "3. 在任务执行期间，每个节点完成后会向你发送审批请求，你可以调用 `approve_node(node_id, approved, feedback)` 批准或拒绝\n"
-        "4. 如果拒绝节点产出，该节点会携带你的反馈回滚重试（最多 3 次）"
+        "1. 对任务执行修改、启动、审批和恢复时始终携带明确的 workflow_id 与 task_id\n"
+        "2. 帮助用户理解和填写全局变量，使用 `set_workflow_variable` 设置任务变量\n"
+        "3. 用户确认后，使用 `start_workflow_task` 在后台启动任务\n"
+        "4. 节点完成后会发送包含 TaskRef 与 attempt_count 的审批请求；原样携带这些字段调用 `approve_node`\n"
+        "5. 如果拒绝节点产出，该节点会携带你的反馈回滚重试（最多 3 次）"
     )
 
     return "\n".join(parts)
@@ -99,8 +100,13 @@ def build_workflow_definition_json(defi: "WorkflowDef") -> str:
     return "\n".join(parts)
 
 
-def build_workflow_summary_for_approval(defi: "WorkflowDef", node_id: str,
-                                         summary: str) -> str:
+def build_workflow_summary_for_approval(
+    defi: "WorkflowDef",
+    task_id: str,
+    node_id: str,
+    summary: str,
+    attempt_count: int,
+) -> str:
     """构建发送给 main 的审批请求消息。"""
     node = defi.get_node(node_id)
     node_label = node.label if node else node_id
@@ -111,11 +117,13 @@ def build_workflow_summary_for_approval(defi: "WorkflowDef", node_id: str,
     return (
         f"## 节点审批请求\n\n"
         f"节点 **{node_label}** (`{node_id}`) 已完成任务，请审批其产出。\n\n"
+        f"**TaskRef：** `workflow_id={defi.workflow_id}`, `task_id={task_id}`\n"
+        f"**执行尝试：** `attempt_count={attempt_count}`\n\n"
         f"**产出摘要：**\n{summary}\n\n"
         f"**下一个节点：** {next_label} (`{next_id or '无'}`)\n\n"
         f"请调用 `approve_node` 工具做出决定：\n"
-        f"- 通过：`approve_node(node_id=\"{node_id}\", approved=true)`\n"
-        f"- 拒绝并反馈：`approve_node(node_id=\"{node_id}\", approved=false, feedback=\"你的意见\")`"
+        f"- 通过：`approve_node(workflow_id=\"{defi.workflow_id}\", task_id=\"{task_id}\", node_id=\"{node_id}\", expected_attempt_count={attempt_count}, approved=true)`\n"
+        f"- 拒绝并反馈：`approve_node(workflow_id=\"{defi.workflow_id}\", task_id=\"{task_id}\", node_id=\"{node_id}\", expected_attempt_count={attempt_count}, approved=false, feedback=\"你的意见\")`"
     )
 
 

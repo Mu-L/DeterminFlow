@@ -371,9 +371,11 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
     async def _save_task_state(self, workflow_id: str, task: WorkflowTask):
         """按任务串行持久化不可变快照，避免并行分支发生旧写覆盖。"""
         from src.agent.session import _io_executor
+        from .model_utils import _now_iso
         save_lock = self._task_save_locks.setdefault(task.task_id, asyncio.Lock())
         async with save_lock:
             # 在 event loop 中同步快照，线程池只接收不再变化的数据。
+            task.updated_at = _now_iso()
             task_data = task.to_dict()
             loop = asyncio.get_running_loop()
             future = loop.run_in_executor(
@@ -398,6 +400,7 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
         这是引擎中唯一保留的 create_task 调用（远不如 token 流路径频繁）。
         """
         try:
+            loop = asyncio.get_running_loop()
             from src.web.event_bus import event_bus
             from .runtime_models import _node_state_to_dict
             actions_enabled = task.status in {"failed", "retry_waiting"}
@@ -408,12 +411,41 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                 )
                 for nid, ns in task.node_states.items()
             }
-            asyncio.create_task(event_bus.emit_event({
+            executable_node_ids = {
+                node.get("id")
+                for node in (task.snapshot_definition or {}).get("nodes", [])
+                if node.get("id") and node.get("id") not in task.disabled_node_ids
+            }
+            terminal_statuses = {"completed", "success", "skipped"}
+            completed_nodes = sum(
+                1
+                for node_id in executable_node_ids
+                if task.node_states.get(node_id)
+                and task.node_states[node_id].status in terminal_statuses
+            )
+            payload = {
                 "type": "wf_task_update", "workflow_id": workflow_id,
                 "task_id": task.task_id, "status": task.status,
+                "name": task.name,
+                "main_session_id": task.main_session_id,
                 "current_node_id": task.current_node_id, "node_states": node_states_dict,
                 "started_at": task.started_at, "completed_at": task.completed_at,
-            }))
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+                "workspace_mode": task.workspace_mode,
+                "workspace_ref": task.workspace_ref,
+                "progress": {
+                    "completed": completed_nodes,
+                    "total": len(executable_node_ids),
+                },
+            }
+            loop.create_task(event_bus.emit_event(payload))
+            if task.main_session_id:
+                loop.create_task(event_bus.emit_chat({
+                    **payload,
+                    "type": "workflow_task_update",
+                    "session_id": task.main_session_id,
+                }))
         except Exception:
             logger.debug("wf_task_update 事件推送失败", exc_info=True)
 

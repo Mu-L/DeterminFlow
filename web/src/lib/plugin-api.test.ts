@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createPluginSource,
+  deletePluginSource,
   fetchPluginCatalog,
+  fetchPluginSources,
   fetchPlugins,
   installPlugin,
   resetPluginConfig,
@@ -11,6 +14,7 @@ import {
   setPluginEnabled,
   uninstallPlugin,
   updatePlugin,
+  updatePluginSource,
 } from "./plugin-api.ts";
 
 
@@ -39,7 +43,20 @@ test("uses the plugin management endpoint contract", async (context) => {
 
   await fetchPlugins();
   await fetchPluginCatalog();
+  await fetchPluginCatalog(true);
+  await fetchPluginSources();
   const adminToken = "admin-secret";
+  await createPluginSource({
+    name: "Team Plugins",
+    url: "ssh://git@example.invalid/team/plugins.git",
+    ref: "main",
+  }, adminToken);
+  await updatePluginSource("team/plugins", {
+    name: "Team Stable",
+    url: "ssh://git@example.invalid/team/plugins.git",
+    ref: "stable",
+  }, adminToken);
+  await deletePluginSource("team/plugins", adminToken);
   await installPlugin({
     plugin_id: "demo-plugin",
     source: "/tmp/demo",
@@ -72,6 +89,49 @@ test("uses the plugin management endpoint contract", async (context) => {
       method: "GET",
       body: undefined,
       authorization: null,
+      contentType: null,
+    },
+    {
+      url: "/api/plugins/catalog?refresh=true",
+      method: "GET",
+      body: undefined,
+      authorization: null,
+      contentType: null,
+    },
+    {
+      url: "/api/plugins/sources",
+      method: "GET",
+      body: undefined,
+      authorization: null,
+      contentType: null,
+    },
+    {
+      url: "/api/plugins/sources",
+      method: "POST",
+      body: {
+        name: "Team Plugins",
+        url: "ssh://git@example.invalid/team/plugins.git",
+        ref: "main",
+      },
+      authorization: "Bearer admin-secret",
+      contentType: "application/json",
+    },
+    {
+      url: "/api/plugins/sources/team%2Fplugins",
+      method: "PUT",
+      body: {
+        name: "Team Stable",
+        url: "ssh://git@example.invalid/team/plugins.git",
+        ref: "stable",
+      },
+      authorization: "Bearer admin-secret",
+      contentType: "application/json",
+    },
+    {
+      url: "/api/plugins/sources/team%2Fplugins",
+      method: "DELETE",
+      body: undefined,
+      authorization: "Bearer admin-secret",
       contentType: null,
     },
     {

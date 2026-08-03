@@ -4,6 +4,9 @@ import type {
   PluginListResponse,
   PluginMutationResponse,
   PluginSettings,
+  PluginSourceListResponse,
+  PluginSourceMutationResponse,
+  PluginSourceRequest,
 } from "@/extensions/plugin-types";
 
 import { request } from "./http-client";
@@ -21,8 +24,51 @@ export function fetchPlugins(): Promise<PluginListResponse> {
   return request<PluginListResponse>("/plugins");
 }
 
-export function fetchPluginCatalog(): Promise<PluginCatalogResponse> {
-  return request<PluginCatalogResponse>("/plugins/catalog");
+export function fetchPluginCatalog(refresh = false): Promise<PluginCatalogResponse> {
+  return request<PluginCatalogResponse>(`/plugins/catalog${refresh ? "?refresh=true" : ""}`);
+}
+
+export function fetchPluginSources(): Promise<PluginSourceListResponse> {
+  return request<PluginSourceListResponse>("/plugins/sources");
+}
+
+export function createPluginSource(
+  payload: PluginSourceRequest,
+  adminToken = "",
+): Promise<PluginSourceMutationResponse> {
+  return request<PluginSourceMutationResponse>("/plugins/sources", {
+    method: "POST",
+    headers: pluginWriteHeaders(adminToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updatePluginSource(
+  sourceId: string,
+  payload: PluginSourceRequest,
+  adminToken = "",
+): Promise<PluginSourceMutationResponse> {
+  return request<PluginSourceMutationResponse>(
+    `/plugins/sources/${encodeURIComponent(sourceId)}`,
+    {
+      method: "PUT",
+      headers: pluginWriteHeaders(adminToken),
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function deletePluginSource(
+  sourceId: string,
+  adminToken = "",
+): Promise<PluginSourceMutationResponse> {
+  return request<PluginSourceMutationResponse>(
+    `/plugins/sources/${encodeURIComponent(sourceId)}`,
+    {
+      method: "DELETE",
+      headers: pluginWriteHeaders(adminToken),
+    },
+  );
 }
 
 export function installPlugin(

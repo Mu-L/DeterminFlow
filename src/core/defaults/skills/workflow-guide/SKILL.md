@@ -4,7 +4,7 @@ description: >-
   创建、编辑、校验、运行或排查 DeterminFlow 工作流时必须先加载此技能；也适用于任务填参、节点审批、变量传递、网关、执行方案、子流程与工作区覆盖。涉及 Agent 定义、Prompt 模板或 Script Library 的专项设计时，继续加载对应 Core Skill。
 metadata:
   display_name: workflow-guide
-  version: 3.0.0
+  version: 3.1.0
   author: system
   category: workflow
   priority: 50
@@ -50,7 +50,13 @@ DeterminFlow 有两个工作流对象：
 
 主会话中已有工具覆盖读取与 Task 生命周期：`list_workflows`、`get_workflow`、
 `create_and_attach_task`、`set_workflow_variable`、`start_workflow_task`、
-`get_task_status`、`list_tasks`、`approve_node`、`stop_task`。
+`get_task_status`、`get_task_result`、`read_task_artifact`、`get_node_messages`、`list_tasks`、
+`approve_node`、`retry_node`、`skip_node`、`stop_task`。
+
+Main 可以同时管理多个后台 Task。`main_session_id` 是所有权事实来源；会话上的
+`workflow_id/task_id` 只是最近任务的兼容默认值。除发现类工具外，所有任务修改、启动、
+审批、恢复和结果查询都应显式携带完整 TaskRef：`workflow_id + task_id`。只提供其中一个
+会失败，其他 Main 的任务也不可操作。
 
 只有 API 不可用且任务明确要求直接维护资源时，才编辑
 `data/workflows/{workflow_id}/definition.json`。直接编辑后必须运行：
@@ -117,9 +123,12 @@ Script 节点新定义使用 `script_argv` 字符串数组，不使用兼容字�
 - Script stdout 中的 `<WF_VAR>key:value</WF_VAR>`；
 - 声明为 `source_type: output` 的节点产出变量。
 
-Agent 和 Script 节点共享 workspace。默认路径是
-`data/workspaces/{workflow_id}/`；Task 可用 `workspace_override` 覆盖。相对文件路径均基于
-实际 workspace，系统通过以下变量暴露运行上下文：
+同一个 Task 内的 Agent 和 Script 节点共享 workspace。通过 Chat Main 创建时，默认
+`workspace_mode=task_isolated`，路径位于
+`data/workspaces/_main/{session_id}/tasks/{task_id}/`；需要多个 Task 共享资料时，显式使用
+`named_shared` 与安全的 `workspace_ref`。`legacy_shared` 保留
+`data/workspaces/{workflow_id}/` 兼容行为。相对文件路径均基于实际 workspace，系统通过
+以下变量暴露运行上下文：
 
 | 系统变量 | 含义 |
 |---|---|
@@ -149,14 +158,18 @@ Agent 和 Script 节点共享 workspace。默认路径是
 
 ```text
 create_and_attach_task
-  -> set_workflow_variable（必要时重复）
-  -> start_workflow_task
-  -> get_task_status / approve_node
-  -> completed、failed 或 stop_task
+  -> 保存返回的 workflow_id + task_id
+  -> set_workflow_variable（显式 TaskRef，必要时重复）
+  -> start_workflow_task（显式 TaskRef，后台执行）
+  -> 通过事件查看状态，必要时 get_task_status
+  -> approve_node / retry_node / skip_node（显式 TaskRef + 最新 attempt_count）
+  -> get_task_result（必要时 read_task_artifact）或 stop_task
 ```
 
 启动前检查所有 `required` 输入和 file 路径。运行中不要修改 definition 并期待当前 Task
-变化；需要新定义时创建新 Task。Agent 节点可能产生审批请求，拒绝时提供可执行反馈。
+变化；需要新定义时创建新 Task。一个 Main 可继续创建其他 Task，旧 Task 不会被解绑或
+停止。Agent 节点可能产生审批请求，审批消息会提供完整 TaskRef 与 `attempt_count`；调用
+控制工具时原样携带，过期操作会返回 `node_control_stale`。拒绝时提供可执行反馈。
 
 ## 验收清单
 
@@ -165,6 +178,8 @@ create_and_attach_task
 - 节点位置可读，变量均已定义或明确由上游产出。
 - Agent 类型、Prompt 模板和 Script Library 身份真实存在。
 - 新建 Task 使用了最新模板快照，启动后状态与节点摘要可查询。
+- 同一 Main 的多个 Task 可独立寻址，默认工作空间互不污染，其他 Main 不能越权控制。
+- 终态 Task 可通过 `get_task_result` 返回节点摘要、公开输出和受控产物描述符。
 - 失败策略不会把有外部副作用的节点静默重复执行。
 
 ## 常见故障定位

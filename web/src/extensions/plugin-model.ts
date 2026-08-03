@@ -1,5 +1,7 @@
 import type {
+  PluginCatalogEntry,
   PluginObjectSchema,
+  PluginRecord,
   PluginSchemaParseResult,
   PluginSettings,
   PluginSettingsSchema,
@@ -12,6 +14,44 @@ type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
 export interface RuntimeStatusMeta {
   label: string;
   variant: BadgeVariant;
+}
+
+export interface PluginEnableAction {
+  label: string;
+  targetEnabled: boolean;
+  kind: "enable" | "disable" | "undo";
+  disabled: boolean;
+  disabledReason?: string;
+}
+
+export interface PluginTargetState {
+  label: string;
+  description: string;
+  pending: boolean;
+}
+
+export interface PluginCatalogUpdate {
+  entry: PluginCatalogEntry;
+  available: boolean;
+}
+
+export function getPluginCatalogUpdate(
+  plugin: PluginRecord,
+  catalog: PluginCatalogEntry[],
+): PluginCatalogUpdate | null {
+  const entry = catalog.find((candidate) => (
+    candidate.id === plugin.id && candidate.source === plugin.source.url
+  ));
+  if (!entry) return null;
+  const installedCommit = plugin.source.resolved_commit;
+  const available = Boolean(
+    installedCommit && entry.resolved_commit
+      ? installedCommit !== entry.resolved_commit
+      : plugin.desired_version
+        && entry.version
+        && plugin.desired_version !== entry.version,
+  );
+  return { entry, available };
 }
 
 const RUNTIME_STATUS_META: Record<string, RuntimeStatusMeta> = {
@@ -315,6 +355,54 @@ export function getRuntimeStatusMeta(status: string): RuntimeStatusMeta {
     label: status ? `未知（${status}）` : "未知",
     variant: "outline",
   };
+}
+
+export function getPluginEnableAction(plugin: PluginRecord): PluginEnableAction {
+  if (plugin.pending_action === "remove") {
+    return {
+      label: "等待卸载",
+      targetEnabled: false,
+      kind: "disable",
+      disabled: true,
+      disabledReason: "插件已安排在重启后卸载",
+    };
+  }
+  if (plugin.active_enabled !== plugin.desired_enabled) {
+    return {
+      label: plugin.desired_enabled ? "撤销启用" : "撤销停用",
+      targetEnabled: plugin.active_enabled,
+      kind: "undo",
+      disabled: false,
+    };
+  }
+  return {
+    label: plugin.desired_enabled ? "停用" : "启用",
+    targetEnabled: !plugin.desired_enabled,
+    kind: plugin.desired_enabled ? "disable" : "enable",
+    disabled: false,
+  };
+}
+
+export function getPluginTargetState(plugin: PluginRecord): PluginTargetState {
+  const pendingActionLabels: Record<string, string> = {
+    install: "等待安装",
+    update: "等待更新",
+    rollback: "等待回退",
+    remove: "等待卸载",
+  };
+  if (plugin.pending_action === "remove") {
+    return { label: "卸载", description: "配置与数据保留", pending: true };
+  }
+  const enabledLabel = plugin.desired_enabled ? "启用" : "停用";
+  if (!plugin.restart_required) {
+    return { label: enabledLabel, description: "", pending: false };
+  }
+  const pendingLabel = plugin.pending_action
+    ? pendingActionLabels[plugin.pending_action] || "等待变更"
+    : plugin.active_enabled !== plugin.desired_enabled
+      ? `等待${enabledLabel}`
+      : "等待重启";
+  return { label: enabledLabel, description: pendingLabel, pending: true };
 }
 
 export function isValidPluginId(pluginId: string): boolean {

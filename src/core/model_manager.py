@@ -6,10 +6,10 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
-from dotenv import load_dotenv, dotenv_values
 from src.environment import get_determinflow_env
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,7 @@ _agents_config_cache: dict = {"mtime": 0.0, "model": None}
 # 默认最大上下文 token 数，当模型/供应商未配置 maxContextTokens 时使用
 # 现代模型通常支持 128K+，但 8000 作为保守默认值避免意外消耗过多资源
 DEFAULT_MAX_CONTEXT_TOKENS = 8000
+_ENV_API_KEY_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 # ============================================================
 # Provider Category 注册表 — 不同供应商的参数格式差异在此集中管理
@@ -153,7 +154,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_ROOT = Path(
     get_determinflow_env("CONFIG_DIR", str(_PROJECT_ROOT / "config"))
 ).expanduser().resolve()
-_DEFAULT_CONFIG_PATH = str(_CONFIG_ROOT / "models_config.json")
+_DEFAULT_CONFIG_PATH = str(
+    Path(
+        get_determinflow_env(
+            "MODELS_CONFIG_FILE",
+            str(_CONFIG_ROOT / "models_config.json"),
+        )
+    ).expanduser().resolve()
+)
+_DEFAULT_CONFIG_TEMPLATE = _PROJECT_ROOT / "config" / "models_config.example.json"
 _AGENTS_CONFIG_PATH = _CONFIG_ROOT / "agents_config.json"
 
 
@@ -165,90 +174,43 @@ class ModelManager:
         self.config = self._load_config()
 
     def _load_config(self) -> Dict:
-        """加载配置文件，如无则尝试从 .env 迁移或创建默认配置"""
+        """加载配置文件；缺失时创建不含明文凭据的默认配置。"""
         if self.config_path.exists():
             with open(self.config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                self.config = json.load(f)
+            if self._migrate_legacy_api_key_fields():
+                try:
+                    self.save()
+                except OSError:
+                    logger.warning(
+                        "模型配置只读，旧 api_key_env 仅在内存中迁移: %s",
+                        self.config_path,
+                    )
+            return self.config
 
-        # 尝试从 .env 迁移
-        env_path = ".env"
-        if os.path.exists(env_path):
-            self.migrate_from_env(env_path)
-            return self._load_config()
-
-        # 创建默认配置
         return self._create_default_config()
 
+    def _migrate_legacy_api_key_fields(self) -> bool:
+        """把旧 api_key_env 合并进 api_key 的 ${ENV_VAR} 表达式。"""
+        changed = False
+        providers = self.config.get("providers", {})
+        if not isinstance(providers, dict):
+            return False
+        for provider in providers.values():
+            if not isinstance(provider, dict) or "api_key_env" not in provider:
+                continue
+            env_name = provider.pop("api_key_env")
+            if not provider.get("api_key") and isinstance(env_name, str) and env_name:
+                provider["api_key"] = f"${{{env_name}}}"
+            changed = True
+        return changed
+
     def _create_default_config(self) -> Dict:
-        """创建默认配置"""
-        config = {
-            "default_params": {
-                "thinking_enabled": True,
-                "reasoning_effort": "high",
-                "temperature": 0.7,
-                "top_p": 1.0,
-                "presence_penalty": 0.0,
-                "thinking_budget": None,
-            },
-            "providers": {
-                "deepseek": {
-                    "category": "ds",
-                    "name": "DeepSeek",
-                    "base_url": "https://api.deepseek.com",
-                    "api_key": "",
-                    "api_key_env": "DEEPSEEK_API_KEY",  # pragma: allowlist secret
-                    "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
-                    "hyperparameter_values": {
-                        "max_completion_tokens": 32768
-                    }
-                }
-            }
-        }
-        self.config = config
+        """从版本化模板创建本地模型配置。"""
+        with _DEFAULT_CONFIG_TEMPLATE.open("r", encoding="utf-8") as handle:
+            self.config = json.load(handle)
         self.save()
-        return config
-
-    def migrate_from_env(self, env_path: str) -> bool:
-        """从 .env 迁移非敏感配置；API Key 仍保留在环境文件中。"""
-        load_dotenv(env_path)
-
-        # 使用 python-dotenv 解析 .env（正确处理引号、行内注释等）
-        env_vars = dotenv_values(env_path)
-
-        # 构建配置
-        api_key_env = (
-            "OPENAI_API_KEY"
-            if env_vars.get("OPENAI_API_KEY")
-            else "DEEPSEEK_API_KEY"
-        )
-        provider = {
-            "category": "ds",
-            "name": "DeepSeek",
-            "base_url": env_vars.get("OPENAI_BASE_URL", "https://api.deepseek.com"),
-            "api_key": "",
-            "api_key_env": api_key_env,
-            "models": [env_vars.get("MODEL_NAME", "deepseek-v4-flash")],
-            "hyperparameter_values": {
-                "max_completion_tokens": 32768
-            }
-        }
-
-        config = {
-            "default_params": {
-                "thinking_enabled": True,
-                "reasoning_effort": "high",
-                "temperature": 0.7,
-                "top_p": 1.0,
-                "presence_penalty": 0.0,
-                "thinking_budget": None,
-            },
-            "providers": {"deepseek": provider}
-        }
-        self.config = config
-        self.save()
-
-        logger.info(f"已从 .env 迁移配置到 {self.config_path}")
-        return True
+        return self.config
 
     def save(self):
         """保存配置到 JSON 文件（原子写入：tmp + os.replace）"""
@@ -273,10 +235,19 @@ class ModelManager:
         if provider is None:
             return None
         resolved = dict(provider)
-        env_name = resolved.get("api_key_env") or f"{provider_id.upper()}_API_KEY"
-        env_value = os.getenv(env_name, "")
-        if env_value:
-            resolved["api_key"] = env_value
+        configured_key = resolved.get("api_key", "")
+        if isinstance(configured_key, str):
+            match = _ENV_API_KEY_PATTERN.fullmatch(configured_key)
+            if match:
+                resolved["api_key"] = os.getenv(match.group(1), "")
+            elif configured_key.startswith("${") and configured_key.endswith("}"):
+                logger.warning(
+                    "Provider %s 的 api_key 环境变量表达式无效",
+                    provider_id,
+                )
+                resolved["api_key"] = ""
+        else:
+            resolved["api_key"] = ""
         return resolved
 
     def get_all_providers(self) -> Dict:
@@ -285,7 +256,7 @@ class ModelManager:
 
     # 允许通过 update_provider 修改的字段白名单
     _PROVIDER_UPDATE_KEYS = frozenset({
-        "name", "display_name", "base_url", "api_key", "api_key_env", "models", "models_config",
+        "name", "display_name", "base_url", "api_key", "models", "models_config",
         "hyperparameter_values",
     })
 

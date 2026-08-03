@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getRuntimeStatusMeta } from "@/extensions/plugin-model";
 import type { PluginRecord, PluginSettings } from "@/extensions/plugin-types";
@@ -26,7 +25,6 @@ interface PluginDetailsProps {
   plugin: PluginRecord;
   busyAction: string;
   packageManagementReadOnly: boolean;
-  onSetEnabled: (plugin: PluginRecord, enabled: boolean) => Promise<boolean>;
   onUpdate: (plugin: PluginRecord, ref: string) => Promise<boolean>;
   onRollback: (plugin: PluginRecord) => Promise<boolean>;
   onUninstall: (plugin: PluginRecord) => Promise<boolean>;
@@ -42,7 +40,6 @@ export function PluginDetails({
   plugin,
   busyAction,
   packageManagementReadOnly,
-  onSetEnabled,
   onUpdate,
   onRollback,
   onUninstall,
@@ -182,18 +179,6 @@ export function PluginDetails({
             </p>
           ) : null}
 
-          <div className="flex items-center justify-between gap-4 rounded-md border p-3">
-            <div className="flex flex-col gap-1">
-              <Label htmlFor={`plugin-enabled-${plugin.id}`}>重启后启用</Label>
-              <p className="text-xs text-muted-foreground">修改只写入目标状态，不会热加载插件。</p>
-            </div>
-            <Switch
-              id={`plugin-enabled-${plugin.id}`}
-              checked={plugin.desired_enabled}
-              onCheckedChange={(enabled) => void onSetEnabled(plugin, enabled)}
-              disabled={busy}
-            />
-          </div>
         </CardContent>
         {packageManaged ? (
           <CardFooter className="flex-wrap justify-end gap-2">

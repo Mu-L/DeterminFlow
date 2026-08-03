@@ -1,72 +1,120 @@
-import { useState, type FormEvent } from "react";
-import { GitBranch, Loader2, ShieldAlert } from "lucide-react";
+import React, { useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  Loader2,
+  PackagePlus,
+  Plus,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+  Wrench,
+} from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { isValidPluginId } from "@/extensions/plugin-model";
 import type {
   InstallPluginRequest,
   PluginCatalogEntry,
+  PluginCatalogSource,
 } from "@/extensions/plugin-types";
 
 interface PluginInstallFormProps {
   busy: boolean;
   readOnly: boolean;
   catalog: PluginCatalogEntry[];
+  sources: PluginCatalogSource[];
   catalogError: string;
-  adminToken: string;
-  onAdminTokenChange: (value: string) => void;
+  installedIds: ReadonlySet<string>;
+  initialSourceId?: string;
+  onAddSource: () => void;
+  onManageSource: (source: PluginCatalogSource) => void;
+  onDeleteSource: (source: PluginCatalogSource) => void;
   onInstall: (request: InstallPluginRequest) => Promise<boolean>;
+  onInstalled?: () => void;
 }
 
-const EMPTY_FORM = {
-  pluginId: "",
-  source: "",
-  ref: "",
-  subdirectory: "",
-  resourcePrefix: "",
-  acknowledgeRisk: false,
-};
+// eslint-disable-next-line react-refresh/only-export-components -- pure request builder is covered by node:test
+export function buildCatalogInstallRequest(
+  selected: PluginCatalogEntry,
+  resourcePrefix: string,
+  acknowledgeRisk: boolean,
+): InstallPluginRequest {
+  return {
+    plugin_id: selected.id,
+    source: selected.source,
+    ref: selected.resolved_commit,
+    subdirectory: selected.subdirectory,
+    resource_prefix: resourcePrefix.trim() || undefined,
+    acknowledge_risk: acknowledgeRisk,
+  };
+}
 
 export function PluginInstallForm({
   busy,
   readOnly,
   catalog,
+  sources,
   catalogError,
-  adminToken,
-  onAdminTokenChange,
+  installedIds,
+  initialSourceId = "",
+  onAddSource,
+  onManageSource,
+  onDeleteSource,
   onInstall,
+  onInstalled,
 }: PluginInstallFormProps) {
-  const [form, setForm] = useState(EMPTY_FORM);
+  const hasInitialSource = sources.some((source) => source.id === initialSourceId);
+  const defaultSourceId = (hasInitialSource ? initialSourceId : "")
+    || sources.find((source) => source.builtin && !source.error)?.id
+    || sources.find((source) => !source.error)?.id
+    || "";
+  const [sourceId, setSourceId] = useState(defaultSourceId);
+  const [selectedKey, setSelectedKey] = useState("");
+  const [resourcePrefix, setResourcePrefix] = useState("");
+  const [acknowledgeRisk, setAcknowledgeRisk] = useState(false);
+
+  useEffect(() => {
+    if (initialSourceId) setSourceId(initialSourceId);
+  }, [initialSourceId]);
+
+  useEffect(() => {
+    if (sources.some((source) => source.id === sourceId)) return;
+    setSourceId(defaultSourceId);
+    setSelectedKey("");
+    setAcknowledgeRisk(false);
+  }, [defaultSourceId, sourceId, sources]);
+
+  const selectedSource = sources.find((source) => source.id === sourceId) ?? null;
+  const visiblePlugins = useMemo(
+    () => catalog.filter((entry) => entry.source_id === sourceId),
+    [catalog, sourceId],
+  );
+  const selected = catalog.find((entry) => (
+    `${entry.source_id}:${entry.id}` === selectedKey
+  )) ?? null;
+  const thirdParty = selectedSource?.kind === "custom";
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const pluginId = form.pluginId.trim();
-    if (!isValidPluginId(pluginId)) return;
-    const installed = await onInstall({
-      plugin_id: pluginId,
-      source: form.source.trim(),
-      ref: form.ref.trim() || undefined,
-      subdirectory: form.subdirectory.trim() || undefined,
-      resource_prefix: form.resourcePrefix.trim() || undefined,
-      acknowledge_risk: form.acknowledgeRisk,
-    });
-    if (installed) setForm(EMPTY_FORM);
+    if (!selected || (thirdParty && !acknowledgeRisk)) return;
+    const installed = await onInstall(buildCatalogInstallRequest(
+      selected,
+      resourcePrefix,
+      acknowledgeRisk,
+    ));
+    if (installed) onInstalled?.();
   };
 
   if (readOnly) {
     return (
-      <Card>
+      <Card className="border-0 shadow-none">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <GitBranch aria-hidden="true" />
-            Plugin 包由 Release 管理
-          </CardTitle>
+          <CardTitle className="text-base">Plugin 包由 Release 管理</CardTitle>
           <CardDescription>
-            当前生产部署使用不可变插件快照。安装、更新、回退或卸载需要构建并激活新 Release；启停和可视化配置仍可在下方修改，重启后生效。
+            当前部署不能直接安装插件；请构建并激活包含目标插件的新 Release。
           </CardDescription>
         </CardHeader>
       </Card>
@@ -74,190 +122,199 @@ export function PluginInstallForm({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <GitBranch aria-hidden="true" />
-          从 Git 仓库安装
-        </CardTitle>
-        <CardDescription>
-          先指定插件 ID，再从互联网 Git URL 或主进程可访问的本地仓库安装；安装会锁定精确 commit。
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form className="flex flex-col gap-4" onSubmit={submit}>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="plugin-admin-token">远程管理令牌</Label>
-            <Input
-              id="plugin-admin-token"
-              type="password"
-              autoComplete="off"
-              value={adminToken}
-              onChange={(event) => onAdminTokenChange(event.target.value)}
-              placeholder="按服务端配置填写"
-              disabled={busy}
-            />
-            <p className="text-xs text-muted-foreground">
-              仅保存在当前页面内存。服务端未配置令牌且本机直连时可留空；一旦服务端配置，包含本机连接在内都必须填写。
-            </p>
-          </div>
-          {catalog.length > 0 || catalogError ? (
-            <div className="flex flex-col gap-2">
-              <Label>官方插件目录</Label>
-              {catalog.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {catalog.map((entry) => (
-                    <Button
-                      key={`${entry.source}:${entry.id}`}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => setForm({
-                        pluginId: entry.id,
-                        source: entry.source,
-                        ref: entry.ref,
-                        subdirectory: entry.subdirectory,
-                        resourcePrefix: "",
-                        acknowledgeRisk: false,
-                      })}
-                    >
-                      {entry.id}
-                      <span className="text-xs text-muted-foreground">
-                        {entry.source_name}
-                      </span>
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
-              {catalogError ? (
-                <p className="text-xs text-destructive">{catalogError}</p>
-              ) : null}
-              <p className="text-xs text-muted-foreground">
-                选择后会填入锁定来源；仍需点击安装，且只修改重启后的目标状态。
-              </p>
-            </div>
-          ) : null}
-          <div className="grid gap-4 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)]">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="plugin-id">插件 ID</Label>
-              <Input
-                id="plugin-id"
-                value={form.pluginId}
-                onChange={(event) => setForm((current) => ({
-                  ...current,
-                  pluginId: event.target.value,
-                }))}
-                placeholder="novel-api"
-                pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-                title="仅支持小写字母、数字和单个连字符分隔"
-                aria-describedby="plugin-id-description"
-                required
-                disabled={busy}
-              />
-              <p id="plugin-id-description" className="text-xs text-muted-foreground">
-                必填，仅支持小写 kebab-case，例如 novel-api。
-              </p>
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="plugin-source">仓库地址</Label>
-              <Input
-                id="plugin-source"
-                value={form.source}
-                onChange={(event) => setForm((current) => ({
-                  ...current,
-                  source: event.target.value,
-                }))}
-                placeholder="https://git.example.com/plugin.git 或 /path/to/plugin"
-                required
-                disabled={busy}
-              />
-            </div>
-          </div>
-          <details className="rounded-md border p-3">
-            <summary className="cursor-pointer text-sm font-medium">高级选项</summary>
-            <div className="mt-4 grid gap-4 lg:grid-cols-3">
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="plugin-ref">Git ref</Label>
-                <Input
-                  id="plugin-ref"
-                  value={form.ref}
-                  onChange={(event) => setForm((current) => ({ ...current, ref: event.target.value }))}
-                  placeholder="main / tag / commit"
-                  disabled={busy}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="plugin-subdirectory">子目录</Label>
-                <Input
-                  id="plugin-subdirectory"
-                  value={form.subdirectory}
-                  onChange={(event) => setForm((current) => ({ ...current, subdirectory: event.target.value }))}
-                  placeholder="可选"
-                  disabled={busy}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="plugin-resource-prefix">资源前缀覆盖</Label>
-                <Input
-                  id="plugin-resource-prefix"
-                  value={form.resourcePrefix}
-                  onChange={(event) => setForm((current) => ({
-                    ...current,
-                    resourcePrefix: event.target.value,
-                  }))}
-                  placeholder="默认使用插件声明"
-                  pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-                  title="仅支持小写字母、数字和单个连字符分隔"
-                  disabled={busy}
-                />
-                <p className="text-xs text-muted-foreground">
-                  通常无需填写；仅在多个插件声明了相同前缀时覆盖。
-                </p>
-              </div>
-            </div>
-          </details>
+    <form className="flex h-full min-h-0 flex-col" onSubmit={submit}>
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
+        <ol className="grid grid-cols-3 gap-2 border-b pb-4" aria-label="添加插件步骤">
+          {["选择仓库", "选择插件", "确认安装"].map((label, index) => (
+            <li key={label} className="flex min-w-0 items-center gap-2 text-xs font-medium">
+              <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${
+                index === 0 || selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+              }`}>{index + 1}</span>
+              <span className="truncate">{label}</span>
+            </li>
+          ))}
+        </ol>
 
-          <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
-            <ShieldAlert className="mt-0.5 text-destructive" aria-hidden="true" />
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <p className="text-sm font-medium">第三方插件风险确认</p>
-              <p id="third-party-risk-description" className="text-xs text-muted-foreground">
-                官方地址由服务端精确识别。其他仓库中的代码会以 DeterminFlow 相同系统权限执行，不提供沙箱或进程隔离。
-              </p>
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="acknowledge-third-party-risk"
-                  checked={form.acknowledgeRisk}
-                  onCheckedChange={(checked) => setForm((current) => ({
-                    ...current,
-                    acknowledgeRisk: checked,
-                  }))}
-                  aria-describedby="third-party-risk-description"
-                  disabled={busy}
-                />
-                <Label htmlFor="acknowledge-third-party-risk" className="text-xs font-normal">
-                  此地址若非官方源，我理解并自行承担安装与运行风险
-                </Label>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex justify-end">
-            <Button
-              type="submit"
-              disabled={
-                busy
-                || !isValidPluginId(form.pluginId.trim())
-                || !form.source.trim()
-              }
-            >
-              {busy ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" /> : null}
-              安装并等待重启
+        <section aria-labelledby="plugin-source-heading">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 id="plugin-source-heading" className="text-sm font-semibold">插件仓库</h3>
+            <Button type="button" variant="ghost" size="sm" onClick={onAddSource} disabled={busy}>
+              <Plus data-icon="inline-start" aria-hidden="true" />添加仓库
             </Button>
           </div>
-        </form>
-      </CardContent>
-    </Card>
+          <div className="grid gap-2">
+            {sources.map((source) => (
+              <div
+                key={source.id}
+                className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border p-2 ${
+                  sourceId === source.id ? "border-primary bg-primary/5" : "bg-card"
+                }`}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 rounded-sm px-1 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => {
+                    setSourceId(source.id);
+                    setSelectedKey("");
+                    setAcknowledgeRisk(false);
+                  }}
+                  disabled={busy || Boolean(source.error)}
+                >
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    {source.builtin
+                      ? <ShieldCheck className="size-4 shrink-0" aria-hidden="true" />
+                      : <ShieldAlert className="size-4 shrink-0" aria-hidden="true" />}
+                    <span className="truncate">{source.name}</span>
+                  </span>
+                  <span className={`mt-1 block truncate text-xs ${source.error ? "text-destructive" : "text-muted-foreground"}`}>
+                    {source.error || `${source.plugin_count} 个插件`}
+                  </span>
+                </button>
+                <div className="flex items-center gap-1">
+                  <Badge variant={source.builtin ? "secondary" : "outline"}>
+                    {source.builtin ? "官方" : "第三方"}
+                  </Badge>
+                  {!source.builtin ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onManageSource(source)}
+                        disabled={busy}
+                      >
+                        <Wrench aria-hidden="true" />管理
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => onDeleteSource(source)}
+                        disabled={busy}
+                      >
+                        <Trash2 aria-hidden="true" />删除
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="flex min-w-0 flex-col gap-4" aria-label="可安装插件">
+        {catalogError ? <p className="text-xs text-destructive">{catalogError}</p> : null}
+        {!selectedSource ? (
+          <div className="flex min-h-44 items-center justify-center rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+            先添加一个可用的插件仓库。
+          </div>
+        ) : visiblePlugins.length === 0 ? (
+          <div className="flex min-h-44 items-center justify-center rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+            当前仓库没有可安装的插件。
+          </div>
+        ) : (
+          <div className="grid gap-2">
+            {visiblePlugins.map((entry) => {
+              const key = `${entry.source_id}:${entry.id}`;
+              const installed = installedIds.has(entry.id);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={`grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-3 rounded-md border p-3 text-left ${
+                    selectedKey === key ? "border-primary bg-primary/5" : "hover:bg-muted/40"
+                  }`}
+                  onClick={() => !installed && setSelectedKey(key)}
+                  disabled={busy || installed}
+                >
+                  <span className="flex size-10 items-center justify-center rounded-md border bg-muted text-sm font-semibold">
+                    {entry.name.trim().slice(0, 1) || "P"}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{entry.name}</span>
+                    <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">
+                      {entry.id} · {entry.version}
+                    </span>
+                    {entry.description ? (
+                      <span className="mt-2 line-clamp-2 block text-xs text-muted-foreground">{entry.description}</span>
+                    ) : null}
+                  </span>
+                  <Badge variant={installed ? "secondary" : selectedKey === key ? "default" : "outline"}>
+                    {installed ? "已安装" : selectedKey === key ? "已选择" : "可安装"}
+                  </Badge>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {selected ? (
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-sm">安装 {selected.name}</CardTitle>
+                  <CardDescription className="mt-1">
+                    锁定 {selected.resolved_commit.slice(0, 8)}，重启后启用。
+                  </CardDescription>
+                </div>
+                <Badge variant={thirdParty ? "destructive" : "secondary"}>
+                  {thirdParty ? "第三方" : "内置官方"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <details className="rounded-md border p-3 text-sm">
+                <summary className="cursor-pointer font-medium">高级选项</summary>
+                <div className="mt-3 flex flex-col gap-2">
+                  <Label htmlFor="plugin-resource-prefix">资源前缀覆盖</Label>
+                  <Input
+                    id="plugin-resource-prefix"
+                    value={resourcePrefix}
+                    onChange={(event) => setResourcePrefix(event.target.value)}
+                    placeholder="通常留空"
+                    pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+                    disabled={busy}
+                  />
+                </div>
+              </details>
+              {thirdParty ? (
+                <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+                  <ShieldAlert className="mt-0.5 shrink-0 text-destructive" aria-hidden="true" />
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm font-medium">第三方代码与主进程同权限运行</p>
+                    <div className="flex items-start gap-2">
+                      <Checkbox
+                        id="acknowledge-third-party-risk"
+                        checked={acknowledgeRisk}
+                        onCheckedChange={(checked) => setAcknowledgeRisk(checked)}
+                        disabled={busy}
+                      />
+                      <Label htmlFor="acknowledge-third-party-risk" className="text-xs font-normal leading-5">
+                        我已确认仓库来源可信，并理解插件可以访问本机资源。
+                      </Label>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
+        </section>
+      </div>
+
+      <footer className="flex items-center justify-between gap-4 border-t bg-background px-4 py-3 sm:px-6">
+        <p className="min-w-0 truncate text-xs text-muted-foreground">
+          {selected ? `已选择：${selected.name}` : "请选择一个插件"}
+        </p>
+        <Button type="submit" disabled={busy || !selected || (thirdParty && !acknowledgeRisk)}>
+          {busy
+            ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
+            : <PackagePlus data-icon="inline-start" aria-hidden="true" />}
+          安装所选插件
+        </Button>
+      </footer>
+    </form>
   );
 }

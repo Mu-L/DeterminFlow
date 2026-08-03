@@ -417,6 +417,7 @@ export async function listAllTasks(params?: {
   page?: number;
   page_size?: number;
   workflow_id?: string;
+  main_session_id?: string;
 }) {
   const qs = buildListQuery(params);
   return request<import("../types").TaskListResponse>(`/tasks${qs}`);

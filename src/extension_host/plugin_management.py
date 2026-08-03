@@ -24,7 +24,11 @@ from .plugin_config import (
     validate_sparse_plugin_settings,
 )
 from .plugin_preflight import validate_plugin_checkout
-from .source_config import PluginCatalogService
+from .source_config import (
+    PluginCatalogService,
+    PluginSourceStore,
+    source_config_response,
+)
 
 if TYPE_CHECKING:
     from .manager import ExtensionManager
@@ -62,7 +66,8 @@ class PluginManagement:
         self.package_management_read_only = _read_boolean_environment(
             "PLUGIN_PACKAGES_READ_ONLY"
         )
-        self._catalog = PluginCatalogService(manager.plugin_sources)
+        self._source_store = PluginSourceStore(manager.plugin_source_file)
+        self._catalog = PluginCatalogService(self._source_store.list())
 
     def list_response(self) -> dict[str, Any]:
         records = self.store.read_lock()
@@ -101,14 +106,70 @@ class PluginManagement:
                 return plugin
         raise PluginStoreError(f"plugin is not installed or discovered: {plugin_id}")
 
-    def catalog_response(self) -> dict[str, Any]:
+    def sources_response(self) -> dict[str, Any]:
+        return {
+            "sources": [
+                source_config_response(source)
+                for source in self._source_store.list()
+            ],
+            "package_management_read_only": self.package_management_read_only,
+        }
+
+    def catalog_response(self, *, refresh: bool = False) -> dict[str, Any]:
         if self.package_management_read_only:
             return {
-                "sources": [],
+                "sources": [
+                    {
+                        **source,
+                        "resolved_commit": "",
+                        "plugin_count": 0,
+                        "error": "",
+                    }
+                    for source in self.sources_response()["sources"]
+                ],
                 "plugins": [],
                 "package_management_read_only": True,
             }
-        return self._catalog.get()
+        return self._catalog.get(refresh=refresh)
+
+    def create_source(self, *, name: str, url: str, ref: str) -> dict[str, Any]:
+        self._ensure_package_mutable()
+        source = self._source_store.create(name=name, url=url, ref=ref)
+        self._reload_catalog_sources()
+        return {
+            "source": source_config_response(source),
+            "catalog": self.catalog_response(refresh=True),
+        }
+
+    def update_source(
+        self,
+        source_id: str,
+        *,
+        name: str,
+        url: str,
+        ref: str,
+    ) -> dict[str, Any]:
+        self._ensure_package_mutable()
+        source = self._source_store.update(
+            source_id,
+            name=name,
+            url=url,
+            ref=ref,
+        )
+        self._reload_catalog_sources()
+        return {
+            "source": source_config_response(source),
+            "catalog": self.catalog_response(refresh=True),
+        }
+
+    def delete_source(self, source_id: str) -> dict[str, Any]:
+        self._ensure_package_mutable()
+        source = self._source_store.delete(source_id)
+        self._reload_catalog_sources()
+        return {"source": source_config_response(source)}
+
+    def _reload_catalog_sources(self) -> None:
+        self._catalog.replace_sources(self._source_store.list())
 
     def install(
         self,

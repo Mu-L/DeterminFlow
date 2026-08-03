@@ -294,6 +294,7 @@ class WorkflowTask:
     current_node_id: str | None = None
     run_id: str | None = None
     created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
     started_at: str | None = None
     completed_at: str | None = None
     node_states: dict[str, NodeExecutionState] = field(default_factory=dict)
@@ -301,6 +302,8 @@ class WorkflowTask:
     parameter_values: dict[str, str] = field(default_factory=dict)
     snapshot_variables: list[dict] | None = None
     workspace_override: str | None = None
+    workspace_mode: str = "legacy_shared"
+    workspace_ref: str | None = None
     disabled_node_ids: list[str] = field(default_factory=list)
     scheme_id: str | None = None
     control_flow_state: dict[str, Any] = field(default_factory=dict)
@@ -315,6 +318,7 @@ class WorkflowTask:
             "current_node_id": self.current_node_id,
             "run_id": self.run_id,
             "created_at": self.created_at,
+            "updated_at": self.updated_at,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "node_states": {
@@ -331,6 +335,8 @@ class WorkflowTask:
             "disabled_node_ids": self.disabled_node_ids,
             "scheme_id": self.scheme_id,
             "workspace_override": self.workspace_override,
+            "workspace_mode": self.workspace_mode,
+            "workspace_ref": self.workspace_ref,
             "control_flow_state": deepcopy(self.control_flow_state),
         }
 
@@ -344,6 +350,7 @@ class WorkflowTask:
             current_node_id=data.get("current_node_id"),
             run_id=data.get("run_id"),
             created_at=data.get("created_at", _now_iso()),
+            updated_at=data.get("updated_at", data.get("created_at", _now_iso())),
             started_at=data.get("started_at"),
             completed_at=data.get("completed_at"),
             node_states={
@@ -357,6 +364,8 @@ class WorkflowTask:
             disabled_node_ids=data.get("disabled_node_ids", []),
             scheme_id=data.get("scheme_id"),
             workspace_override=data.get("workspace_override"),
+            workspace_mode=data.get("workspace_mode", "legacy_shared"),
+            workspace_ref=data.get("workspace_ref"),
             control_flow_state=(
                 deepcopy(data.get("control_flow_state"))
                 if isinstance(data.get("control_flow_state"), dict)

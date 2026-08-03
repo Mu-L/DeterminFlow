@@ -79,9 +79,9 @@ class ToolAssembler:
     def _build_main(self, **kwargs) -> list[StructuredTool]:
         """组装 main agent 工具：registry 中的全部功能工具。
 
-        Main agent 始终可访问 workflow 专用工具（set_workflow_variable /
-        start_workflow_task / approve_node），工具运行时从 session context
-        动态读取 workflow_id/task_id，无绑定时会返回友好错误提示。
+        Main agent 始终可访问完整 Workflow Task 工具集。任务工具优先使用显式
+        workflow_id/task_id，并依据 main_session_id 校验所有权；两者都省略时才从
+        session context 读取最近任务作为兼容默认值。
         """
         llm_client = kwargs.get("llm_client", self._llm_client)
 

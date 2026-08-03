@@ -934,7 +934,8 @@ async def list_all_tasks(request: Request,
                          sort_order: str = "desc",
                          page: int = 1,
                          page_size: int = 20,
-                         workflow_id: str = ""):
+                         workflow_id: str = "",
+                         main_session_id: str = ""):
     """列出全部工作流的所有任务（全局任务历史），支持筛选/排序/搜索/分页。
 
     Query params:
@@ -944,6 +945,7 @@ async def list_all_tasks(request: Request,
         sort_order: asc 或 desc
         page / page_size: 分页
         workflow_id: 按工作流过滤（可选）
+        main_session_id: 按任务所属 Main 会话过滤（可选）
     """
     mgr = _get_manager(request)
     return mgr.list_all_tasks(
@@ -954,4 +956,5 @@ async def list_all_tasks(request: Request,
         page=page,
         page_size=page_size,
         workflow_id=workflow_id,
+        main_session_id=main_session_id,
     )

@@ -2,9 +2,11 @@
   "schema_version": 1,
   "official_sources": [
     {
+      "id": "determinflow-official",
       "name": "DeterminFlow Official Plugins",
       "url": "https://github.com/alikon-art/DeterminFlow-Plugins.git",
       "ref": "v0.1.0"
     }
-  ]
+  ],
+  "custom_sources": []
 }

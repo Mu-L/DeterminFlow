@@ -74,6 +74,11 @@
         "approve_node",
         "list_tasks",
         "get_task_status",
+        "get_task_result",
+        "read_task_artifact",
+        "get_node_messages",
+        "retry_node",
+        "skip_node",
         "stop_task"
       ]
     },

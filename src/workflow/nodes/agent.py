@@ -460,6 +460,7 @@ class AgentNode(BaseNodePlugin):
 
                     # 写入文件
                     file_path.write_text(output_text, encoding="utf-8")
+                    outputs["_output_file"] = str(file_path)
                     logger.info(f"LLM输出已保存到文件: {file_path}")
                     if json_meta:
                         completion_result["summary"] = self._append_json_summary(
@@ -698,7 +699,11 @@ class AgentNode(BaseNodePlugin):
                     f"main session {main_id or '<empty>'} 不存在",
                 )
             approval_msg = build_workflow_summary_for_approval(
-                ctx.definition, ctx.node_def.id, summary,
+                ctx.definition,
+                ctx.task_id,
+                ctx.node_def.id,
+                summary,
+                ctx.node_state.attempt_count,
             )
             try:
                 route_result = await sm.route_message(
