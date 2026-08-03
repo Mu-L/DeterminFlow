@@ -22,6 +22,10 @@ import asyncio
 
 import logging
 
+from contextlib import asynccontextmanager
+
+from copy import deepcopy
+
 from dataclasses import dataclass, field
 
 from datetime import datetime, timezone
@@ -42,7 +46,12 @@ import src.config as config
 
 from src.config import SESSIONS_DIR, LANGGRAPH_RECURSION_LIMIT, USER_INJECTION_CONFIG_FILE
 
-from src.core.utils import trim_langchain_messages, _sanitize_tool_pairs, estimate_tokens
+from src.core.utils import (
+    trim_langchain_messages,
+    _sanitize_tool_pairs,
+    estimate_tokens,
+    is_visible_to_frontend,
+)
 from src.compression.checker import get_compression_checker
 from src.compression.scheduler import get_compression_scheduler
 
@@ -76,6 +85,171 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_pending_tool_run_id(
+    *,
+    actual_tool_call_id: str,
+    node_run_id: str,
+    tool_name: str,
+    pending_by_call_id: dict[str, str],
+    pending_by_node_run_id: dict[str, str],
+    pending_calls: dict[str, dict],
+) -> str:
+    """Resolve parallel tool completion by stable IDs, never completion order."""
+    unique_run_id = pending_by_call_id.pop(actual_tool_call_id, "")
+    if not unique_run_id:
+        unique_run_id = pending_by_node_run_id.pop(node_run_id, "")
+    if not unique_run_id:
+        unique_run_id = next(
+            (
+                run_id
+                for run_id, pending_call in pending_calls.items()
+                if pending_call.get("name") == tool_name
+            ),
+            node_run_id,
+        )
+    for mapping in (pending_by_call_id, pending_by_node_run_id):
+        for key, value in list(mapping.items()):
+            if value == unique_run_id:
+                mapping.pop(key, None)
+    return unique_run_id
+
+
+def _canonical_tool_args(value: Any) -> str:
+    """Normalize tool arguments so callbacks can be matched independent of order."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _build_tool_call_slots(
+    output: Any,
+    streamed_calls: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build model-order tool slots from the complete response with stream fallback."""
+    slots: list[dict[str, Any]] = []
+    seen_indices: set[int] = set()
+    for position, tool_call in enumerate(getattr(output, "tool_calls", None) or []):
+        if isinstance(tool_call, dict):
+            index = tool_call.get("index", position)
+            call_id = tool_call.get("id")
+            name = tool_call.get("name")
+            args = tool_call.get("args", {})
+        else:
+            index = getattr(tool_call, "index", position)
+            call_id = getattr(tool_call, "id", None)
+            name = getattr(tool_call, "name", None)
+            args = getattr(tool_call, "args", {})
+        try:
+            normalized_index = int(index)
+        except (TypeError, ValueError):
+            normalized_index = position
+        streamed = streamed_calls.get(normalized_index, {})
+        slots.append({
+            "index": normalized_index,
+            "id": str(call_id or streamed.get("id") or ""),
+            "name": str(name or streamed.get("name") or ""),
+            "args": args if args is not None else streamed.get("args", {}),
+        })
+        seen_indices.add(normalized_index)
+
+    for index, streamed in streamed_calls.items():
+        if index in seen_indices:
+            continue
+        slots.append({
+            "index": index,
+            "id": str(streamed.get("id") or ""),
+            "name": str(streamed.get("name") or ""),
+            "args": streamed.get("args", {}),
+        })
+    return slots
+
+
+def _resolve_tool_start_slot(
+    event: dict[str, Any],
+    slots: list[dict[str, Any]],
+    claimed_indices: set[int],
+) -> dict[str, Any]:
+    """Resolve a tool-start callback to its model slot without callback ordering."""
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    tool_input = data.get("input", {})
+    candidates = [
+        slot for slot in slots
+        if int(slot.get("index", -1)) not in claimed_indices
+    ]
+
+    explicit_call_id = next(
+        (
+            str(source.get(key))
+            for source in (event, data, metadata)
+            for key in ("tool_call_id", "call_id")
+            if source.get(key)
+        ),
+        "",
+    )
+    if not explicit_call_id and isinstance(tool_input, dict) and tool_input.get("type") == "tool_call":
+        explicit_call_id = str(tool_input.get("id") or "")
+    if explicit_call_id:
+        matched = next(
+            (slot for slot in candidates if slot.get("id") == explicit_call_id),
+            None,
+        )
+        if matched is not None:
+            claimed_indices.add(int(matched["index"]))
+            return matched
+
+    explicit_index: int | None = None
+    for source in (event, data, metadata):
+        for key in ("tool_call_index", "index"):
+            if source.get(key) is None:
+                continue
+            try:
+                explicit_index = int(source[key])
+            except (TypeError, ValueError):
+                continue
+            break
+        if explicit_index is not None:
+            break
+    if explicit_index is not None:
+        matched = next(
+            (slot for slot in candidates if int(slot.get("index", -1)) == explicit_index),
+            None,
+        )
+        if matched is not None:
+            claimed_indices.add(int(matched["index"]))
+            return matched
+
+    tool_name = str(event.get("name") or "unknown")
+    input_key = _canonical_tool_args(tool_input)
+    exact_matches = [
+        slot for slot in candidates
+        if slot.get("name") == tool_name
+        and _canonical_tool_args(slot.get("args", {})) == input_key
+    ]
+    named_matches = [slot for slot in candidates if slot.get("name") == tool_name]
+    if exact_matches:
+        matched = exact_matches[0]
+    elif named_matches:
+        matched = named_matches[0]
+    elif candidates:
+        matched = candidates[0]
+    else:
+        matched = {
+            "index": len(claimed_indices),
+            "id": "",
+            "name": tool_name,
+            "args": tool_input,
+        }
+    claimed_indices.add(int(matched["index"]))
+    return matched
 
 
 def _usage_int(value: Any) -> int | None:
@@ -423,6 +597,14 @@ class AgentSession:
 
         self._abort_requested: bool = False
 
+        # 调用生命周期独立于 status；准备消息和压缩发生在 stream_start 之前，
+        # 终止/删除也必须能识别并停止这一阶段。
+        self._invocation_active: bool = False
+        self._invocation_task: asyncio.Task | None = None
+        self._invocation_done: asyncio.Event = asyncio.Event()
+        self._invocation_done.set()
+        self._termination_requested: bool = False
+
         # async_save 节流标志：避免高频保存占用线程池
         self._save_pending: bool = False
         self._save_dirty: bool = False
@@ -430,6 +612,9 @@ class AgentSession:
 
         # 当前 _invoke_graph 调用的事件回调（供 _emit_event 使用）
         self._current_event_callback: Callable[[dict], Awaitable[None]] | None = None
+        # 由 SessionManager 绑定。任何注册会话即使调用方未显式传 callback，
+        # 也必须走统一 chat 流协议。
+        self._default_event_callback: Callable[[dict], Awaitable[None]] | None = None
 
         self._logger = logging.getLogger(f"session.{self.session_id}")
 
@@ -624,6 +809,68 @@ class AgentSession:
 
 
 
+    @property
+    def invocation_active(self) -> bool:
+        """是否存在包含消息准备阶段在内的会话调用。"""
+        return self._invocation_active
+
+    @property
+    def termination_requested(self) -> bool:
+        """会话是否已被生命周期管理器永久封闭。"""
+        return self._termination_requested
+
+    def request_termination(self) -> None:
+        """封闭会话并请求中止当前调用，防止竞态中的新调用继续启动。"""
+        self._termination_requested = True
+        self._abort_requested = True
+
+    async def cancel_active_invocation(self, timeout: float = 5.0) -> bool:
+        """取消并等待当前调用完成清理；返回是否已安全停止。"""
+        self.request_termination()
+        task = self._invocation_task
+        current = asyncio.current_task()
+        if task and task is not current and not task.done():
+            task.cancel()
+        if not self._invocation_active:
+            return True
+        try:
+            await asyncio.wait_for(self._invocation_done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        return not self._invocation_active
+
+    @asynccontextmanager
+    async def _invocation_scope(self):
+        """串行化调用，并在任务取消时恢复完整的会话消息检查点。"""
+        async with self._invoke_lock:
+            if self._termination_requested:
+                raise RuntimeError(f"Session {self.session_id} 已终止，无法继续执行")
+
+            record_checkpoint = deepcopy(self.record)
+            lc_checkpoint = list(self.lc_messages)
+            context_checkpoint = deepcopy(self.context)
+            self._abort_requested = False
+            self._invocation_active = True
+            self._invocation_task = asyncio.current_task()
+            self._invocation_done.clear()
+            try:
+                yield
+            except asyncio.CancelledError:
+                self.record = record_checkpoint
+                self.lc_messages = lc_checkpoint
+                self.context = context_checkpoint
+                self._current_event_callback = None
+                self.updated_at = datetime.now(timezone.utc).isoformat()
+                try:
+                    await asyncio.shield(self.async_save())
+                except Exception:
+                    self._logger.warning("取消调用后保存会话检查点失败", exc_info=True)
+                raise
+            finally:
+                self._invocation_active = False
+                self._invocation_task = None
+                self._invocation_done.set()
+
     async def _process_message(self, msg: SessionMessage) -> str:
 
         """处理单条 inbox 消息：构造 HumanMessage 并 invoke graph。"""
@@ -634,7 +881,7 @@ class AgentSession:
 
 
 
-        async with self._invoke_lock:
+        async with self._invocation_scope():
 
             return await self._invoke_graph(
 
@@ -720,7 +967,7 @@ class AgentSession:
 
             source_name=source_name,
 
-            event_callback=event_callback,
+            event_callback=event_callback or self._default_event_callback,
 
             max_rounds=max_rounds,
 
@@ -788,9 +1035,10 @@ class AgentSession:
 
 
 
-        async with self._invoke_lock:
+        callback = event_callback or self._default_event_callback
+        async with self._invocation_scope():
 
-            return await self._invoke_graph(content, event_callback, max_rounds, source, source_name)
+            return await self._invoke_graph(content, callback, max_rounds, source, source_name)
 
 
 
@@ -823,7 +1071,8 @@ class AgentSession:
         if self.status == "streaming":
             raise RuntimeError(f"Session {self.session_id} 正在流式输出中，无法编辑消息")
 
-        async with self._invoke_lock:
+        callback = event_callback or self._default_event_callback
+        async with self._invocation_scope():
             # ---- 1. 在 record 中定位目标消息 ----
             target_idx = None
             for i, m in enumerate(self.record):
@@ -866,7 +1115,7 @@ class AgentSession:
             await self.async_save()
 
             # ---- 4. 重新执行 graph（_invoke_graph 内部会追加新 HumanMessage + record 条目） ----
-            return await self._invoke_graph(new_content, event_callback, max_rounds=None)
+            return await self._invoke_graph(new_content, callback, max_rounds=None)
 
     async def compress(self) -> dict:
         """
@@ -880,7 +1129,7 @@ class AgentSession:
         if self.status == "streaming":
             return {"success": False, "message": "会话正在流式输出中，无法压缩"}
 
-        async with self._invoke_lock:
+        async with self._invocation_scope():
             await self._check_and_compress_messages(force_full=True)
             self._logger.info(f"会话 {self.session_id} 手动压缩完成")
             return {"success": True, "message": "压缩完成"}
@@ -890,23 +1139,59 @@ class AgentSession:
 
         事件回调内部通过 EventBus 队列投递（put_nowait），
         整个链路没有实际 I/O，直接 await 不会阻塞事件循环。
-
-        对 workflow sub session 的 token/reasoning_token/tool_call_delta
-        事件直接跳过，避免不必要的回调调用开销。
         """
         cb = self._current_event_callback
         if not cb:
             return
 
-        # 快速路径：workflow sub session 的非状态事件直接跳过
-        # EventBus.emit_chat 中也会过滤，但这里提前跳过可以避免
-        # 回调调用 + EventBus 序列化的开销（百级 Agent 时差异显著）
-        if self.session_type == "sub" and self.workflow_id:
-            et = event.get("type", "")
-            if et in ("token", "reasoning_token", "tool_call_delta"):
-                return
-
         await cb(event)
+
+    async def _finish_tool_run(
+        self,
+        *,
+        event_callback: Callable[[dict], Awaitable[None]] | None,
+        tool_name: str,
+        result: str,
+        run_id: str,
+        tool_status: str,
+        tool_call_id: str,
+    ) -> None:
+        """Emit and persist one terminal tool event through the shared protocol."""
+        if event_callback:
+            await self._emit_event({
+                "type": "tool_end",
+                "session_id": self.session_id,
+                "name": tool_name,
+                "result": result[:2000],
+                "run_id": run_id,
+                "status": tool_status,
+            })
+        tool_msg = ToolMessage(
+            content=result,
+            tool_call_id=tool_call_id,
+            status="error" if tool_status in {"failed", "cancelled"} else "success",
+            additional_kwargs={"tool_status": tool_status},
+        )
+        await self._append_to_record(tool_msg)
+        self._sync_context_snapshot()
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+        await self.async_save()
+
+    def _visible_record(self) -> list[dict]:
+        """Return an isolated authoritative history for terminal events."""
+        return [
+            deepcopy(message)
+            for message in self.record
+            if is_visible_to_frontend(message)
+        ]
+
+    async def _finish_pre_stream_abort(self, phase: str) -> str:
+        """Rollback a preparation-stage abort without creating a stream lifecycle."""
+        self._logger.info(f"会话 {self.session_id} 在{phase}被手动中止")
+        self.status = "running" if self.session_type == "main" else "completed"
+        await self._rollback_on_error()
+        self._current_event_callback = None
+        return self.get_last_assistant_message()
 
     async def _invoke_graph(
 
@@ -1006,10 +1291,16 @@ class AgentSession:
 
         await self.add_message("user", content, **add_extra)
 
+        if self._abort_requested:
+            return await self._finish_pre_stream_abort("准备阶段")
+
 
 
         # 压缩检查（API调用前，先于截断执行）
         await self._check_and_compress_messages()
+
+        if self._abort_requested:
+            return await self._finish_pre_stream_abort("压缩阶段")
 
         # 截断过长上下文（压缩后的兜底机制）
         self.lc_messages = trim_langchain_messages(self.lc_messages, config.MAX_CONTEXT_TOKENS)
@@ -1032,11 +1323,10 @@ class AgentSession:
 
         }
 
+        if self._abort_requested:
+            return await self._finish_pre_stream_abort("流开始前")
 
 
-        # 重置中止标志
-
-        self._abort_requested = False
 
         abort_triggered = False
 
@@ -1048,7 +1338,11 @@ class AgentSession:
 
         if event_callback:
 
-            await event_callback({"type": "stream_start", "session_id": self.session_id})
+            await event_callback({
+                "type": "stream_start",
+                "session_id": self.session_id,
+                "baseline_record_length": len(self.record),
+            })
 
 
 
@@ -1059,9 +1353,10 @@ class AgentSession:
         incremental_saved_count = 0  # 流式循环中已增量保存到 record 的消息数
         tool_call_streaming: dict[int, dict] = {}  # index → {id, name, args, complete}
         tool_delta_count = 0  # 已发送 tool_call_delta 事件的 tool 索引计数
-        tool_start_counter = 0  # 当前轮次的 tool_start 序号，在 on_chat_model_end 时重置
-        tool_call_delta_indices: list[int] = []  # 按首次出现顺序保存 tc_chunk.index，用于 tool_start 匹配
-        pending_tool_run_ids: list[str] = []  # FIFO 队列，保证 on_tool_start/on_tool_end 的 run_id 一对一匹配
+        tool_call_delta_slots: list[dict[str, Any]] = []
+        claimed_tool_call_indices: set[int] = set()
+        pending_tool_run_ids_by_call_id: dict[str, str] = {}
+        pending_tool_run_ids_by_node_run_id: dict[str, str] = {}
         llm_call_started_at: dict[str, str] = {}
 
         try:
@@ -1197,10 +1492,14 @@ class AgentSession:
                         self._sync_context_snapshot()
                         self.updated_at = datetime.now(timezone.utc).isoformat()
                         await self.async_save()
-                        # 保存 tool index 顺序用于 tool_start 匹配，再清空流式状态
-                        tool_call_delta_indices = list(tool_call_streaming.keys())
+                        # 保存模型 tool call 的稳定 ID/index，用于把并行 tool_end
+                        # 精确关联回对应的实时气泡，而不是依赖完成顺序。
+                        tool_call_delta_slots = _build_tool_call_slots(
+                            output,
+                            tool_call_streaming,
+                        )
                         tool_call_streaming.clear()
-                        tool_start_counter = 0
+                        claimed_tool_call_indices.clear()
 
                 elif kind == "on_tool_start":
 
@@ -1208,11 +1507,18 @@ class AgentSession:
 
                     tool_name = event.get("name", "unknown")
 
-                    node_run_id = event.get("run_id", "")
-                    # LangGraph 的 on_tool_start 中 run_id 是节点级别的，同节点内多个工具共享。
-                    # 追加 UUID 后缀保证每个工具调用的 run_id 唯一，避免前端 React key 冲突。
-                    unique_run_id = f"{node_run_id}_{uuid.uuid4().hex[:8]}"
-                    pending_tool_run_ids.append(unique_run_id)
+                    node_run_id = str(event.get("run_id", "") or "")
+                    slot = _resolve_tool_start_slot(
+                        event,
+                        tool_call_delta_slots,
+                        claimed_tool_call_indices,
+                    )
+                    model_call_id = str(slot.get("id") or "")
+                    unique_run_id = model_call_id or f"{node_run_id}_{uuid.uuid4().hex[:8]}"
+                    if model_call_id:
+                        pending_tool_run_ids_by_call_id[model_call_id] = unique_run_id
+                    if node_run_id:
+                        pending_tool_run_ids_by_node_run_id[node_run_id] = unique_run_id
 
                     tool_rounds_executed += 1
 
@@ -1221,6 +1527,8 @@ class AgentSession:
                         "name": tool_name,
 
                         "args": tool_input if isinstance(tool_input, dict) else {},
+
+                        "tool_call_id": model_call_id,
 
                     }
 
@@ -1238,16 +1546,50 @@ class AgentSession:
 
                             "run_id": unique_run_id,
 
-                            "index": tool_call_delta_indices[tool_start_counter] if tool_start_counter < len(tool_call_delta_indices) else tool_start_counter,
+                            "index": int(slot.get("index", 0)),
 
                         })
-                        tool_start_counter += 1
 
 
+
+                elif kind == "on_tool_error":
+
+                    node_run_id = str(event.get("run_id", "") or "")
+                    data = event.get("data", {})
+                    if not isinstance(data, dict):
+                        data = {}
+                    actual_tool_call_id = str(data.get("tool_call_id") or "")
+                    event_tool_name = str(event.get("name", "unknown"))
+                    unique_run_id = _resolve_pending_tool_run_id(
+                        actual_tool_call_id=actual_tool_call_id,
+                        node_run_id=node_run_id,
+                        tool_name=event_tool_name,
+                        pending_by_call_id=pending_tool_run_ids_by_call_id,
+                        pending_by_node_run_id=pending_tool_run_ids_by_node_run_id,
+                        pending_calls=tool_calls_pending,
+                    )
+                    pending = tool_calls_pending.pop(unique_run_id, None)
+                    tool_name = pending["name"] if pending else event_tool_name
+                    error = data.get("error", "工具执行失败")
+                    result_str = str(error)
+                    actual_tool_call_id = actual_tool_call_id or str(
+                        (pending or {}).get("tool_call_id")
+                        or node_run_id
+                        or unique_run_id
+                    )
+                    await self._finish_tool_run(
+                        event_callback=event_callback,
+                        tool_name=tool_name,
+                        result=result_str,
+                        run_id=unique_run_id,
+                        tool_status="failed",
+                        tool_call_id=actual_tool_call_id,
+                    )
+                    incremental_saved_count += 1
 
                 elif kind == "on_tool_end":
 
-                    node_run_id = event.get("run_id", "")
+                    node_run_id = str(event.get("run_id", "") or "")
 
                     output = event.get("data", {}).get("output", "")
 
@@ -1263,42 +1605,45 @@ class AgentSession:
 
                         result_str = str(output)
 
-                    # 从 FIFO 队列中取出对应的 unique_run_id（与 on_tool_start 一对一配对）
-                    unique_run_id = pending_tool_run_ids.pop(0) if pending_tool_run_ids else node_run_id
+                    actual_tool_call_id = str(getattr(output, "tool_call_id", "") or "")
+                    event_tool_name = str(event.get("name", "unknown"))
+                    unique_run_id = _resolve_pending_tool_run_id(
+                        actual_tool_call_id=actual_tool_call_id,
+                        node_run_id=node_run_id,
+                        tool_name=event_tool_name,
+                        pending_by_call_id=pending_tool_run_ids_by_call_id,
+                        pending_by_node_run_id=pending_tool_run_ids_by_node_run_id,
+                        pending_calls=tool_calls_pending,
+                    )
 
                     pending = tool_calls_pending.pop(unique_run_id, None)
 
                     tool_name = pending["name"] if pending else event.get("name", "unknown")
+                    raw_tool_status = str(getattr(output, "status", "") or "").lower()
+                    tool_status = (
+                        "failed"
+                        if raw_tool_status in {"error", "failed", "failure"}
+                        else "cancelled"
+                        if raw_tool_status in {"cancelled", "canceled", "aborted"}
+                        else "completed"
+                    )
 
 
 
-                    if event_callback:
-
-                        await self._emit_event({
-
-                            "type": "tool_end",
-
-                            "session_id": self.session_id,
-
-                            "name": tool_name,
-
-                            "result": result_str[:2000],
-
-                            "run_id": unique_run_id,
-
-                        })
-
-                    # 工具执行完成后实时落盘：从事件直接构造 ToolMessage 追加到 record
-                    # tool_call_id 必须与 AIMessage.tool_calls 中的 id 一致，否则从 record
-                    # 重建 lc_messages 时会因 ID 不匹配导致所有 tool_calls 被剥离。
-                    # output 是 ToolNode 产出的 ToolMessage，其 tool_call_id 是正确的。
-                    actual_tool_call_id = getattr(output, "tool_call_id", node_run_id)
-                    tool_msg = ToolMessage(content=result_str, tool_call_id=actual_tool_call_id)
-                    await self._append_to_record(tool_msg)
+                    actual_tool_call_id = actual_tool_call_id or str(
+                        (pending or {}).get("tool_call_id")
+                        or node_run_id
+                        or unique_run_id
+                    )
+                    await self._finish_tool_run(
+                        event_callback=event_callback,
+                        tool_name=tool_name,
+                        result=result_str,
+                        run_id=unique_run_id,
+                        tool_status=tool_status,
+                        tool_call_id=actual_tool_call_id,
+                    )
                     incremental_saved_count += 1
-                    self._sync_context_snapshot()
-                    self.updated_at = datetime.now(timezone.utc).isoformat()
-                    await self.async_save()
 
                 elif kind == "on_chain_end":
                     # [事件层] 仅捕获根图级事件（包含完整 messages 状态），
@@ -1399,16 +1744,18 @@ class AgentSession:
                 )
                 self._logger.error(f"Graph invoke BadRequestError: {e}", exc_info=True)
                 self.status = "error"
+                await self._rollback_on_error(sanitize_pairs=True, sync_snapshot=False)
                 if event_callback:
                     try:
                         await event_callback({
                             "type": "error",
                             "session_id": self.session_id,
                             "message": str(e),
+                            "terminal": True,
+                            "messages": self._visible_record(),
                         })
                     except Exception:
                         pass
-                await self._rollback_on_error(sanitize_pairs=True, sync_snapshot=False)
                 raise
 
         except ContentFilterFinishReasonError as e:
@@ -1456,6 +1803,8 @@ class AgentSession:
 
             self.status = "error"
 
+            await self._rollback_on_error(sanitize_pairs=True)
+
             # 事件已通过非阻塞队列投递，无需等待
 
             if event_callback:
@@ -1464,11 +1813,11 @@ class AgentSession:
                         "type": "error",
                         "session_id": self.session_id,
                         "message": str(e),
+                        "terminal": True,
+                        "messages": self._visible_record(),
                     })
                 except Exception:
                     pass  # event_callback 可能因 WS 断线失败，不影响主流程
-
-            await self._rollback_on_error(sanitize_pairs=True)
 
             raise
 
@@ -1949,6 +2298,11 @@ class AgentSession:
                 }
                 if hasattr(msg, "tool_call_id") and msg.tool_call_id:
                     entry["tool_call_id"] = msg.tool_call_id
+                if getattr(msg, "status", None):
+                    entry["status"] = msg.status
+                tool_status = getattr(msg, "additional_kwargs", {}).get("tool_status")
+                if tool_status:
+                    entry["tool_status"] = tool_status
                 result.append(entry)
         return result
 
@@ -2058,6 +2412,11 @@ class AgentSession:
         if hasattr(msg, "tool_call_id") and msg.tool_call_id:
             entry["tool_call_id"] = msg.tool_call_id
             entry["type"] = "tool"
+            if getattr(msg, "status", None):
+                entry["status"] = msg.status
+            tool_status = getattr(msg, "additional_kwargs", {}).get("tool_status")
+            if tool_status:
+                entry["tool_status"] = tool_status
 
         self.record.append(entry)
 
@@ -2114,6 +2473,11 @@ class AgentSession:
     # ============================================================
 
     async def run_content_safety_diagnostic(self) -> dict:
+        """在与普通生成相同的会话调用锁内运行内容安全诊断。"""
+        async with self._invocation_scope():
+            return await self._run_content_safety_diagnostic()
+
+    async def _run_content_safety_diagnostic(self) -> dict:
         """
         运行内容安全诊断：通过二分排除法定位触发 Content Exists Risk 的具体消息。
 
@@ -2572,6 +2936,10 @@ class AgentSession:
                         entry["tool_calls"] = msg["tool_calls"]
                     if msg.get("tool_call_id"):
                         entry["tool_call_id"] = msg["tool_call_id"]
+                    if msg.get("status"):
+                        entry["status"] = msg["status"]
+                    if msg.get("tool_status"):
+                        entry["tool_status"] = msg["tool_status"]
                 session.record.append(entry)
 
         # 优先从 record 重建完整 lc_messages（record 永不压缩，是最可靠的数据源）
@@ -2616,7 +2984,13 @@ class AgentSession:
                     ]
                 self.lc_messages.append(entry)
             elif role == "tool":
-                self.lc_messages.append(ToolMessage(content=content, tool_call_id=m.get("tool_call_id", "")))
+                raw_status = m.get("tool_status") or m.get("status") or "success"
+                self.lc_messages.append(ToolMessage(
+                    content=content,
+                    tool_call_id=m.get("tool_call_id", ""),
+                    status="error" if raw_status in {"error", "failed", "cancelled"} else "success",
+                    additional_kwargs={"tool_status": raw_status},
+                ))
 
         # 向后兼容：旧磁盘 session 的 context.messages 可能不含 system 条目
         if self.system_prompt:
@@ -2661,7 +3035,13 @@ class AgentSession:
                     ]
                 self.lc_messages.append(entry)
             elif msg_type == "tool":
-                self.lc_messages.append(ToolMessage(content=content, tool_call_id=msg.get("tool_call_id", "")))
+                raw_status = msg.get("tool_status") or msg.get("status") or "success"
+                self.lc_messages.append(ToolMessage(
+                    content=content,
+                    tool_call_id=msg.get("tool_call_id", ""),
+                    status="error" if raw_status in {"error", "failed", "cancelled"} else "success",
+                    additional_kwargs={"tool_status": raw_status},
+                ))
 
         # 修复 record 中可能存在的悬挂 tool_calls（服务异常中断导致）
         self.lc_messages = _sanitize_tool_pairs(self.lc_messages)

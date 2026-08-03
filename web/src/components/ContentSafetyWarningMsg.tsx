@@ -1,6 +1,12 @@
-import { useState } from "react";
-import { Message } from "../types";
-import { AlertTriangle, Search, Loader2 } from "lucide-react";
+import { useEffect, useReducer } from "react";
+import type { Message } from "../types";
+import { AlertTriangle, Search } from "lucide-react";
+import {
+  contentSafetyDiagnosticRequestReducer,
+  createContentSafetyDiagnosticRequestId,
+  initialContentSafetyDiagnosticRequestState,
+  subscribeContentSafetyDiagnosticControlEvent,
+} from "../features/conversation/contentSafetyDiagnosticProtocol";
 
 /**
  * 内容安全警告组件
@@ -8,59 +14,56 @@ import { AlertTriangle, Search, Loader2 } from "lucide-react";
  * 当 DeepSeek API 返回 Content Exists Risk 时，在会话中展示警告信息，
  * 并提供"运行详细诊断"按钮让用户主动触发二分排除诊断。
  */
-export default function ContentSafetyWarningMsg({ message }: { message: Message }) {
-  const [diagnosing, setDiagnosing] = useState(false);
-  const [diagnosed, setDiagnosed] = useState(false);
+interface ContentSafetyWarningMsgProps {
+  message: Message;
+  onCommand?: (payload: { type: string; [key: string]: unknown }) => boolean;
+  readonly?: boolean;
+}
 
-  const sessionId = message.session_id || "";
+export default function ContentSafetyWarningMsg({
+  message,
+  onCommand,
+  readonly = false,
+}: ContentSafetyWarningMsgProps) {
+  const [requestState, dispatch] = useReducer(
+    contentSafetyDiagnosticRequestReducer,
+    initialContentSafetyDiagnosticRequestState,
+  );
+  const sessionId = message.session_id || null;
+
+  useEffect(() => {
+    dispatch({ type: "reset" });
+  }, [message.id, sessionId]);
+
+  useEffect(() => subscribeContentSafetyDiagnosticControlEvent((event) => {
+    if (event.sessionId !== sessionId) return;
+    dispatch({ type: "control_event", event });
+  }), [sessionId]);
 
   const handleDiagnose = () => {
-    if (diagnosing || diagnosed || !sessionId) return;
-    setDiagnosing(true);
-
-    // 创建临时 WebSocket 连接发送诊断请求
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/chat?session_id=${encodeURIComponent(sessionId)}`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          type: "diagnose_content_safety",
-          session_id: sessionId,
-        })
-      );
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "chain_end" || data.type === "error") {
-          ws.close();
-          setDiagnosing(false);
-          setDiagnosed(true);
-        }
-      } catch {
-        // 忽略解析错误
-      }
-    };
-
-    ws.onerror = () => {
-      ws.close();
-      setDiagnosing(false);
-    };
-
-    // 超时保护（30 秒）
-    setTimeout(() => {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
-        setDiagnosing(false);
-      }
-    }, 30000);
+    if (
+      requestState.phase === "submitting" ||
+      requestState.phase === "accepted" ||
+      requestState.phase === "completed"
+    ) return;
+    if (!sessionId || !onCommand) return;
+    const requestId = createContentSafetyDiagnosticRequestId();
+    if (onCommand({ type: "diagnose_content_safety", request_id: requestId })) {
+      dispatch({ type: "sent", requestId });
+    } else {
+      dispatch({ type: "send_failed", message: "连接不可用，请稍后重试" });
+    }
   };
 
   const errorMessage = message.content || "请求被 DeepSeek 安全审查拦截";
   const errorDetail = message.detail || "";
+  const requestPending = requestState.phase === "submitting" || requestState.phase === "accepted";
+  const requestCompleted = requestState.phase === "completed";
+  const buttonLabel = requestCompleted
+    ? "诊断完成"
+    : requestPending
+      ? requestState.phase === "accepted" ? "诊断运行中" : "正在提交诊断"
+      : "运行详细诊断";
 
   return (
     <div className="flex items-center gap-2 my-4">
@@ -86,38 +89,23 @@ export default function ContentSafetyWarningMsg({ message }: { message: Message 
             </p>
           )}
 
-          {/* 操作按钮 */}
-          {!diagnosed ? (
-            <button
-              type="button"
-              onClick={handleDiagnose}
-              disabled={diagnosing || !sessionId}
-              aria-label={diagnosing ? "正在诊断中" : "运行详细诊断"}
-              className={`
-                flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
-                transition-all duration-200 cursor-pointer min-h-[44px]
-                ${
-                  diagnosing
-                    ? "bg-amber-500/10 text-amber-400/50 cursor-wait"
-                    : "bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/30"
-                }
-              `}
-            >
-              {diagnosing ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-                  诊断中...
-                </>
-              ) : (
-                <>
-                  <Search size={14} aria-hidden="true" />
-                  运行详细诊断
-                </>
-              )}
-            </button>
-          ) : (
-            <p className="text-xs text-slate-500">诊断已完成，请在下方查看结果</p>
+          {requestState.message && (
+            <p className={`mb-2 text-xs ${requestState.phase === "failed" ? "text-red-300" : "text-slate-400"}`} role={requestState.phase === "failed" ? "alert" : "status"}>
+              {requestState.message}
+            </p>
           )}
+
+          {/* 操作按钮 */}
+          <button
+            type="button"
+            onClick={handleDiagnose}
+            disabled={requestPending || requestCompleted || readonly || !onCommand || !sessionId}
+            aria-label="运行详细诊断"
+            className="flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-400 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Search size={14} aria-hidden="true" />
+            {buttonLabel}
+          </button>
         </div>
       </div>
 

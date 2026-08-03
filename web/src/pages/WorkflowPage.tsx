@@ -1,18 +1,6 @@
-/**
- * WorkflowPage - 工作流顶层页面（双页签架构）
- *
- * 页签：
- *   模板    - 工作流模板卡片列表 → 查看/编辑/启动任务
- *   任务历史 - 全局跨模板任务历史 → 点击进入执行详情
- *
- * 子视图（仅在模板页签选中具体工作流时生效）：
- *   view   - 只读画布预览
- *   editor - 画布编辑
- *   param-fill - 填参启动
- *   task   - 任务执行视图（两个页签均可进入）
- */
+/** 工作流模板、任务历史、执行详情与深链恢复的顶层页面。 */
 import { lazy, useState, useEffect, useCallback, useRef } from "react";
-import { RotateCcw, ArrowLeft, ArrowRight } from "lucide-react";
+import { RotateCcw, ArrowLeft, ArrowRight, Loader2 } from "lucide-react";
 import {
   WorkflowConfirmDialog,
   WorkflowTabBar,
@@ -21,16 +9,17 @@ import {
   type WorkflowPageTab,
 } from "../components/workflow/WorkflowPageParts";
 import { useWebSocket } from "../hooks/useWebSocket";
-import { useNodeStreaming } from "../hooks/useNodeStreaming";
+import { useNodeStreaming, useWorkflowTaskRestore } from "../hooks/useNodeStreaming";
+import { useUrlParam } from "../hooks/useUrlParam";
+import { getTask } from "../lib/api";
 import type {
-  WorkflowSummary, NodeMessageResponse,
+  WorkflowSummary,
   WfNodeMessageEvent, WfNodeStatusEvent, WfTaskUpdateEvent,
   WfApprovalRequiredEvent, ApprovalFileInfo,
   WorkflowNodeDef,
   ExecutionScheme,
   NodeExecutionInfo,
 } from "../types";
-import { getTask } from "../lib/api";
 import type { WorkflowTask } from "../types";
 
 const WorkflowCanvas = lazy(() => import("../components/workflow/WorkflowCanvas"));
@@ -45,85 +34,83 @@ const ApprovalPanel = lazy(() => import("../components/workflow/ApprovalPanel"))
 const ExecutionSchemeDrawer = lazy(() => import("../components/workflow/ExecutionSchemeDrawer"));
 
 type SubView = "view" | "editor" | "node-select" | "param-fill" | "task" | null;
+export type WorkflowTaskViewState = "loading" | "error" | "ready";
+// eslint-disable-next-line react-refresh/only-export-components -- pure branch helper is covered by node:test
+export function resolveWorkflowTaskViewState(loading: boolean, error: string | null, matchesRoute: boolean): WorkflowTaskViewState {
+  return loading || !matchesRoute ? "loading" : error ? "error" : "ready";
+}
 
 export default function WorkflowPage() {
-  // 顶层页签
   const [tab, setTab] = useState<WorkflowPageTab>("templates");
-
-  // 模板子视图
   const [subView, setSubView] = useState<SubView>(null);
+  const [selectedId, setSelectedId] = useUrlParam("workflow_id");
+  const [selectedTaskId, setSelectedTaskId] = useUrlParam("task_id");
+  const [selectedNodeParam, setSelectedNodeParam] = useUrlParam("node_id");
 
-  // 选中状态
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-
-  // 工作流列表
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // 当前选中工作流的名称（从列表派生）
   const selectedWorkflowName = selectedId
     ? (workflows.find(w => w.workflow_id === selectedId)?.name || "")
     : "";
 
-  // 未保存变更追踪
   const [hasUnsaved, setHasUnsaved] = useState(false);
 
-  // 节点选择状态（node-select 和 param-fill 之间共享）
   const [disabledNodeIds, setDisabledNodeIds] = useState<Set<string>>(new Set());
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [allNodeIds, setAllNodeIds] = useState<string[]>([]);
 
-  // 执行方案状态
   const [schemes, setSchemes] = useState<ExecutionScheme[]>([]);
   const [activeSchemeId, setActiveSchemeId] = useState<string | null>(null);
   const [schemeModified, setSchemeModified] = useState(false);
   const [schemeCollapsed, setSchemeCollapsed] = useState(false);
 
-  // 保存触发
   const [saveRequested, setSaveRequested] = useState(0);
   const [saving, setSaving] = useState(false);
 
-  // 错误通知
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // 确认对话框
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
   const [confirmDialog, setConfirmDialog] = useState<WorkflowConfirmState | null>(null);
 
-  // 任务历史刷新触发
   const [historyRefresh, setHistoryRefresh] = useState(0);
 
-  // 节点消息抽屉
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerNodeId, setDrawerNodeId] = useState<string | null>(null);
-  const [drawerMessages, setDrawerMessages] = useState<NodeMessageResponse | null>(null);
-  const [drawerLoading, setDrawerLoading] = useState(false);
-  const [drawerSessionId, setDrawerSessionId] = useState<string | null>(null);
-  // 选中节点类型（用于 drawer 区分 agent/script 渲染）— 必须在 hook 前声明
+  const [drawerTaskKey, setDrawerTaskKey] = useState<string | null>(null);
+  const [drawerInitialSessionId, setDrawerInitialSessionId] = useState<string | null>(null);
   const [drawerNodeType, setDrawerNodeType] = useState<string>("");
+  const restoredNodeKeyRef = useRef<string | null>(null);
 
-  // 节点流式消息 hook（连接 /ws/chat 获取实时 token）
+  const [liveTaskStatus, setLiveTaskStatus] = useState<string>("");
+  const [liveNodeStates, setLiveNodeStates] = useState<Record<string, NodeExecutionInfo>>({});
+  const [liveTaskCompletedAt, setLiveTaskCompletedAt] = useState<string | null>(null);
+
+  const selectedTaskKey = selectedId && selectedTaskId ? `${selectedId}:${selectedTaskId}` : null;
+  const taskRestore = useWorkflowTaskRestore(selectedId, selectedTaskId);
+  const reloadSelectedTask = taskRestore.reload;
+  const taskViewState = resolveWorkflowTaskViewState(taskRestore.loading, taskRestore.error, Boolean(selectedTaskKey && taskRestore.taskKey === selectedTaskKey));
+  const taskNodeDefinitions = taskRestore.nodeDefinitions;
+  const drawerBelongsToTask = Boolean(selectedTaskKey && drawerTaskKey === selectedTaskKey);
+  const mainSessionId = taskRestore.taskKey === selectedTaskKey
+    ? (taskRestore.task?.main_session_id || null)
+    : null;
+
   const nodeStreaming = useNodeStreaming({
-    sessionId: drawerSessionId,
-    autoConnect: drawerOpen && drawerNodeType === "agent",
+    sessionId: (drawerNodeId && liveNodeStates[drawerNodeId]?.session_id) || drawerInitialSessionId,
+    autoConnect: drawerOpen && drawerBelongsToTask && drawerNodeType === "agent",
+    historySource: drawerOpen && drawerBelongsToTask && drawerNodeType === "agent" && selectedId && selectedTaskId && drawerNodeId
+      ? { workflowId: selectedId, taskId: selectedTaskId, nodeId: drawerNodeId }
+      : null,
   });
 
-  // Workflow Main 抽屉
   const [mainDrawerOpen, setMainDrawerOpen] = useState(false);
-  const [mainSessionId, setMainSessionId] = useState<string | null>(null);
 
-  // 重做任务上下文
   const [reuseTaskId, setReuseTaskId] = useState<string | null>(null);
   const [reuseTaskName, setReuseTaskName] = useState<string | null>(null);
   const [reuseParameterValues, setReuseParameterValues] = useState<Record<string, string> | null>(null);
   const [reuseWorkspaceOverride, setReuseWorkspaceOverride] = useState<string | null>(null);
 
-  // 节点状态数据（来自 WS wf_task_update）
-  const [liveTaskStatus, setLiveTaskStatus] = useState<string>("");
-  const [liveNodeStates, setLiveNodeStates] = useState<Record<string, NodeExecutionInfo>>({});
-  const [liveTaskCompletedAt, setLiveTaskCompletedAt] = useState<string | null>(null);
-  // 审批面板
   const [approvalData, setApprovalData] = useState<{
     workflowId: string; taskId: string; nodeId: string; nodeLabel: string;
     files: ApprovalFileInfo[]; placeholder: string;
@@ -131,26 +118,26 @@ export default function WorkflowPage() {
 
   const isExecutionView = subView === "task" || (!!selectedTaskId);
 
-  // WebSocket（仅在执行视图连接）
   useWebSocket({
     url: "/ws/events",
     autoConnect: isExecutionView,
+    onReconnect: useCallback(() => {
+      if (selectedId && selectedTaskId) reloadSelectedTask();
+    }, [selectedId, selectedTaskId, reloadSelectedTask]),
     onMessage: useCallback((raw: unknown) => {
       const event = raw as WfNodeMessageEvent | WfNodeStatusEvent | WfTaskUpdateEvent | WfApprovalRequiredEvent | { type: string };
       if (event.type === "wf_node_message") {
         // 消息实时更新已由 useNodeStreaming hook 通过 /ws/chat 处理
-        // 此处不再需要手动追加到 drawerMessages
       } else if (event.type === "wf_node_status") {
         const statusEvt = event as WfNodeStatusEvent;
+        if (statusEvt.workflow_id !== selectedId) return;
+        const selectedNodeState = liveNodeStates[statusEvt.node_id];
+        // wf_node_status has no task_id; only accept it when its session proves
+        // ownership by the selected task. Exact wf_task_update remains primary.
+        if (!selectedNodeState?.session_id || selectedNodeState.session_id !== statusEvt.session_id) return;
         const nextStatus: NodeExecutionInfo["status"] = statusEvt.status === "success"
           ? "completed"
           : statusEvt.status === "failure" ? "failed" : statusEvt.status;
-        if (drawerOpen && drawerNodeId === statusEvt.node_id) {
-          setDrawerMessages((prev) => {
-            if (!prev) return prev;
-            return { ...prev, node_status: nextStatus, summary: statusEvt.summary, error: statusEvt.error };
-          });
-        }
         setLiveNodeStates((prev) => {
           const previous = prev[statusEvt.node_id];
           return {
@@ -168,11 +155,13 @@ export default function WorkflowPage() {
         });
       } else if (event.type === "wf_task_update") {
         const taskEvt = event as WfTaskUpdateEvent;
+        if (taskEvt.workflow_id !== selectedId || taskEvt.task_id !== selectedTaskId) return;
         setLiveTaskStatus(taskEvt.status);
         setLiveTaskCompletedAt(taskEvt.completed_at);
         setLiveNodeStates(taskEvt.node_states || {});
       } else if (event.type === "wf_approval_required") {
         const approvalEvt = event as WfApprovalRequiredEvent;
+        if (approvalEvt.workflow_id !== selectedId || approvalEvt.task_id !== selectedTaskId) return;
         setApprovalData({
           workflowId: approvalEvt.workflow_id,
           taskId: approvalEvt.task_id,
@@ -182,19 +171,17 @@ export default function WorkflowPage() {
           placeholder: approvalEvt.placeholder,
         });
       }
-    }, [drawerNodeId, drawerOpen]),
+    }, [liveNodeStates, selectedId, selectedTaskId]),
     reconnectInterval: 5000,
   });
-
-  // ============ 工作流列表加载 ============
 
   const fetchWorkflows = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch("/api/workflows");
       if (res.ok) setWorkflows(await res.json());
-    } catch (e) {
-      console.error("加载工作流列表失败:", e);
+    } catch {
+      setErrorMessage("工作流列表加载失败，请重试");
     } finally {
       setLoading(false);
     }
@@ -204,28 +191,44 @@ export default function WorkflowPage() {
     if (tab === "templates" && subView === null) fetchWorkflows();
   }, [tab, subView, fetchWorkflows]);
 
-  // 进入任务视图时加载任务状态（包括 node_states 和 main_session_id）
   useEffect(() => {
-    if (!selectedId || !selectedTaskId || subView !== "task") return;
-    let cancelled = false;
-    fetch(`/api/workflows/${selectedId}/tasks/${selectedTaskId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const task = data.task;
-        setMainSessionId(task?.main_session_id || null);
-        // 从任务数据填充 node_states（包括已完成/已失败的任务）
-        if (task?.node_states) {
-          setLiveNodeStates(task.node_states);
-        }
-        if (task?.status) setLiveTaskStatus(task.status);
-        if (task?.completed_at) setLiveTaskCompletedAt(task.completed_at);
-      })
-      .catch(() => {
-        if (!cancelled) setMainSessionId(null);
-      });
-    return () => { cancelled = true; };
-  }, [selectedId, selectedTaskId, subView]);
+    if (tab === "templates" && selectedId && !selectedTaskId && subView === null) {
+      setSubView("view");
+    }
+  }, [selectedId, selectedTaskId, subView, tab]);
+
+  const resetNodePanel = useCallback(() => {
+    setDrawerOpen(false);
+    setDrawerNodeId(null);
+    setDrawerTaskKey(null);
+    setDrawerNodeType("");
+    setDrawerInitialSessionId(null);
+    setApprovalData(null);
+    restoredNodeKeyRef.current = null;
+  }, []);
+
+  // Reset stale task UI immediately; useWorkflowTaskRestore guards late responses.
+  useEffect(() => {
+    resetNodePanel();
+    setLiveNodeStates({});
+    setLiveTaskStatus("");
+    setLiveTaskCompletedAt(null);
+    setErrorMessage(null);
+    if (selectedId && selectedTaskId) setSubView("task");
+  }, [resetNodePanel, selectedId, selectedTaskId]);
+
+  useEffect(() => {
+    if (!taskRestore.task) return;
+    setLiveNodeStates(taskRestore.task.node_states || {});
+    setLiveTaskStatus(taskRestore.task.status || "");
+    setLiveTaskCompletedAt(taskRestore.task.completed_at || null);
+  }, [taskRestore.error, taskRestore.task]);
+
+  // Browser back/forward can remove only node_id while keeping the task open.
+  useEffect(() => {
+    if (selectedNodeParam) return;
+    resetNodePanel();
+  }, [resetNodePanel, selectedNodeParam]);
 
   // 确认对话框自动聚焦确认按钮
   useEffect(() => {
@@ -244,8 +247,6 @@ export default function WorkflowPage() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [subView, hasUnsaved]);
 
-  // ============ 导航处理 ============
-
   const handleCreate = async () => {
     try {
       const res = await fetch("/api/workflows", {
@@ -256,15 +257,28 @@ export default function WorkflowPage() {
       if (res.ok) {
         const data = await res.json();
         setSelectedId(data.definition.workflow_id);
+        setSelectedTaskId(null);
+        setSelectedNodeParam(null);
         setSubView("editor");
       }
-    } catch (e) {
-      console.error("创建工作流失败:", e);
+    } catch {
+      setErrorMessage("创建工作流失败，请重试");
     }
   };
 
-  const handleView = (id: string) => { setSelectedId(id); setHasUnsaved(false); setSubView("view"); };
-  const handleEdit = (id?: string) => { if (id) setSelectedId(id); setSubView("editor"); };
+  const handleView = (id: string) => {
+    setSelectedId(id);
+    setSelectedTaskId(null);
+    setSelectedNodeParam(null);
+    setHasUnsaved(false);
+    setSubView("view");
+  };
+  const handleEdit = (id?: string) => {
+    if (id) setSelectedId(id);
+    setSelectedTaskId(null);
+    setSelectedNodeParam(null);
+    setSubView("editor");
+  };
 
   const handleBack = () => {
     if (subView === "editor" && hasUnsaved) {
@@ -272,6 +286,8 @@ export default function WorkflowPage() {
         message: "您有未保存的更改，确定要离开吗？",
         onConfirm: () => {
           setSelectedId(null);
+          setSelectedTaskId(null);
+          setSelectedNodeParam(null);
           setSubView(null);
           setHasUnsaved(false);
           setConfirmDialog(null);
@@ -280,6 +296,8 @@ export default function WorkflowPage() {
       return;
     }
     setSelectedId(null);
+    setSelectedTaskId(null);
+    setSelectedNodeParam(null);
     setSubView(null);
     setHasUnsaved(false);
   };
@@ -396,8 +414,7 @@ export default function WorkflowPage() {
 
       // 无变更，直接执行
       doRedo(workflowId, task, currentDef);
-    } catch (e) {
-      console.error("重做任务失败:", e);
+    } catch {
       setErrorMessage("获取原任务数据失败，无法重做");
       setTimeout(() => setErrorMessage(null), 5000);
     }
@@ -407,6 +424,8 @@ export default function WorkflowPage() {
   const doRedo = (workflowId: string, task: WorkflowTask, currentDef: Record<string, unknown>) => {
     setTab("templates"); // 确保在模板页签下显示
     setSelectedId(workflowId);
+    setSelectedTaskId(null);
+    setSelectedNodeParam(null);
 
     // 提取业务节点
     const businessNodeIds = ((currentDef.nodes || []) as { id: string }[])
@@ -499,6 +518,7 @@ export default function WorkflowPage() {
 
   const handleTaskStarted = (taskId: string, openMainDrawer?: boolean) => {
     setSelectedTaskId(taskId);
+    setSelectedNodeParam(null);
     setSubView("task");
     if (openMainDrawer) setMainDrawerOpen(true);
     // 清除重做上下文（任务已创建）
@@ -512,21 +532,17 @@ export default function WorkflowPage() {
   const handleHistoryTaskClick = (taskId: string, workflowId: string) => {
     setSelectedId(workflowId);
     setSelectedTaskId(taskId);
+    setSelectedNodeParam(null);
     setSubView("task");
   };
 
   // 从执行视图返回 → 历史页签
   const handleBackFromTask = () => {
+    resetNodePanel();
     setSelectedTaskId(null);
+    setSelectedNodeParam(null);
     setSubView(null);
-    setDrawerOpen(false);
-    setDrawerNodeId(null);
-    setDrawerMessages(null);
-    setDrawerSessionId(null);
-    setDrawerNodeType("");
-    nodeStreaming.clearMessages();
     setMainDrawerOpen(false);
-    setMainSessionId(null);
     setHistoryRefresh((p) => p + 1);
     setTab("history");
   };
@@ -539,102 +555,106 @@ export default function WorkflowPage() {
       setSubView(null);
       setSelectedId(null);
       setSelectedTaskId(null);
+      setSelectedNodeParam(null);
     }
     // 切到模板时清除任务历史子视图
     if (t === "templates") {
       setSelectedTaskId(null);
+      setSelectedNodeParam(null);
       if (subView !== "task" && subView !== "param-fill" && subView !== "node-select") {
         setSubView(null);
       }
     }
   };
 
-  const handleNodeClick = async (nodeId: string, sessionId: string, nodeType?: string, nodeLabel?: string) => {
+  const closeNodeDrawer = useCallback(() => {
+    resetNodePanel();
+    setSelectedNodeParam(null);
+  }, [resetNodePanel, setSelectedNodeParam]);
+
+  const handleNodeClick = useCallback((
+    nodeId: string,
+    sessionId: string,
+    nodeType?: string,
+    nodeLabel?: string,
+  ) => {
     if (!selectedId || !selectedTaskId) return;
+    restoredNodeKeyRef.current = `${selectedId}:${selectedTaskId}:${nodeId}`;
+    setDrawerTaskKey(`${selectedId}:${selectedTaskId}`);
+    setSelectedNodeParam(nodeId);
     setMainDrawerOpen(false);
 
-    // 审批节点 → 打开审批面板（不管 approvalData 是否存在）
     if (nodeType === "approval") {
-      setDrawerOpen(false); setDrawerNodeId(null);
+      setDrawerOpen(false);
+      setDrawerNodeId(null);
       setDrawerNodeType("");
-      setDrawerSessionId(null);
-      if (approvalData) {
-        // 已有 WS 数据，直接展示；展开一个副本触发重新渲染
-        setApprovalData({ ...approvalData });
-      } else {
-        // 尚无 WS 数据，用最简信息打开空面板
-        setApprovalData({
-          workflowId: selectedId,
-          taskId: selectedTaskId,
-          nodeId,
-          nodeLabel: nodeLabel || "审批",
-          files: [],
-          placeholder: "请输入驳回原因...",
-        });
-      }
+      setDrawerInitialSessionId(null);
+      setApprovalData((current) => current?.nodeId === nodeId
+        ? { ...current }
+        : {
+            workflowId: selectedId,
+            taskId: selectedTaskId,
+            nodeId,
+            nodeLabel: nodeLabel || "审批",
+            files: [],
+            placeholder: "请输入驳回原因...",
+          });
       return;
     }
 
-    // 脚本节点：跳过消息 API，直接从 liveNodeStates 获取输出数据
     if (nodeType === "script") {
       setApprovalData(null);
-      setDrawerOpen(true); setDrawerNodeId(nodeId);
+      setDrawerOpen(true);
+      setDrawerNodeId(nodeId);
       setDrawerNodeType("script");
-      setDrawerMessages(null); setDrawerLoading(false);
-      setDrawerSessionId(null);
+      setDrawerInitialSessionId(null);
       return;
     }
 
-    // Agent 节点：关闭审批面板，打开消息抽屉
     setApprovalData(null);
-    setDrawerOpen(true); setDrawerNodeId(nodeId);
+    setDrawerOpen(true);
+    setDrawerNodeId(nodeId);
     setDrawerNodeType("agent");
+    setDrawerInitialSessionId(liveNodeStates[nodeId]?.session_id || sessionId || null);
+  }, [
+    liveNodeStates,
+    selectedId,
+    selectedTaskId,
+    setSelectedNodeParam,
+  ]);
 
-    // 优先从 liveNodeStates 获取 session_id（WebSocket 已同步）
-    const existingSessionId = liveNodeStates[nodeId]?.session_id || sessionId || null;
-    if (existingSessionId) {
-      setDrawerSessionId(existingSessionId);
-    }
-
-    // 如果同节点已有缓存消息，直接复用，不重新加载
-    if (drawerMessages && drawerNodeId === nodeId && drawerMessages.session_id) {
-      setDrawerLoading(false);
-      // 仍然异步刷新一次，获取最新消息
-      fetch(`/api/workflows/${selectedId}/tasks/${selectedTaskId}/nodes/${nodeId}/messages`)
-        .then((res) => res.ok ? res.json() : null)
-        .then((data) => {
-          if (data) {
-            setDrawerMessages(data);
-            nodeStreaming.setBaseMessages(data.messages || []);
-            if (data.session_id) setDrawerSessionId(data.session_id);
-          }
-        })
-        .catch(() => {});
+  // Restore a task/node deep link after its frozen definition and runtime state load.
+  useEffect(() => {
+    if (!selectedId || !selectedTaskId || !selectedNodeParam) {
+      restoredNodeKeyRef.current = null;
       return;
     }
-
-    // 首次打开或切换节点：加载消息
-    setDrawerLoading(true); setDrawerMessages(null);
-    nodeStreaming.clearMessages();
-    try {
-      const res = await fetch(`/api/workflows/${selectedId}/tasks/${selectedTaskId}/nodes/${nodeId}/messages`);
-      if (res.ok) {
-        const data = await res.json();
-        setDrawerMessages(data);
-        nodeStreaming.setBaseMessages(data.messages || []);
-        if (data.session_id) setDrawerSessionId(data.session_id);
-      } else {
-        setDrawerMessages(null);
-      }
-    } catch (e) { console.error("加载节点消息失败:", e); setDrawerMessages(null); }
-    finally { setDrawerLoading(false); }
-  };
+    const taskKey = `${selectedId}:${selectedTaskId}`;
+    const nodeKey = `${taskKey}:${selectedNodeParam}`;
+    if (taskRestore.taskKey !== taskKey || restoredNodeKeyRef.current === nodeKey) return;
+    restoredNodeKeyRef.current = nodeKey;
+    const definition = taskNodeDefinitions[selectedNodeParam];
+    void handleNodeClick(
+      selectedNodeParam,
+      liveNodeStates[selectedNodeParam]?.session_id || "",
+      definition?.nodeType || "agent",
+      definition?.label,
+    );
+  }, [
+    handleNodeClick,
+    liveNodeStates,
+    selectedId,
+    selectedNodeParam,
+    selectedTaskId,
+    taskRestore.taskKey,
+    taskNodeDefinitions,
+  ]);
 
   // Main 抽屉开关互斥：打开 Main 抽屉时关闭节点抽屉（保留缓存消息）
   const handleMainDrawerOpen = (open: boolean) => {
     if (open) {
-      setDrawerOpen(false);
-      setDrawerNodeId(null);
+      resetNodePanel();
+      setSelectedNodeParam(null);
     }
     setMainDrawerOpen(open);
   };
@@ -646,15 +666,13 @@ export default function WorkflowPage() {
         try {
           await fetch(`/api/workflows/${id}`, { method: "DELETE" });
           fetchWorkflows();
-        } catch (e) { console.error("删除工作流失败:", e); }
+        } catch { setErrorMessage("删除工作流失败，请重试"); }
         setConfirmDialog(null);
       },
     });
   };
 
   const renderTabBar = () => <WorkflowTabBar tab={tab} onTabChange={handleTabChange} />;
-
-  // ============ 渲染：执行视图 ============
 
   const renderExecutionView = () => (
     <section aria-label="工作流任务执行" className="flex-1 flex flex-col min-h-0">
@@ -666,6 +684,20 @@ export default function WorkflowPage() {
         liveCompletedAt={liveTaskCompletedAt}
       />
       <div className="flex-1 flex min-h-0">
+        {taskViewState === "loading" ? (
+          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-400" role="status">
+            <Loader2 size={18} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            加载任务详情...
+          </div>
+        ) : taskViewState === "error" ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center" role="alert">
+            <p className="text-sm text-red-300">{taskRestore.error}</p>
+            <button type="button" onClick={taskRestore.reload} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-red-500/30 px-4 py-2 text-sm text-red-200 transition-colors hover:bg-red-500/10">
+              <RotateCcw size={14} aria-hidden="true" />重新加载
+            </button>
+          </div>
+        ) : (
+          <>
         <div className="flex-1 flex flex-col min-w-0">
           <WorkflowCanvas
             workflowId={selectedId!}
@@ -685,21 +717,28 @@ export default function WorkflowPage() {
             onOpenChange={handleMainDrawerOpen}
           />
         )}
-        {drawerOpen && (
+        {drawerOpen && drawerBelongsToTask && (
           <NodeMessageDrawer
             workflowId={selectedId!}
             taskId={selectedTaskId!}
             nodeId={drawerNodeId || ""}
-            messages={drawerMessages}
-            loading={drawerLoading}
+            messages={nodeStreaming.metadata}
+            loading={nodeStreaming.loading}
             nodeType={drawerNodeType}
             nodeState={drawerNodeId ? liveNodeStates[drawerNodeId] : undefined}
+            conversationMessages={nodeStreaming.messages}
+            conversationId={nodeStreaming.sessionId}
+            connected={nodeStreaming.connected}
             streamingSegments={nodeStreaming.streamingSegments}
             isStreaming={nodeStreaming.isStreaming}
-            onClose={() => { setDrawerOpen(false); setDrawerNodeId(null); setDrawerNodeType(""); }}
+            error={nodeStreaming.error}
+            onRetry={() => {
+              if (!nodeStreaming.retry()) nodeStreaming.reload();
+            }}
+            onClose={closeNodeDrawer}
           />
         )}
-        {approvalData && (
+        {approvalData && approvalData.workflowId === selectedId && approvalData.taskId === selectedTaskId && (
           <ApprovalPanel
             workflowId={approvalData.workflowId}
             taskId={approvalData.taskId}
@@ -708,12 +747,18 @@ export default function WorkflowPage() {
             files={approvalData.files}
             placeholder={approvalData.placeholder}
             nodeState={liveNodeStates[approvalData.nodeId]}
-            onClose={() => setApprovalData(null)}
+            onClose={() => {
+              setApprovalData(null);
+              setSelectedNodeParam(null);
+            }}
             onResolved={() => {
               // 审批完成后清除数据
               setApprovalData(null);
+              setSelectedNodeParam(null);
             }}
           />
+        )}
+          </>
         )}
       </div>
     </section>

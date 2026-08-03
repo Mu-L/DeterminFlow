@@ -2,9 +2,9 @@ import { useState, useMemo } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { MessageSquare, Wrench, Bot } from "lucide-react";
-import { SessionDetail, Message } from "../types";
+import { SessionDetail, Message, StreamingSegment } from "../types";
 import { getStatusConfig, safeJsonParse, prettyJson } from "../lib/utils-helpers";
-import MessageRenderer from "./MessageRenderer";
+import ConversationTimeline from "./conversation/ConversationTimeline";
 
 // ============ Status icon mapping (lucide, not emoji) ============
 
@@ -19,74 +19,64 @@ const STATUS_ICON_MAP: Record<string, React.ReactNode> = {
 
 interface SessionDetailPanelProps {
   session: SessionDetail;
+  messages?: Message[];
+  streamingSegments?: StreamingSegment[];
+  isStreaming?: boolean;
+  loading?: boolean;
+  error?: Error | string | null;
+  onRetry?: () => void;
+  liveStatus?: string | null;
 }
 
-export default function SessionDetailPanel({ session }: SessionDetailPanelProps) {
-  const cfg = getStatusConfig(session.status);
+export default function SessionDetailPanel({
+  session,
+  messages = session.messages,
+  streamingSegments = [],
+  isStreaming = false,
+  loading = false,
+  error = null,
+  onRetry,
+  liveStatus = null,
+}: SessionDetailPanelProps) {
+  const status = liveStatus || session.status;
+  const cfg = getStatusConfig(status);
 
   // Build reasoning chain from messages
-  const reasoningChain = buildReasoningChain(session.messages);
-
-  // 预合并工具结果：使 ToolCallCard 统一显示 args + result
-  const mergedMessages = useMemo(() => {
-    const result: Message[] = [];
-    let i = 0;
-    while (i < session.messages.length) {
-      const msg = session.messages[i];
-      if (msg.type === "tool") { i++; continue; }
-      if (msg.type === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
-        const toolResults: Record<string, string> = {};
-        let j = i + 1;
-        while (j < session.messages.length && session.messages[j].type === "tool") {
-          const toolMsg = session.messages[j];
-          if (toolMsg.tool_call_id) {
-            toolResults[toolMsg.tool_call_id] = toolMsg.content || "";
-          }
-          j++;
-        }
-        const enhancedToolCalls = msg.tool_calls.map((tc) => ({
-          ...tc,
-          function: { ...tc.function, result: toolResults[tc.id] || tc.function.result },
-        }));
-        result.push({ ...msg, tool_calls: enhancedToolCalls });
-        i = j;
-      } else {
-        result.push(msg);
-        i++;
-      }
-    }
-    return result;
-  }, [session.messages]);
+  const reasoningChain = useMemo(
+    () => buildReasoningChain(messages, streamingSegments),
+    [messages, streamingSegments],
+  );
 
   return (
     <div className="flex flex-col md:flex-row h-full">
       {/* Left: Message History */}
-      <section aria-label="会话消息记录" className="flex-1 flex flex-col md:border-r border-b md:border-b-0 border-border min-w-0">
+      <section aria-label="会话消息记录" className="flex-1 min-h-0 flex flex-col md:border-r border-b md:border-b-0 border-border min-w-0">
         <div className="px-4 py-2 border-b border-border flex items-center gap-2">
           <span className={cfg.color} aria-hidden="true">
-            {STATUS_ICON_MAP[session.status] || <span className="w-2 h-2 rounded-full bg-slate-400" />}
+            {STATUS_ICON_MAP[status] || <span className="w-2 h-2 rounded-full bg-slate-400" />}
           </span>
           <span className="text-sm font-mono font-bold text-cyan-400">{session.session_id}</span>
-          <Badge variant="outline" className={`text-xs ${cfg.color}`} aria-label={`状态: ${session.status}`}>
-            {session.status}
+          <Badge variant="outline" className={`text-xs ${cfg.color}`} aria-label={`状态: ${status}`}>
+            {status}
           </Badge>
-          <span className="text-xs text-muted-foreground ml-auto">{session.message_count} 条消息</span>
+          <span className="text-xs text-muted-foreground ml-auto">{messages.length} 条消息</span>
         </div>
 
-        <ScrollArea className="flex-1">
-          <div className="px-4 py-3 space-y-3">
-            {mergedMessages.map((msg, i) => (
-              <MessageRenderer key={i} message={msg} />
-            ))}
-            {mergedMessages.length === 0 && (
-              <div className="text-center text-muted-foreground text-sm py-8" role="status" aria-label="暂无消息">暂无消息</div>
-            )}
-          </div>
-        </ScrollArea>
+        <ConversationTimeline
+          messages={messages}
+          streamingSegments={streamingSegments}
+          isStreaming={isStreaming}
+          loading={loading}
+          error={error}
+          onRetry={onRetry}
+          conversationId={session.session_id}
+          ariaLabel={`${session.session_id} 的会话消息`}
+          readonly
+        />
       </section>
 
       {/* Right: Reasoning Chain Timeline */}
-      <section aria-label="推理链路" className="w-full md:w-80 flex flex-col">
+      <section aria-label="推理链路" className="w-full min-h-0 md:w-80 flex flex-col">
         <div className="px-4 py-2 border-b border-border">
           <span className="text-sm font-medium text-muted-foreground">推理链路</span>
         </div>
@@ -120,7 +110,10 @@ interface ReasoningStepData {
   toolResult?: string;
 }
 
-function buildReasoningChain(messages: Message[]): ReasoningStepData[] {
+function buildReasoningChain(
+  messages: Message[],
+  streamingSegments: StreamingSegment[],
+): ReasoningStepData[] {
   const chain: ReasoningStepData[] = [];
 
   messages.forEach((msg) => {
@@ -151,6 +144,32 @@ function buildReasoningChain(messages: Message[]): ReasoningStepData[] {
         type: "tool_result",
         content: (msg.content || "").slice(0, 100),
         toolResult: msg.content,
+      });
+    }
+  });
+
+  streamingSegments.forEach((segment) => {
+    if (segment.type === "text" || segment.type === "reasoning") {
+      if (segment.content) {
+        chain.push({
+          type: "llm",
+          content: segment.content.slice(0, 100),
+        });
+      }
+      return;
+    }
+    chain.push({
+      type: "tool_call",
+      content: segment.tool.name,
+      toolName: segment.tool.name,
+      toolArgs: segment.tool.args,
+    });
+    if (segment.tool.result !== undefined) {
+      chain.push({
+        type: "tool_result",
+        content: segment.tool.result.slice(0, 100),
+        toolName: segment.tool.name,
+        toolResult: segment.tool.result,
       });
     }
   });

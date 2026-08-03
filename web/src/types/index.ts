@@ -198,12 +198,12 @@ export type WSChatEvent =
   | { type: "reasoning_token"; content: string; session_id?: string }
   | { type: "tool_call_delta"; index: number; id?: string; name?: string; args_delta: string; session_id?: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown>; run_id: string; index?: number; session_id?: string }
-  | { type: "tool_end"; name: string; result: string; run_id: string; session_id?: string }
+  | { type: "tool_end"; name: string; result: string; run_id: string; status?: "completed" | "failed" | "cancelled"; session_id?: string }
   | { type: "chain_end"; messages: Message[]; session_id?: string; token_usage?: TokenUsage }
   | { type: "stream_end"; session_id?: string }
   | { type: "history"; messages: Message[]; session_id?: string; token_usage?: TokenUsage }
   | { type: "notification"; data: NotificationData }
-  | { type: "error"; message: string; session_id?: string }
+  | { type: "error"; message: string; terminal?: boolean; session_id?: string }
   | { type: "llm_usage"; data: TokenUsage; session_id?: string }
   | { type: "pong" };
 
@@ -395,6 +395,13 @@ export interface RoundtableSession {
   strategy: string;
   shared_memory?: SharedMemory;
   compressor?: CompressorConfig;
+  event_revision?: number;
+  active_turn?: {
+    seat_id: string;
+    speaker_name: string;
+    content: string;
+    round: number;
+  } | null;
 }
 
 export interface RoundtableSummary {
@@ -437,7 +444,7 @@ export interface ModeratorDecision {
   reason?: string;
 }
 
-export type WSRoundtableEvent =
+export type WSRoundtableEvent = { roundtable_revision?: number } & (
   | { type: "rt_started"; roundtable_id: string; topic: string; seats: Seat[]; max_rounds: number; strategy?: string }
   | { type: "rt_turn_start"; roundtable_id: string; seat_id: string; speaker_name: string; round: number; is_moderator_thinking?: boolean }
   | { type: "rt_token"; roundtable_id: string; seat_id: string; content: string }
@@ -454,7 +461,8 @@ export type WSRoundtableEvent =
   | { type: "rt_paused"; roundtable_id: string; round: number }
   | { type: "rt_resumed"; roundtable_id: string; round: number }
   | { type: "rt_inject_result"; success: boolean; message?: string }
-  | { type: "rt_nominate_result"; success: boolean; message?: string };
+  | { type: "rt_nominate_result"; success: boolean; message?: string }
+);
 
 // ============ 审批请求类型 ============
 
@@ -874,17 +882,19 @@ export interface ScriptLibraryScript {
 
 // ============ 流式聊天共享类型 ============
 
-/** 工具调用状态（useChat / useStreamingSession 共用） */
+/** 工具调用状态（canonical conversation adapters 共用） */
 export interface ToolCallState {
   id?: string | null;
+  /** Wire tool_call_delta slot, retained in active stream snapshots for reconnect. */
+  index?: number;
   name: string;
   args: string;
   run_id: string;
   result?: string;
-  status: "building" | "running" | "completed";
+  status: "building" | "running" | "completed" | "failed" | "cancelled";
 }
 
-/** 流式片段（useChat / useStreamingSession 共用） */
+/** 流式片段（canonical conversation adapters 共用） */
 export type StreamingSegment =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }

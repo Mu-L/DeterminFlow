@@ -461,6 +461,7 @@ class RoundtableRunner:
         """执行一个 Seat 的发言流程"""
         # 更新席位状态
         seat.status = "speaking"
+        session.begin_active_turn(seat, controller.current_round)
 
         # 广播发言开始
         await event_bus.emit_chat({
@@ -486,6 +487,7 @@ class RoundtableRunner:
         )
         async with session._lock:
             session.transcript.append(entry)
+        session.end_active_turn()
 
         # 广播发言结束
         await event_bus.emit_chat({
@@ -527,6 +529,7 @@ class RoundtableRunner:
                 if chunk.content:
                     token = chunk.content
                     full_content += token
+                    session.append_active_turn(token)
                     await event_bus.emit_chat({
                         "type": "rt_token",
                         "roundtable_id": session.session_id,
@@ -994,16 +997,59 @@ class RoundtableManager:
         try:
             await self._runner.run(session)
         except asyncio.CancelledError:
+            await self._finalize_interrupted_turn(session)
             session.status = "ended"
             session.ended_at = datetime.now(timezone.utc).isoformat()
             session.save()
         except Exception as e:
             logger.error(f"Roundtable {session.session_id} 运行异常: {e}", exc_info=True)
+            await self._finalize_interrupted_turn(session)
             session.status = "ended"
             session.ended_at = datetime.now(timezone.utc).isoformat()
             session.save()
+            await event_bus.emit_chat({
+                "type": "rt_ended",
+                "roundtable_id": session.session_id,
+                "total_rounds": session.current_round,
+                "transcript_count": len(session.transcript),
+            })
         finally:
             self._tasks.pop(session.session_id, None)
+
+    async def _finalize_interrupted_turn(self, session: RoundtableSession) -> None:
+        """将用户已看到的部分发言固化，避免终止后历史回退。"""
+        active_turn = dict(session.active_turn) if session.active_turn else None
+        session.end_active_turn()
+        if not active_turn:
+            return
+
+        seat_id = str(active_turn.get("seat_id") or "")
+        speaker_name = str(active_turn.get("speaker_name") or seat_id)
+        content = str(active_turn.get("content") or "")
+        round_number = int(active_turn.get("round") or session.current_round)
+        seat = session.get_seat(seat_id)
+        if seat:
+            seat.status = "idle"
+        if not content:
+            return
+
+        entry = TranscriptEntry(
+            speaker_seat_id=seat_id,
+            speaker_name=speaker_name,
+            content=content,
+            round_number=round_number,
+        )
+        async with session._lock:
+            session.transcript.append(entry)
+        await event_bus.emit_chat({
+            "type": "rt_turn_end",
+            "roundtable_id": session.session_id,
+            "seat_id": seat_id,
+            "speaker_name": speaker_name,
+            "round": round_number,
+            "full_content": content,
+            "interrupted": True,
+        })
 
     # ============ 终止 ============
 
@@ -1205,10 +1251,15 @@ class RoundtableManager:
         task = self._tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self._tasks.pop(session_id, None)
 
         # 从内存中移除
         del self.sessions[session_id]
+        event_bus.clear_roundtable(session_id)
 
         # 删除持久化文件
         file_path = SESSIONS_DIR / f"{session_id}.json"

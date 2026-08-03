@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { X, Loader, Bot, Wrench, MessageSquare, GripVertical, Play, Terminal, CheckCircle, XCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import MessageRenderer from "../MessageRenderer";
+import { ConversationTimeline } from "../conversation";
 import type { NodeExecutionInfo, NodeMessageResponse, Message } from "../../types";
 import type { StreamingSegment } from "../../hooks/useNodeStreaming";
 import NodeFailureRuntimePanel from "./NodeFailureRuntimePanel";
@@ -27,19 +27,36 @@ interface NodeMessageDrawerProps {
   streamingSegments?: StreamingSegment[];
   /** 是否正在流式输出 */
   isStreaming?: boolean;
+  /** canonical 会话消息（snapshot/revision 协议） */
+  conversationMessages?: Message[];
+  conversationId?: string | null;
+  connected?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
 }
 
-export default function NodeMessageDrawer({ workflowId, taskId, nodeId, messages, loading, nodeType, nodeState, onClose, streamingSegments = [], isStreaming = false }: NodeMessageDrawerProps) {
+export default function NodeMessageDrawer({
+  workflowId,
+  taskId,
+  nodeId,
+  messages,
+  loading,
+  nodeType,
+  nodeState,
+  onClose,
+  streamingSegments = [],
+  isStreaming = false,
+  conversationMessages,
+  conversationId,
+  connected = true,
+  error = null,
+  onRetry,
+}: NodeMessageDrawerProps) {
   const [width, setWidth] = useState(560);
   const [isResizing, setIsResizing] = useState(false);
-  const msgListEndRef = useRef<HTMLDivElement>(null);
   const reasoningEndRef = useRef<HTMLDivElement>(null);
-
-  // 消息实时追加时自动滚到底部
-  const msgCount = (messages?.message_count ?? 0) + streamingSegments.length;
-  useEffect(() => {
-    msgListEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [msgCount, isStreaming]);
+  const displayMessages = conversationMessages ?? messages?.messages ?? [];
+  const msgCount = displayMessages.length + streamingSegments.length;
 
   // 推理链路变化时也滚动
   useEffect(() => {
@@ -48,82 +65,7 @@ export default function NodeMessageDrawer({ workflowId, taskId, nodeId, messages
 
   const isRunning = nodeState?.status === "running" || messages?.node_status === "running";
   const isScript = nodeType === "script";
-  const showStreaming = isStreaming && streamingSegments.length > 0;
-
-  // 预合并工具结果：使 ToolCallCard 统一显示 args + result
-  const baseMerged = useMemo(() => {
-    const msgList = messages?.messages || [];
-    const result: Message[] = [];
-    let i = 0;
-    while (i < msgList.length) {
-      const msg = msgList[i];
-      if (msg.type === "tool") { i++; continue; }
-      if (msg.type === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
-        const toolResults: Record<string, string> = {};
-        let j = i + 1;
-        while (j < msgList.length && msgList[j].type === "tool") {
-          const toolMsg = msgList[j];
-          if (toolMsg.tool_call_id) {
-            toolResults[toolMsg.tool_call_id] = toolMsg.content || "";
-          }
-          j++;
-        }
-        const enhancedToolCalls = msg.tool_calls.map((tc) => ({
-          ...tc,
-          function: { ...tc.function, result: toolResults[tc.id] || tc.function.result },
-        }));
-        result.push({ ...msg, tool_calls: enhancedToolCalls });
-        i = j;
-      } else {
-        result.push(msg);
-        i++;
-      }
-    }
-    return result;
-  }, [messages?.messages]);
-
-  // 合并 base 消息 + 流式片段（去重：跳过已在 base 中的 streaming 内容）
-  const mergedMessages = useMemo(() => {
-    if (streamingSegments.length === 0) return baseMerged;
-
-    const baseIds = new Set(baseMerged.map((m) => m.id).filter(Boolean));
-    const streamingMsgs: Message[] = [];
-
-    for (const seg of streamingSegments) {
-      if (seg.type === "text") {
-        streamingMsgs.push({
-          type: "assistant",
-          content: seg.content,
-          id: "streaming-text",
-        });
-      } else if (seg.type === "reasoning") {
-        streamingMsgs.push({
-          type: "assistant",
-          content: `> 🧠 思考中...\n\n${seg.content}`,
-          id: "streaming-reasoning",
-        });
-      } else if (seg.type === "tool") {
-        const toolId = `streaming-tool-${seg.tool.run_id}`;
-        if (!baseIds.has(toolId)) {
-          streamingMsgs.push({
-            type: "assistant",
-            tool_calls: [{
-              id: seg.tool.run_id,
-              type: "function" as const,
-              function: {
-                name: seg.tool.name,
-                arguments: seg.tool.args,
-                result: seg.tool.result,
-              },
-            }],
-            id: toolId,
-          });
-        }
-      }
-    }
-
-    return [...baseMerged, ...streamingMsgs];
-  }, [baseMerged, streamingSegments]);
+  const showStreaming = isStreaming;
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -202,10 +144,13 @@ export default function NodeMessageDrawer({ workflowId, taskId, nodeId, messages
               <span className="text-xs text-emerald-500">流式输出中</span>
             </div>
           )}
+          {conversationId && !connected && (
+            <span className="text-amber-400 text-xs">· 正在重连</span>
+          )}
           {messages && (
             <>
               <span className="text-slate-400 text-xs ml-1">
-                {messages.message_count} 条消息
+                {displayMessages.length} 条消息
               </span>
               {messages.agent_type && (
                 <span className="text-indigo-500 text-xs">· {messages.agent_type}</span>
@@ -235,35 +180,6 @@ export default function NodeMessageDrawer({ workflowId, taskId, nodeId, messages
       {/* Content */}
       {isScript ? (
         <ScriptOutputView nodeState={nodeState} />
-      ) : loading ? (
-        <div className="flex items-center justify-center py-12 text-slate-400">
-          <Loader size={20} className="animate-spin motion-reduce:animate-none mr-2" />
-          加载节点消息...
-        </div>
-      ) : !messages || mergedMessages.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-12 text-slate-500">
-          {isRunning || showStreaming ? (
-            <>
-              <div className="w-10 h-10 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-3">
-                <Loader size={20} className="text-blue-500 animate-spin motion-reduce:animate-none" />
-              </div>
-              <p className="text-sm font-medium text-slate-400 mb-1">节点正在执行中</p>
-              <p className="text-xs text-slate-500 flex items-center gap-1">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse motion-reduce:animate-none" aria-hidden="true" />
-                消息将实时更新...
-              </p>
-            </>
-          ) : (
-            <>
-              <MessageSquare size={32} className="mb-2 opacity-50" aria-hidden="true" />
-              <p className="text-sm">暂无消息</p>
-              <p className="text-xs mt-1">
-                {messages?.node_status === "pending" ? "节点尚未开始执行" :
-                 "节点执行完成，但未生成消息记录"}
-              </p>
-            </>
-          )}
-        </div>
       ) : (
         <div className="flex-1 flex min-h-0">
           {/* Left: Message History */}
@@ -271,14 +187,44 @@ export default function NodeMessageDrawer({ workflowId, taskId, nodeId, messages
             <div className="px-3 py-1.5 border-b border-indigo-500/10">
               <span className="text-xs text-slate-400">消息流</span>
             </div>
-            <ScrollArea className="flex-1">
-              <div className="px-3 py-2 space-y-2">
-                {mergedMessages.map((msg, i) => (
-                  <MessageRenderer key={i} message={msg} />
-                ))}
-                <div ref={msgListEndRef} />
-              </div>
-            </ScrollArea>
+            <ConversationTimeline
+              messages={displayMessages}
+              streamingSegments={streamingSegments}
+              isStreaming={isStreaming}
+              loading={loading}
+              error={error}
+              onRetry={onRetry}
+              conversationId={conversationId}
+              ariaLabel={`节点 ${nodeId} 消息流`}
+              readonly={true}
+              contentClassName="px-3 py-2"
+              emptyState={(
+                <div className="flex min-h-48 flex-col items-center justify-center px-4 py-12 text-slate-500">
+                  {isRunning || showStreaming ? (
+                    <>
+                      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-blue-500/20 bg-blue-500/10">
+                        <Loader size={20} className="animate-spin text-blue-500 motion-reduce:animate-none" aria-hidden="true" />
+                      </div>
+                      <p className="mb-1 text-sm font-medium text-slate-400">节点正在执行中</p>
+                      <p className="flex items-center gap-1 text-xs text-slate-500">
+                        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500 motion-reduce:animate-none" aria-hidden="true" />
+                        消息将实时更新...
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <MessageSquare size={32} className="mb-2 opacity-50" aria-hidden="true" />
+                      <p className="text-sm">暂无消息</p>
+                      <p className="mt-1 text-xs">
+                        {messages?.node_status === "pending"
+                          ? "节点尚未开始执行"
+                          : "节点执行完成，但未生成消息记录"}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            />
           </div>
 
           {/* Right: Reasoning Chain Timeline */}
@@ -288,7 +234,7 @@ export default function NodeMessageDrawer({ workflowId, taskId, nodeId, messages
             </div>
             <ScrollArea className="flex-1">
               <div className="px-3 py-2">
-                <ReasoningChainTimeline messages={messages.messages} streamingSegments={streamingSegments} />
+                <ReasoningChainTimeline messages={displayMessages} streamingSegments={streamingSegments} />
                 <div ref={reasoningEndRef} />
               </div>
             </ScrollArea>
@@ -494,10 +440,10 @@ function ReasoningChainTimeline({ messages, streamingSegments = [] }: { messages
             toolName: seg.tool.name,
             toolArgs: seg.tool.args,
           });
-        } else if (seg.tool.status === "completed") {
+        } else {
           streamingChain.push({
             type: "tool_result",
-            content: (seg.tool.result || "").slice(0, 100),
+            content: (seg.tool.result || seg.tool.status).slice(0, 100),
             toolResult: seg.tool.result,
           });
         }

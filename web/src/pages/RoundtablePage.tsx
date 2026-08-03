@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Users, Play, Square, Plus, X, Zap, Brain, FileText, Pause, SkipForward, Send, UserPlus, CircleCheck, AlertTriangle, Search, Rocket, BarChart3 } from "lucide-react";
+import { Users, Play, Square, Plus, X, Zap, Brain, FileText, Pause, SkipForward, Send, UserPlus, CircleCheck, AlertTriangle, Search, Rocket, BarChart3, Loader2, RefreshCw } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRoundtable } from "../hooks/useRoundtable";
 import TranscriptMessage from "../components/TranscriptMessage";
@@ -24,6 +24,11 @@ export default function RoundtablePage() {
     roundtables,
     activeSession,
     loadDetail,
+    clearActive,
+    detailLoading,
+    detailError,
+    retryDetail,
+    connected,
     transcript,
     seats,
     streamingSeat,
@@ -34,13 +39,11 @@ export default function RoundtablePage() {
     handleStop,
     handleDelete,
     refreshList,
-    // Phase 2
     moderatorDecision,
     thinkingSeatId,
     roundSummaries,
     conclusion,
     strategy,
-    // Phase 3
     structuredConclusion,
     isPaused,
     handlePause,
@@ -50,8 +53,6 @@ export default function RoundtablePage() {
     handleAddSeat,
     handleRemoveSeat,
   } = useRoundtable();
-
-  // 创建表单状态
   const [showCreate, setShowCreate] = useState(false);
   const [topic, setTopic] = useState("");
   const [maxRounds, setMaxRounds] = useState(3);
@@ -64,16 +65,12 @@ export default function RoundtablePage() {
     { role_name: "", system_prompt: "", temperature: 0.7, is_moderator: false },
   ]);
   const [creating, setCreating] = useState(false);
-
-  // Phase 3: 插话输入
   const [injectContent, setInjectContent] = useState("");
   const [showAddSeat, setShowAddSeat] = useState(false);
   const [newSeatName, setNewSeatName] = useState("");
   const [newSeatPrompt, setNewSeatPrompt] = useState("");
-
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // 自动滚动到底部（尊重 prefers-reduced-motion）
   useEffect(() => {
     if (scrollRef.current) {
       const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -241,8 +238,30 @@ export default function RoundtablePage() {
 
         {/* 讨论区 */}
         <ScrollArea className="flex-1 px-6 py-4">
+          {detailLoading && !activeSession && !showCreate && (
+            <div className="flex min-h-64 flex-col items-center justify-center gap-3 text-slate-500" role="status" aria-live="polite">
+              <Loader2 size={24} className="animate-spin text-indigo-400 motion-reduce:animate-none" aria-hidden="true" />
+              <p className="text-sm">正在加载圆桌详情</p>
+            </div>
+          )}
+
+          {detailError && !activeSession && !showCreate && (
+            <div className="flex min-h-64 flex-col items-center justify-center gap-3 text-center" role="alert">
+              <AlertTriangle size={24} className="text-red-400" aria-hidden="true" />
+              <p className="text-sm text-red-300">{detailError}</p>
+              <button
+                type="button"
+                onClick={retryDetail}
+                className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 text-sm text-red-300 transition-colors hover:bg-red-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
+              >
+                <RefreshCw size={14} aria-hidden="true" />
+                重试
+              </button>
+            </div>
+          )}
+
           {/* 无活跃会话 - 空状态或创建表单 */}
-          {!activeSession && !showCreate && (
+          {!activeSession && !showCreate && !detailLoading && !detailError && (
             <EmptyState
               onShowCreate={() => setShowCreate(true)}
               roundtables={roundtables}
@@ -280,6 +299,32 @@ export default function RoundtablePage() {
           {/* 讨论记录 */}
           {activeSession && (
             <div>
+              {detailLoading && (
+                <div className="mb-4 flex items-center gap-2 rounded-lg border border-indigo-500/15 bg-indigo-500/5 px-3 py-2 text-xs text-indigo-300" role="status" aria-live="polite">
+                  <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                  正在同步最新圆桌记录
+                </div>
+              )}
+              {detailError && (
+                <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300" role="alert">
+                  <AlertTriangle size={14} aria-hidden="true" />
+                  <span className="flex-1">{detailError}</span>
+                  <button
+                    type="button"
+                    onClick={retryDetail}
+                    className="inline-flex min-h-8 items-center gap-1 rounded px-2 transition-colors hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
+                  >
+                    <RefreshCw size={12} aria-hidden="true" />
+                    重试
+                  </button>
+                </div>
+              )}
+              {!connected && (
+                <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300" role="status" aria-live="polite">
+                  <AlertTriangle size={14} aria-hidden="true" />
+                  实时连接已断开，正在重连并恢复最新记录
+                </div>
+              )}
               {transcript.length === 0 && !isDiscussing && activeSession.status === "waiting" && (
                 <div className="text-center text-slate-500 py-16" role="status">
                   <Users size={48} className="mx-auto mb-4 opacity-30" aria-hidden="true" />
@@ -297,7 +342,7 @@ export default function RoundtablePage() {
               ))}
 
               {/* 流式发言 */}
-              {streamingSeat && (
+              {streamingSeat && connected && (
                 <div className="mb-4" role="log" aria-live="polite" aria-label={`${streamingSeat.speakerName} 正在发言`}>
                   {isStreamingNewRound() && transcript.length > 0 && (
                     <div className="flex items-center gap-3 my-4" aria-hidden="true">
@@ -518,8 +563,8 @@ export default function RoundtablePage() {
                   <button
                     type="button"
                     onClick={() => {
+                      clearActive();
                       setShowCreate(true);
-                      loadDetail("__clear__").catch(() => {});
                       refreshList();
                     }}
                     aria-label="新建圆桌会议"

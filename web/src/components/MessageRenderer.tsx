@@ -23,6 +23,7 @@ import RecursionLimitMsg from "./RecursionLimitMsg";
 type MsgComponent = React.ComponentType<{
   message: Message;
   onEdit?: (messageId: string, newContent: string) => void;
+  onCommand?: (payload: { type: string; [key: string]: unknown }) => boolean;
   editable?: boolean;
   streaming?: boolean;
   readonly?: boolean;
@@ -81,7 +82,7 @@ const UserMsg: MsgComponent = ({ message, onEdit, editable, streaming, readonly 
             <span className="text-xs font-mono text-purple-500">Agent {agentId}</span>
           </div>
           <div className="px-4 py-3 rounded-2xl rounded-bl-md border border-purple-500/30 bg-purple-500/10">
-            <MarkdownRenderer content={message.content || ""} className="text-sm" />
+            <MarkdownRenderer content={userContent} className="text-sm" />
           </div>
         </div>
       </div>
@@ -283,7 +284,6 @@ const CompressionDividerMsg: MsgComponent = ({ message }) => {
 const SystemPromptMsg: MsgComponent = () => null; // 不渲染
 
 const ErrorFallback: MsgComponent = ({ message }) => {
-  console.warn("[MessageRenderer] 未知消息类型:", message.type, message);
   return (
     <div className="flex justify-start mb-4" role="alert" aria-label="未知消息类型">
       <div className="max-w-[85%] px-4 py-3 rounded-2xl rounded-bl-md bg-slate-800/50 border border-red-500/30">
@@ -308,6 +308,7 @@ const messageRegistry: Record<string, MsgComponent> = {
   compression_divider: CompressionDividerMsg,
   system_prompt: SystemPromptMsg,
   content_safety_warning: ContentSafetyWarningMsg,
+  content_filter_warning: ContentSafetyWarningMsg,
   content_safety_diagnostic: ContentSafetyDiagnosticMsg,
   recursion_limit_reached: RecursionLimitMsg,
 };
@@ -317,6 +318,7 @@ const messageRegistry: Record<string, MsgComponent> = {
 interface MessageRendererProps {
   message: Message;
   onEdit?: (messageId: string, newContent: string) => void;
+  onCommand?: (payload: { type: string; [key: string]: unknown }) => boolean;
   editable?: boolean;
   streaming?: boolean;
   readonly?: boolean;
@@ -328,9 +330,9 @@ interface MessageRendererProps {
  * 根据 message.type 查找注册表渲染对应组件。
  * - 新格式：type 字段 (user/assistant/tool/compression_divider/...)
  * - 旧格式兼容：type 不存在时 fallback 到 display 或 role
- * - 未知类型：ErrorFallback（控制台报错 + 展示原始 JSON）
+ * - 未知类型：ErrorFallback（向用户展示原始 JSON）
  */
-export default function MessageRenderer({ message, onEdit, editable, streaming, readonly }: MessageRendererProps) {
+export default function MessageRenderer({ message, onEdit, onCommand, editable, streaming, readonly }: MessageRendererProps) {
   // 1. 确定 type
   let msgType = message.type;
   if (!msgType) {
@@ -358,6 +360,7 @@ export default function MessageRenderer({ message, onEdit, editable, streaming, 
     <Component
       message={message}
       onEdit={onEdit}
+      onCommand={onCommand}
       editable={editable}
       streaming={streaming}
       readonly={readonly}

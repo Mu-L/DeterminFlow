@@ -80,6 +80,8 @@ class MicroCompactStrategy:
                     content=placeholder,
                     tool_call_id=msg.tool_call_id,
                     name=msg.name if hasattr(msg, "name") else None,
+                    status=getattr(msg, "status", "success"),
+                    additional_kwargs=dict(getattr(msg, "additional_kwargs", {})),
                 )
                 compressed_count += 1
                 logger.debug(f"压缩工具结果: index={idx}, tool_call_id={msg.tool_call_id}")

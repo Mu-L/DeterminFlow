@@ -6,7 +6,7 @@
  * - drawer:  任务详情页使用，可拖拽调整宽度，窄于阈值自动收起，
  *            收起后在右侧显示浮窗把手可重新拖出
  *
- * 复用 useStreamingSession + StreamingChatView 进行流式对话，
+ * 复用 canonical conversation adapter + StreamingChatView 进行流式对话，
  * 连接 /ws/events 监听 wf_task_update 事件。
  */
 import { useState, useEffect, useCallback } from "react";
@@ -59,9 +59,8 @@ function isEventRecord(event: unknown): event is Record<string, unknown> {
 export default function WorkflowMainDrawer({
   mode,
   workflowId,
+  taskId,
   mainSessionId: propMainSessionId,
-  workflowName,
-  nodeCount,
   onMainStarted,
   onVariableUpdate,
   onTaskStarted,
@@ -71,6 +70,7 @@ export default function WorkflowMainDrawer({
 }: WorkflowMainDrawerProps) {
   // ---- 内部状态 ----
   const [takeoverState, setTakeoverState] = useState<MainTakeoverState>("idle");
+  const [startError, setStartError] = useState<string | null>(null);
   const [internalSessionId, setInternalSessionId] = useState<string | null>(propMainSessionId || null);
 
   // drawer 模式尺寸
@@ -92,9 +92,12 @@ export default function WorkflowMainDrawer({
   const {
     messages: chatMessages,
     streamingSegments,
+    phase: chatPhase,
     isStreaming: chatIsStreaming,
+    connected: chatConnected,
+    error: chatError,
     sendMessage,
-    setMessages: setChatMessages,
+    retry: retryChat,
     abortStream,
   } = useStreamingSession({
     sessionId: isChatConnected ? mainSessionId : null,
@@ -123,6 +126,8 @@ export default function WorkflowMainDrawer({
         if (
           isEventRecord(event) &&
           event.type === "wf_task_update" &&
+          event.workflow_id === workflowId &&
+          (!taskId || event.task_id === taskId) &&
           typeof event.status === "string" &&
           event.status !== "pre_running"
         ) {
@@ -132,7 +137,7 @@ export default function WorkflowMainDrawer({
           }
         }
       },
-      [mode, onTaskStarted],
+      [mode, onTaskStarted, taskId, workflowId],
     ),
     reconnectInterval: 5000,
   });
@@ -155,24 +160,20 @@ export default function WorkflowMainDrawer({
   // ---- 启动 Main ----
   const handleStartMain = async () => {
     setTakeoverState("connecting");
+    setStartError(null);
     try {
       const result = await preStartWorkflow(workflowId);
       if (result.session_id && result.task_id) {
         setInternalSessionId(result.session_id);
         onMainStarted?.(result.session_id, result.task_id);
-        setChatMessages([
-          {
-            type: "assistant",
-            content: `你好！我是工作流「${workflowName || "未命名"}」的 Main Agent。\n\n我已经了解了这个工作流的完整结构（${nodeCount || 0} 个节点），可以帮你填写全局变量。请告诉我你需要什么样的配置，或者直接让我帮你设置参数。`,
-          },
-        ]);
         setTakeoverState("connected");
       } else {
         setTakeoverState("idle");
+        setStartError("启动 Main 会话失败，请重试");
       }
-    } catch (e) {
-      console.error("启动 Main 会话失败:", e);
+    } catch {
       setTakeoverState("idle");
+      setStartError("启动 Main 会话失败，请检查连接后重试");
     }
   };
 
@@ -300,6 +301,7 @@ export default function WorkflowMainDrawer({
               <p className="text-sm text-slate-400 mb-6 leading-relaxed">
                 提前启动一个 AI Main Agent 来接管此工作流。它可以帮你智能填写全局变量、了解工作流结构，并在任务执行时审批每个节点的产出。
               </p>
+              {startError && <p className="mb-4 text-sm text-red-300" role="alert">{startError}</p>}
               <button
                 type="button"
                 onClick={handleStartMain}
@@ -331,6 +333,11 @@ export default function WorkflowMainDrawer({
             inputEnabled={true}
             inputPlaceholder="向 Main 发送消息..."
             header={chatHeader}
+            conversationId={mainSessionId}
+            connected={chatConnected}
+            loading={chatPhase === "loading" || chatPhase === "reconnecting"}
+            error={chatError}
+            onRetry={retryChat}
           />
         )}
       </div>
@@ -390,6 +397,11 @@ export default function WorkflowMainDrawer({
         inputEnabled={true}
         inputPlaceholder="向 Main 发送消息..."
         header={chatHeader}
+        conversationId={mainSessionId}
+        connected={chatConnected}
+        loading={chatPhase === "loading" || chatPhase === "reconnecting"}
+        error={chatError}
+        onRetry={retryChat}
       />
     </div>
   );

@@ -20,6 +20,8 @@ from typing import Any
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 
+from src.web.event_bus import event_bus
+
 logger = logging.getLogger("roundtable")
 
 
@@ -129,6 +131,7 @@ async def get_roundtable_detail(session_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"未找到圆桌会议 {session_id}")
 
     data = session.to_dict()
+    data["event_revision"] = event_bus.get_roundtable_revision(session_id)
     data["current_speaker"] = (
         session.current_speaker.role_name if session.current_speaker else None
     )

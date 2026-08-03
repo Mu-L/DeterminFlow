@@ -133,6 +133,7 @@ class SessionManager:
     def register_main(self, session: AgentSession):
         session.session_type = "main"
         self.sessions[session.session_id] = session
+        session._default_event_callback = self._make_event_callback(session.session_id)
         self.main_session_id = session.session_id
         # 设置 Main workspace 路径（统一使用 data/workspaces/{session_id}）
         if self._workspace_manager:
@@ -412,6 +413,7 @@ class SessionManager:
         # 6. 初始化 Graph
         session.setup_graph(llm=llm_client, tools=tools)
         session.start_consumer()
+        session._default_event_callback = self._make_event_callback(session.session_id)
 
         logger.info(f"Workflow main 已创建: {session.session_id} (workflow={workflow_id})")
         return session
@@ -484,6 +486,7 @@ class SessionManager:
         # 6. 初始化 Graph
         session.setup_graph(llm=llm_client, tools=tools)
         session.start_consumer()
+        session._default_event_callback = self._make_event_callback(session.session_id)
 
         logger.info(f"Workflow main (pre-start) 已创建: {session.session_id}")
         return session
@@ -613,6 +616,7 @@ class SessionManager:
             logger.info(f"Sub session {session.session_id} workspace: {ws_path}")
 
         self.sessions[session.session_id] = session
+        session._default_event_callback = self._make_event_callback(session.session_id)
 
         # 解析 prompt_template 用于路由
         prompt_template = agent_def.prompt_template if agent_def else "subagent"
@@ -1006,15 +1010,15 @@ class SessionManager:
         状态事件推送到 events 通道，stream_end 时额外推送 chain_end 全量消息。
         适用于 main session 和 sub session。
         """
-        session = self.sessions.get(session_id)
-
         async def callback(event: dict):
             from src.web.event_bus import event_bus
+            session = self.sessions.get(session_id)
             event["session_id"] = session_id
             event_type = event.get("type", "")
             # 流式事件推送到 chat 通道（前端 chat WS 能收到）
             if event_type in ("stream_start", "stream_end", "token", "reasoning_token",
-                              "tool_call_delta", "error", "tool_start", "tool_end"):
+                              "tool_call_delta", "error", "tool_start", "tool_end",
+                              "llm_usage"):
                 await event_bus.emit_chat(event)
             # 状态事件推送到 events 通道
             if event_type == "stream_start":
@@ -1082,10 +1086,24 @@ class SessionManager:
             return {"success": False, "message": "不能终止当前 Chat 活跃的主会话"}
         if session.status not in ("running", "waiting", "completed", "streaming"):
             return {"success": False, "message": f"子会话 {session_id} 当前状态为 {session.status}，无法终止"}
+        stopped = await session.cancel_active_invocation(timeout=5.0)
+        if not stopped:
+            return {"success": False, "message": f"会话 {session_id} 仍在停止中，请稍后重试"}
         task = self._sub_tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         session.status = "error"
+        from src.web.event_bus import event_bus
+        await event_bus.emit_chat({
+            "type": "error",
+            "message": f"会话 {session_id} 已被终止",
+            "session_id": session_id,
+            "terminal": True,
+        })
         session.updated_at = datetime.now(timezone.utc).isoformat()
         await session.async_save()
         logger.info(f"Sub session {session_id} 已被终止")
@@ -1099,9 +1117,17 @@ class SessionManager:
         # 允许删除非当前活跃的主会话（历史主会话）
         if session_id == self.main_session_id:
             return {"success": False, "message": "不能删除当前活跃的主会话"}
+        if session.status == "streaming" or session.invocation_active or session._invoke_lock.locked():
+            return {"success": False, "message": "会话正在生成中，请先终止后再删除"}
+        # 在首次 busy 检查与实际移除之间封闭会话，避免刚创建的调用任务继续执行。
+        session.request_termination()
         task = self._sub_tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         self._sub_tasks.pop(session_id, None)
         # 清理 workspace
         if self._workspace_manager and session.session_type == "sub":
@@ -1110,6 +1136,14 @@ class SessionManager:
         from src.agent.session import _persistence_manager
         _persistence_manager.unregister(session_id)
         del self.sessions[session_id]
+        from src.web.event_bus import event_bus
+        await event_bus.emit_chat({
+            "type": "error",
+            "message": f"会话 {session_id} 已被删除",
+            "session_id": session_id,
+            "terminal": True,
+        })
+        event_bus.clear_session(session_id)
         file_path = SESSIONS_DIR / f"{session_id}.json"
         if file_path.exists():
             file_path.unlink()
@@ -1180,6 +1214,7 @@ class SessionManager:
                         if session.status in ("running", "streaming"):
                             session.status = "error"
                     self.sessions[session.session_id] = session
+                    session._default_event_callback = self._make_event_callback(session.session_id)
                     if session.session_type == "main" and self.main_session_id is None:
                         self.main_session_id = session.session_id  # 仅首个 main 设为 Chat WS 默认绑定
             except Exception as e:

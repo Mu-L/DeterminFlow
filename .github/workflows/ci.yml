@@ -33,9 +33,7 @@ jobs:
       - working-directory: web
         run: npm run lint
       - working-directory: web
-        run: npm run test:extensions
-      - working-directory: web
-        run: npm run test:workflow
+        run: npm test
       - working-directory: web
         run: npm run build
 

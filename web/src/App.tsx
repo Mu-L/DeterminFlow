@@ -1,10 +1,11 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { MessageSquare, LayoutDashboard, GitBranch, Users, Layers, Settings, BookOpen, Wifi, WifiOff, FileText, Sliders, Workflow, Clock, Boxes, Loader2, type LucideIcon } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { CORE_TAB_IDS, isCoreTabId, type CoreTabId } from "@/core-tabs";
 import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
 import { useGlobalEvents } from "./hooks/useGlobalEvents";
+import { useUrlParam } from "./hooks/useUrlParam";
 import { useExtensions } from "./extensions/context-value";
 
 const ChatPage = lazy(() => import("./pages/ChatPage"));
@@ -67,10 +68,26 @@ const CORE_PAGE_MAP: Record<CoreTabId, React.ComponentType> = {
   extensions: ExtensionsPage,
 };
 
-// 全局事件包装器组件（在 ToastProvider 内部使用）
-function GlobalEventsWrapper() {
-  useGlobalEvents();
-  return null;
+function GlobalConnectionStatus() {
+  const { connected } = useGlobalEvents();
+
+  return (
+    <div className="flex shrink-0 items-center gap-3" aria-live="polite">
+      <div className="flex items-center gap-2 text-sm">
+        {connected ? (
+          <Wifi size={14} className="text-green-400" aria-hidden="true" />
+        ) : (
+          <WifiOff size={14} className="text-red-400" aria-hidden="true" />
+        )}
+        <span className={`hidden xl:inline ${connected ? "text-green-400" : "text-red-400"}`}>
+          {connected ? "已连接" : "断开"}
+        </span>
+        <span className="sr-only">
+          {connected ? "WebSocket 已连接" : "WebSocket 连接断开"}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function PageLoadingFallback() {
@@ -86,8 +103,7 @@ function PageLoadingFallback() {
 
 function App() {
   const extensions = useExtensions();
-  const [activeTab, setActiveTab] = useState("chat");
-  const [wsConnected] = useState(true);
+  const [requestedTab, setRequestedTab] = useUrlParam("tab");
   const extensionPages = useMemo(() => extensions.flatMap((extension) => extension.pages || []), [extensions]);
   const tabs = useMemo<TabConfig[]>(() => [
     ...CORE_TAB_CONFIG,
@@ -98,12 +114,18 @@ function App() {
       activeClass: page.activeClass,
     })),
   ], [extensionPages]);
+  const activeTab = tabs.some((tab) => tab.value === requestedTab)
+    ? requestedTab!
+    : "chat";
   const ExtensionPage = extensionPages.find((page) => page.id === activeTab)?.component;
   const CorePage = isCoreTabId(activeTab) ? CORE_PAGE_MAP[activeTab] : undefined;
 
+  const handleTabChange = (value: string) => {
+    setRequestedTab(value === "chat" ? null : value);
+  };
+
   return (
     <ToastProvider>
-      <GlobalEventsWrapper />
       <div className="min-h-screen bg-slate-900 flex flex-col">
       {/* Top Navigation Bar */}
       <header className="fixed top-0 left-0 right-0 z-50 h-14 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50">
@@ -124,7 +146,7 @@ function App() {
           </div>
 
           {/* Tabs */}
-          <Tabs className="min-w-0 flex-1" value={activeTab} onValueChange={setActiveTab}>
+          <Tabs className="min-w-0 flex-1" value={activeTab} onValueChange={handleTabChange}>
             <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <TabsList className="w-max justify-start bg-slate-800/80 border border-slate-700/50" role="tablist" aria-label="主导航">
                 {tabs.map((tab) => {
@@ -146,20 +168,7 @@ function App() {
             </div>
           </Tabs>
 
-          {/* Status Indicator */}
-          <div className="flex shrink-0 items-center gap-3" aria-live="polite">
-            <div className="flex items-center gap-2 text-sm">
-              {wsConnected ? (
-                <Wifi size={14} className="text-green-400" aria-hidden="true" />
-              ) : (
-                <WifiOff size={14} className="text-red-400" aria-hidden="true" />
-              )}
-              <span className={`hidden xl:inline ${wsConnected ? "text-green-400" : "text-red-400"}`}>
-                {wsConnected ? "已连接" : "断开"}
-              </span>
-              <span className="sr-only">{wsConnected ? "WebSocket 已连接" : "WebSocket 连接断开"}</span>
-            </div>
-          </div>
+          <GlobalConnectionStatus />
         </div>
       </header>
 

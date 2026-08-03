@@ -802,6 +802,9 @@ class RoundtableSession:
         self.turn_controller: TurnController = TurnController(seats, max_rounds, strategy)
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.ended_at: str | None = None
+        # 仅保存在当前进程，用于生成中途打开页面时恢复尚未提交的发言。
+        # 进程重启后正在执行的模型调用不会继续，因此不从磁盘恢复该草稿。
+        self.active_turn: dict | None = None
 
         # Phase 2 新增
         self.shared_memory: SharedMemory = SharedMemory()
@@ -857,6 +860,24 @@ class RoundtableSession:
             if role_lower in seat.role_name.lower() or seat.role_name.lower() in role_lower:
                 return seat
         return None
+
+    def begin_active_turn(self, seat: Seat, round_number: int) -> None:
+        """记录当前正在生成的可见发言。"""
+        self.active_turn = {
+            "seat_id": seat.seat_id,
+            "speaker_name": seat.role_name,
+            "content": "",
+            "round": round_number,
+        }
+
+    def append_active_turn(self, content: str) -> None:
+        """把模型增量追加到当前发言草稿。"""
+        if self.active_turn is not None:
+            self.active_turn["content"] += content
+
+    def end_active_turn(self) -> None:
+        """最终发言进入 transcript 后清除临时草稿。"""
+        self.active_turn = None
 
     def add_seat(self, seat_config: dict) -> Seat:
         """
@@ -986,8 +1007,13 @@ class RoundtableSession:
             "session_type": "roundtable",
             "topic": self.topic,
             "status": self.status,
+            "seat_count": len(self.seats),
+            "current_round": self.current_round,
+            "max_rounds": self.max_rounds,
+            "transcript_count": len(self.transcript),
             "seats": [s.to_dict() for s in self.seats],
             "transcript": [t.to_dict() for t in self.transcript],
+            "active_turn": dict(self.active_turn) if self.active_turn else None,
             "turn_controller": self.turn_controller.to_dict(),
             "shared_memory": self.shared_memory.to_dict(),
             "compressor": self.compressor.to_dict(),
@@ -1013,6 +1039,7 @@ class RoundtableSession:
         session.transcript = [
             TranscriptEntry.from_dict(t) for t in data.get("transcript", [])
         ]
+        session.active_turn = None
         session.turn_controller = TurnController.from_dict(tc_data, seats)
 
         # Phase 2 字段恢复

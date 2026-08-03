@@ -12,6 +12,8 @@
     "lint": "eslint .",
     "test:extensions": "tsx --test src/extensions/*.test.ts src/lib/plugin-api.test.ts",
     "test:workflow": "tsx --test src/components/workflow/*.test.ts",
+    "test:conversation": "tsx --test src/features/conversation/*.test.ts src/components/conversation/*.test.ts src/hooks/useUrlParam.test.ts src/lib/roundtableStream.test.ts",
+    "test": "npm run test:extensions && npm run test:workflow && npm run test:conversation",
     "preview": "vite preview"
   },
   "dependencies": {

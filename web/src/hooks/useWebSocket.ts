@@ -3,11 +3,18 @@ import { useState, useEffect, useRef, useCallback } from "react";
 interface UseWebSocketOptions {
   url: string;
   onMessage?: (data: unknown) => void;
+  onReconnect?: () => void;
   autoConnect?: boolean;
   reconnectInterval?: number;
 }
 
-export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInterval = 3000 }: UseWebSocketOptions) {
+export function useWebSocket({
+  url,
+  onMessage,
+  onReconnect,
+  autoConnect = true,
+  reconnectInterval = 3000,
+}: UseWebSocketOptions) {
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -15,6 +22,10 @@ export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInte
   const pongTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
+  const onReconnectRef = useRef(onReconnect);
+  onReconnectRef.current = onReconnect;
+  const connectionGenerationRef = useRef(0);
+  const hasConnectedRef = useRef(false);
   // 标记是否主动断开（主动断开时不自动重连）
   const intentionalCloseRef = useRef(false);
   // 上次收到消息（任意帧）的时间戳，用于僵死检测
@@ -47,7 +58,6 @@ export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInte
       // 整体活跃度检测（45s 内无任何消息则判定僵死）
       const elapsed = Date.now() - lastActivityRef.current;
       if (elapsed > 45000) {
-        console.warn(`WebSocket inactive for ${elapsed}ms, closing: ${url}`);
         ws.close();
         return;
       }
@@ -62,17 +72,17 @@ export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInte
 
       // 设置 pong 超时
       pongTimeoutRef.current = setTimeout(() => {
-        console.warn(`WebSocket pong timeout: ${url}`);
         ws.close();
       }, 5000);
     }, 15000);
-  }, [url, clearAllTimers]);
+  }, [clearAllTimers]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     intentionalCloseRef.current = false;
     lastActivityRef.current = Date.now();
+    const generation = ++connectionGenerationRef.current;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
@@ -81,12 +91,20 @@ export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInte
     const ws = new WebSocket(fullUrl);
 
     ws.onopen = () => {
+      if (generation !== connectionGenerationRef.current || wsRef.current !== ws) {
+        ws.close();
+        return;
+      }
+      const reconnected = hasConnectedRef.current;
+      hasConnectedRef.current = true;
       setConnected(true);
       lastActivityRef.current = Date.now();
       startHeartbeat();
+      if (reconnected) onReconnectRef.current?.();
     };
 
     ws.onmessage = (event) => {
+      if (generation !== connectionGenerationRef.current || wsRef.current !== ws) return;
       lastActivityRef.current = Date.now();
       try {
         const data = JSON.parse(event.data);
@@ -97,21 +115,16 @@ export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInte
           return;
         }
         onMessageRef.current?.(data);
-      } catch (e) {
-        console.error("WebSocket message parse error:", e);
+      } catch {
+        // Ignore malformed frames; a later authoritative snapshot can recover state.
       }
     };
 
     ws.onclose = () => {
+      if (generation !== connectionGenerationRef.current || wsRef.current !== ws) return;
       setConnected(false);
       clearAllTimers();
-      // 只在当前关闭的是自己时才清空引用，避免 reconnectChat 的竞态条件：
-      // reconnectChat → disconnectChat (关闭旧WS) → connectChat (创建新WS)
-      // 如果旧WS的 onclose 在 connectChat 之后触发，它会错误地清空新WS的引用
-      // 进而导致 intentionalCloseRef 被 connectChat 重置后触发自动重连，造成连接泄漏
-      if (wsRef.current === ws) {
-        wsRef.current = null;
-      }
+      wsRef.current = null;
       // 只在非主动断开时自动重连
       if (!intentionalCloseRef.current && reconnectInterval > 0) {
         reconnectTimerRef.current = setTimeout(connect, reconnectInterval);
@@ -119,7 +132,6 @@ export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInte
     };
 
     ws.onerror = () => {
-      console.error(`WebSocket error: ${fullUrl}`);
       // 错误后主动关闭，确保 onclose 被触发从而启动重连
       // 避免 WebSocket 进入僵死状态（onerror 但不触发 onclose）
       ws.close();
@@ -128,17 +140,20 @@ export function useWebSocket({ url, onMessage, autoConnect = true, reconnectInte
     wsRef.current = ws;
   }, [url, reconnectInterval, startHeartbeat, clearAllTimers]);
 
-  const send = useCallback((data: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(data));
-    }
+  const send = useCallback((data: unknown): boolean => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    wsRef.current.send(JSON.stringify(data));
+    return true;
   }, []);
 
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true;
+    connectionGenerationRef.current += 1;
     clearAllTimers();
-    wsRef.current?.close();
+    const ws = wsRef.current;
     wsRef.current = null;
+    ws?.close();
+    setConnected(false);
   }, [clearAllTimers]);
 
   useEffect(() => {

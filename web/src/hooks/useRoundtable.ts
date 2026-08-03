@@ -1,5 +1,12 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useWebSocket } from "./useWebSocket";
+import { useUrlParam } from "./useUrlParam";
+import {
+  contiguousRoundtableReplay,
+  getRoundtableEventRevision,
+  shouldBufferRoundtableEvent,
+  shouldHandleRoundtableEvent,
+} from "../lib/roundtableStream";
 import {
   RoundtableSummary,
   RoundtableSession,
@@ -32,6 +39,38 @@ interface StreamingSeat {
   round: number;
 }
 
+export interface RestoredRoundtableHistory {
+  roundSummaries: { round: number; content: string; source: string }[];
+  conclusion: { content: string; source: string } | null;
+  structuredConclusion: StructuredConclusion | null;
+}
+
+/** Derive all persisted conclusion state from one authoritative REST snapshot. */
+export function restoreRoundtableHistory(
+  detail: Pick<RoundtableSession, "transcript" | "shared_memory">,
+): RestoredRoundtableHistory {
+  const roundSummaries: RestoredRoundtableHistory["roundSummaries"] = [];
+  let conclusion: RestoredRoundtableHistory["conclusion"] = null;
+
+  for (const entry of detail.transcript || []) {
+    if (entry.entry_type === "summary") {
+      roundSummaries.push({
+        round: entry.round_number,
+        content: entry.content,
+        source: entry.speaker_name,
+      });
+    } else if (entry.entry_type === "conclusion") {
+      conclusion = { content: entry.content, source: entry.speaker_name };
+    }
+  }
+
+  return {
+    roundSummaries,
+    conclusion,
+    structuredConclusion: detail.shared_memory?.structured_conclusion || null,
+  };
+}
+
 /** 需要处理的圆桌事件类型集合（提取到模块级避免每次消息重建） */
 const RT_EVENT_TYPES = new Set([
   "speaker_selected", "moderator_decision",
@@ -42,6 +81,7 @@ const RT_EVENT_TYPES = new Set([
 ]);
 
 export function useRoundtable() {
+  const [urlRoundtableId, setUrlRoundtableId] = useUrlParam("roundtable_id");
   // 列表状态
   const [roundtables, setRoundtables] = useState<RoundtableSummary[]>([]);
 
@@ -50,12 +90,23 @@ export function useRoundtable() {
 
   // 当前活跃的圆桌会议
   const [activeSession, setActiveSession] = useState<RoundtableSession | null>(null);
+  const activeSessionRef = useRef<RoundtableSession | null>(null);
+  const detailRequestRef = useRef(0);
+  const selectedRoundtableIdRef = useRef<string | null>(null);
+  const loadingRoundtableIdRef = useRef<string | null>(null);
+  const bufferedEventsRef = useRef<WSRoundtableEvent[]>([]);
+  const appliedRevisionRef = useRef(0);
+  const reloadDetailRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // 讨论记录（实时更新）
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
 
   // 席位状态（实时更新）
   const [seats, setSeats] = useState<Seat[]>([]);
+  const seatsRef = useRef<Seat[]>([]);
+  seatsRef.current = seats;
 
   // 流式发言状态
   const [streamingSeat, setStreamingSeat] = useState<StreamingSeat | null>(null);
@@ -63,6 +114,8 @@ export function useRoundtable() {
 
   // 当前轮次和发言者
   const [currentRound, setCurrentRound] = useState(1);
+  const currentRoundRef = useRef(1);
+  currentRoundRef.current = currentRound;
   const [isDiscussing, setIsDiscussing] = useState(false);
 
   // Phase 2: Moderator 决策状态
@@ -80,15 +133,8 @@ export function useRoundtable() {
   const [structuredConclusion, setStructuredConclusion] = useState<StructuredConclusion | null>(null);
   const [isPaused, setIsPaused] = useState(false);
 
-  // 处理 WebSocket 消息
-  const handleMessage = useCallback((data: unknown) => {
-    const event = data as WSRoundtableEvent | { type: string };
-
-    // 只处理 rt_ 前缀事件和 Phase 2 新事件
-    if (!event.type.startsWith("rt_") && !RT_EVENT_TYPES.has(event.type)) return;
-
-    const rtEvent = event as WSRoundtableEvent;
-
+  // 将单个已确认属于当前圆桌的事件应用到界面状态。
+  const applyRoundtableEvent = useCallback((rtEvent: WSRoundtableEvent) => {
     switch (rtEvent.type) {
       case "rt_started": {
         setIsDiscussing(true);
@@ -143,9 +189,16 @@ export function useRoundtable() {
 
       case "rt_token": {
         streamingRef.current += rtEvent.content;
-        setStreamingSeat((prev) =>
-          prev ? { ...prev, content: streamingRef.current } : null
-        );
+        setStreamingSeat((prev) => {
+          if (prev) return { ...prev, content: streamingRef.current };
+          const seat = seatsRef.current.find((item) => item.seat_id === rtEvent.seat_id);
+          return {
+            seatId: rtEvent.seat_id,
+            speakerName: seat?.role_name || rtEvent.seat_id,
+            content: streamingRef.current,
+            round: currentRoundRef.current,
+          };
+        });
         break;
       }
 
@@ -205,7 +258,7 @@ export function useRoundtable() {
 
       case "rt_start_result": {
         if (!rtEvent.success) {
-          console.error("Roundtable start failed:", rtEvent.message);
+          setDetailError(rtEvent.message || "圆桌启动失败，请重试");
         }
         break;
       }
@@ -310,11 +363,41 @@ export function useRoundtable() {
     }
   }, []);
 
-  // 复用同一个 /ws/chat WebSocket 连接
+  // 详情快照加载期间先缓冲实时事件，快照落地后按原顺序重放，避免漏 token。
+  const handleMessage = useCallback((data: unknown) => {
+    const event = data as WSRoundtableEvent | { type: string };
+    if (!event.type.startsWith("rt_") && !RT_EVENT_TYPES.has(event.type)) return;
+
+    const rtEvent = event as WSRoundtableEvent;
+    if (!shouldHandleRoundtableEvent(selectedRoundtableIdRef.current, rtEvent)) return;
+    if (shouldBufferRoundtableEvent(loadingRoundtableIdRef.current, rtEvent)) {
+      bufferedEventsRef.current.push(rtEvent);
+      return;
+    }
+    const revision = getRoundtableEventRevision(rtEvent);
+    if (revision !== null) {
+      if (revision <= appliedRevisionRef.current) return;
+      if (revision > appliedRevisionRef.current + 1) {
+        const selectedId = selectedRoundtableIdRef.current;
+        if (selectedId) {
+          void reloadDetailRef.current?.(selectedId);
+          bufferedEventsRef.current.push(rtEvent);
+        }
+        return;
+      }
+      appliedRevisionRef.current = revision;
+    }
+    applyRoundtableEvent(rtEvent);
+  }, [applyRoundtableEvent]);
+
+  // 使用圆桌作用域连接，避免接收其他 Agent 会话的 token。
   const { connected } = useWebSocket({
-    url: "/ws/chat",
+    url: urlRoundtableId
+      ? `/ws/chat?roundtable_id=${encodeURIComponent(urlRoundtableId)}`
+      : "/ws/chat?roundtable_only=1",
     onMessage: handleMessage,
   });
+  const previousConnectedRef = useRef(false);
 
   // ============ REST API 操作 ============
 
@@ -322,8 +405,8 @@ export function useRoundtable() {
     try {
       const result = await fetchRoundtables();
       setRoundtables(result.roundtables);
-    } catch (e) {
-      console.error("加载圆桌列表失败:", e);
+    } catch {
+      setRoundtables([]);
     }
   }, []);
 
@@ -331,36 +414,118 @@ export function useRoundtable() {
   refreshListRef.current = refreshList;
 
   const loadDetail = useCallback(async (sessionId: string) => {
+    const requestId = ++detailRequestRef.current;
+    const isSwitchingSession = selectedRoundtableIdRef.current !== sessionId;
+    selectedRoundtableIdRef.current = sessionId;
+    loadingRoundtableIdRef.current = sessionId;
+    setDetailLoading(true);
+    setDetailError(null);
+    if (isSwitchingSession) {
+      bufferedEventsRef.current = [];
+      appliedRevisionRef.current = 0;
+      activeSessionRef.current = null;
+      setActiveSession(null);
+      setTranscript([]);
+      setSeats([]);
+      setStreamingSeat(null);
+      streamingRef.current = "";
+    }
+    setUrlRoundtableId(sessionId);
     try {
       const detail = await fetchRoundtableDetail(sessionId);
+      if (requestId !== detailRequestRef.current) return;
+      const restoredHistory = restoreRoundtableHistory(detail);
+      activeSessionRef.current = detail;
       setActiveSession(detail);
       setTranscript(detail.transcript || []);
       setSeats(detail.seats || []);
       setCurrentRound(detail.current_round || 1);
       setIsDiscussing(detail.status === "discussing");
       setStrategy(detail.strategy || "round_robin");
-      setConclusion(null);
-      setStructuredConclusion(null);
-      setRoundSummaries([]);
+      setConclusion(restoredHistory.conclusion);
+      setStructuredConclusion(restoredHistory.structuredConclusion);
+      setRoundSummaries(restoredHistory.roundSummaries);
       setModeratorDecision(null);
       setThinkingSeatId(null);
       setIsPaused(detail.status === "paused");
-
-      // 从 transcript 中恢复摘要和结论
-      for (const entry of (detail.transcript || [])) {
-        if (entry.entry_type === "summary") {
-          setRoundSummaries((prev) => [
-            ...prev,
-            { round: entry.round_number, content: entry.content, source: entry.speaker_name },
-          ]);
-        } else if (entry.entry_type === "conclusion") {
-          setConclusion({ content: entry.content, source: entry.speaker_name });
-        }
+      if (detail.active_turn) {
+        streamingRef.current = detail.active_turn.content;
+        setStreamingSeat({
+          seatId: detail.active_turn.seat_id,
+          speakerName: detail.active_turn.speaker_name,
+          content: detail.active_turn.content,
+          round: detail.active_turn.round,
+        });
+      } else {
+        streamingRef.current = "";
+        setStreamingSeat(null);
       }
+
+      const snapshotRevision = Number.isSafeInteger(detail.event_revision)
+        ? detail.event_revision || 0
+        : 0;
+      appliedRevisionRef.current = snapshotRevision;
+      const replay = contiguousRoundtableReplay(
+        snapshotRevision,
+        bufferedEventsRef.current,
+      );
+      if (replay.hasGap) {
+        bufferedEventsRef.current = replay.pending;
+        void reloadDetailRef.current?.(sessionId);
+        return;
+      }
+      bufferedEventsRef.current = [];
+      loadingRoundtableIdRef.current = null;
+      replay.events.forEach((event) => {
+        const revision = getRoundtableEventRevision(event);
+        if (revision !== null && revision <= appliedRevisionRef.current) return;
+        if (revision !== null) appliedRevisionRef.current = revision;
+        applyRoundtableEvent(event);
+      });
     } catch (e) {
-      console.error("加载圆桌详情失败:", e);
+      if (requestId === detailRequestRef.current) {
+        setDetailError(
+          e instanceof Error && e.message.includes("404")
+            ? "未找到该圆桌会议，可能已被删除"
+            : "加载圆桌详情失败，请检查连接后重试",
+        );
+      }
+    } finally {
+      if (requestId === detailRequestRef.current) {
+        setDetailLoading(false);
+      }
     }
-  }, []);
+  }, [applyRoundtableEvent, setUrlRoundtableId]);
+  reloadDetailRef.current = loadDetail;
+
+  const retryDetail = useCallback(() => {
+    const sessionId = selectedRoundtableIdRef.current;
+    if (sessionId) void loadDetail(sessionId);
+  }, [loadDetail]);
+
+  const clearActive = useCallback(() => {
+    detailRequestRef.current += 1;
+    selectedRoundtableIdRef.current = null;
+    loadingRoundtableIdRef.current = null;
+    bufferedEventsRef.current = [];
+    appliedRevisionRef.current = 0;
+    activeSessionRef.current = null;
+    setActiveSession(null);
+    setTranscript([]);
+    setSeats([]);
+    setStreamingSeat(null);
+    streamingRef.current = "";
+    setIsDiscussing(false);
+    setModeratorDecision(null);
+    setThinkingSeatId(null);
+    setRoundSummaries([]);
+    setConclusion(null);
+    setStructuredConclusion(null);
+    setIsPaused(false);
+    setDetailLoading(false);
+    setDetailError(null);
+    setUrlRoundtableId(null, { replace: true });
+  }, [setUrlRoundtableId]);
 
   const handleCreate = useCallback(async (data: CreateRoundtableRequest) => {
     const result = await createRoundtable(data);
@@ -397,14 +562,12 @@ export function useRoundtable() {
     const result = await deleteRoundtable(sessionId);
     if (result.success) {
       if (activeSession?.session_id === sessionId) {
-        setActiveSession(null);
-        setTranscript([]);
-        setSeats([]);
+        clearActive();
       }
       await refreshList();
     }
     return result;
-  }, [activeSession, refreshList]);
+  }, [activeSession, clearActive, refreshList]);
 
   // Phase 3: 暂停/恢复
   const handlePause = useCallback(async (sessionId: string) => {
@@ -463,6 +626,23 @@ export function useRoundtable() {
     refreshList();
   }, [refreshList]);
 
+  useEffect(() => {
+    if (urlRoundtableId && selectedRoundtableIdRef.current !== urlRoundtableId) {
+      void loadDetail(urlRoundtableId);
+    } else if (!urlRoundtableId && selectedRoundtableIdRef.current) {
+      clearActive();
+    }
+  }, [clearActive, urlRoundtableId, loadDetail]);
+
+  // 首次连接和每次重连都重新取得带 watermark 的 REST 快照，补齐断线窗口。
+  useEffect(() => {
+    const wasConnected = previousConnectedRef.current;
+    previousConnectedRef.current = connected;
+    if (connected && !wasConnected && selectedRoundtableIdRef.current) {
+      void loadDetail(selectedRoundtableIdRef.current);
+    }
+  }, [connected, loadDetail]);
+
   return {
     // 列表
     roundtables,
@@ -471,6 +651,10 @@ export function useRoundtable() {
     // 活跃会话
     activeSession,
     loadDetail,
+    clearActive,
+    detailLoading,
+    detailError,
+    retryDetail,
 
     // 实时状态
     transcript,

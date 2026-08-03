@@ -33,46 +33,70 @@ function useDialogFocus(open: boolean, containerRef: React.RefObject<HTMLDivElem
     return () => el.removeEventListener("keydown", handleKeyDown);
   }, [open, containerRef]);
 }
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
 
-import { useChat } from "../hooks/useChat";
 import { useSessions } from "../hooks/useSessions";
 import { useApprovals } from "../hooks/useApprovals";
-import type { Message } from "../types";
-import ChatMessage from "../components/ChatMessage";
-import StreamingMessage from "../components/StreamingMessage";
-import ThinkingChain from "../components/ThinkingChain";
-import ToolCallCard from "../components/ToolCallCard";
+import { useUrlParam } from "../hooks/useUrlParam";
+import { useConversation } from "../features/conversation/useConversation";
+import { ConversationTimeline } from "../components/conversation";
 import ApprovalPanel from "../components/ApprovalPanel";
 import ResizableSidePanel from "../components/ResizableSidePanel";
 import MonitoringCard from "../components/MonitoringCard";
 
 import {
   fetchSessionDetail, fetchSessionSystemPrompt, deleteSession, killSession,
-  compressSession, createNewMainSession,
+  abortSession, compressSession, createNewMainSession,
   fetchPresetPhrases, createPresetPhrase, updatePresetPhrase, deletePresetPhrase,
 } from "../lib/api";
-import { SessionDetail, PresetPhrase } from "../types";
+import type { Message, NotificationData, SessionDetail, PresetPhrase } from "../types";
 
-const EMPTY_MESSAGES: Message[] = [];
 export default function ChatPage() {
-  const {
-    connected, sendMessage, sendMessageToSession, editMessageAndResend,
-    switchToSession, loadSessionHistory,
-    getSessionMessages, getSessionStreaming, getSessionTokenUsage,
-    getMainSessionId, setMainSessionId, abortStream,
-  } = useChat();
   const { sessions, mainSessionId, loadSessions } = useSessions();
+  const [viewingSessionId, setViewingSessionId] = useUrlParam("session_id");
+  const targetSessionId = viewingSessionId || mainSessionId;
+  const [notificationMessages, setNotificationMessages] = useState<Message[]>([]);
+  const handleExtraConversationEvent = useCallback((rawEvent: unknown) => {
+    if (targetSessionId !== mainSessionId || !rawEvent || typeof rawEvent !== "object") return;
+    const event = rawEvent as { type?: string; data?: NotificationData };
+    if (event.type !== "notification" || !event.data) return;
+    const notification = event.data;
+    setNotificationMessages((current) => [
+      ...current,
+      {
+        id: `notification:${notification.from}:${Date.now()}`,
+        type: "assistant",
+        content:
+          `**[子会话通知]** 来自 \`${notification.from}\`` +
+          `${notification.task ? ` (${notification.task})` : ""}` +
+          `${notification.status ? ` — 状态: ${notification.status}` : ""}` +
+          `\n\n${notification.content}`,
+      },
+    ]);
+  }, [mainSessionId, targetSessionId]);
+  const {
+    messages,
+    streamingSegments,
+    phase,
+    isStreaming: isStreamingForCurrentView,
+    connected,
+    tokenUsage,
+    error: conversationError,
+    sendMessage,
+    sendCommand,
+    editMessageAndResend,
+    replaceMessages,
+    resync,
+  } = useConversation({
+    sessionId: targetSessionId,
+    onExtraEvent: handleExtraConversationEvent,
+  });
   const {
     pendingApprovals, resolvedApprovals,
     approve: handleApprove, reject: handleReject, clearResolved,
   } = useApprovals();
   const [input, setInput] = useState("");
   const [sidePanel, setSidePanel] = useState<"sessions" | "prompt" | "workspace">("sessions");
-  const messageScrollAreaRef = useRef<HTMLDivElement>(null);
-  const autoScrollFrameRef = useRef<number | null>(null);
-  const shouldFollowOutputRef = useRef(true);
 
   // 预设短语状态
   const [presetPhrases, setPresetPhrases] = useState<PresetPhrase[]>([]);
@@ -101,8 +125,7 @@ export default function ChatPage() {
     }
   }, [confirmDialog.open]);
 
-  // 新建会话错误状态
-  const [createSessionError, setCreateSessionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // 监控卡片折叠状态（默认折叠）
   const [monitoringCollapsed, setMonitoringCollapsed] = useState(true);
@@ -111,48 +134,67 @@ export default function ChatPage() {
   const [llmContext, setLlmContext] = useState<Awaited<ReturnType<typeof fetchSessionSystemPrompt>> | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
 
-  // 会话切换相关状态
-  const [viewingSessionId, setViewingSessionId] = useState<string | null>(null); // null = 当前主会话（实时）
+  // 会话详情仅用于判断交互能力；消息历史由 canonical WS snapshot 管理。
   const [viewingSession, setViewingSession] = useState<SessionDetail | null>(null);
   const [loadingSession, setLoadingSession] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyReloadToken, setHistoryReloadToken] = useState(0);
+  const detailRequestRef = useRef(0);
 
-  // 主会话 ID 同步到 useChat（用于事件的路由回退）
   useEffect(() => {
-    if (mainSessionId) {
-      setMainSessionId(mainSessionId);
-      // 首次加载或主会话变更时，拉取历史消息
-      if (getSessionMessages(mainSessionId).length === 0) {
-        fetchSessionDetail(mainSessionId).then((detail) => {
-          loadSessionHistory(mainSessionId, detail.messages || [], detail.token_usage || null);
-        }).catch(() => {});
-      }
+    setNotificationMessages([]);
+  }, [targetSessionId]);
+
+  // REST 只作为握手前的历史兜底；replaceMessages 会拒绝覆盖已到达的权威 snapshot。
+  useEffect(() => {
+    const requestId = ++detailRequestRef.current;
+    setViewingSession(null);
+    setHistoryError(null);
+    if (!targetSessionId) {
+      setLoadingSession(false);
+      return;
     }
-  }, [mainSessionId, setMainSessionId, getSessionMessages, loadSessionHistory]);
+
+    setLoadingSession(true);
+    fetchSessionDetail(targetSessionId)
+      .then((detail) => {
+        if (requestId !== detailRequestRef.current) return;
+        if (viewingSessionId === targetSessionId) setViewingSession(detail);
+        replaceMessages(detail.messages || []);
+      })
+      .catch((error: unknown) => {
+        if (requestId !== detailRequestRef.current) return;
+        setHistoryError(error instanceof Error ? error.message : "加载会话详情失败");
+      })
+      .finally(() => {
+        if (requestId === detailRequestRef.current) setLoadingSession(false);
+      });
+
+    return () => {
+      if (requestId === detailRequestRef.current) detailRequestRef.current += 1;
+    };
+  }, [historyReloadToken, replaceMessages, targetSessionId, viewingSessionId]);
+
+  const displayMessages = useMemo(
+    () => [...messages, ...notificationMessages],
+    [messages, notificationMessages],
+  );
 
   // 实时获取当前查看会话的完整 LLM 上下文
   const loadSystemPrompt = useCallback(async () => {
     const targetId = viewingSessionId || mainSessionId;
     if (!targetId) return;
     setPromptLoading(true);
+    setActionError(null);
     try {
       const data = await fetchSessionSystemPrompt(targetId);
       setLlmContext(data);
-    } catch (e) {
-      console.error("获取 LLM 上下文失败:", e);
+    } catch {
+      setActionError("获取 LLM 上下文失败，请重试");
     } finally {
       setPromptLoading(false);
     }
   }, [viewingSessionId, mainSessionId]);
-
-  // 派生变量：当前目标会话及对应的消息/流式状态
-  const getTargetSessionId = useCallback((): string | null => {
-    return viewingSessionId || getMainSessionId();
-  }, [viewingSessionId, getMainSessionId]);
-  const targetSessionId = getTargetSessionId();
-  const displayMessages = targetSessionId ? getSessionMessages(targetSessionId) : EMPTY_MESSAGES;
-  const { isStreaming: isStreamingForCurrentView, streamingSegments, hasStreamedThisCycle } =
-    getSessionStreaming(targetSessionId);
-  const tokenUsage = getSessionTokenUsage(targetSessionId);
 
   // 切换到提示词面板时自动加载，会话切换时也自动刷新
   useEffect(() => {
@@ -168,74 +210,6 @@ export default function ChatPage() {
     }
   }, [displayMessages.length, isStreamingForCurrentView, sidePanel, loadSystemPrompt]);
 
-  const getMessageViewport = useCallback(() => {
-    return messageScrollAreaRef.current?.querySelector<HTMLElement>(
-      "[data-radix-scroll-area-viewport]"
-    ) || null;
-  }, []);
-
-  const scrollToBottom = useCallback((force = false) => {
-    if (!force && !shouldFollowOutputRef.current) return;
-    if (autoScrollFrameRef.current !== null) return;
-
-    autoScrollFrameRef.current = requestAnimationFrame(() => {
-      autoScrollFrameRef.current = null;
-      const viewport = getMessageViewport();
-      if (!viewport) return;
-      viewport.scrollTop = viewport.scrollHeight;
-      if (force) shouldFollowOutputRef.current = true;
-    });
-  }, [getMessageViewport]);
-
-  // 用户主动向上滚动后停止自动跟随，回到底部附近时恢复。
-  useEffect(() => {
-    const viewport = getMessageViewport();
-    if (!viewport) return;
-    const handleScroll = () => {
-      const distanceToBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-      shouldFollowOutputRef.current = distanceToBottom < 160;
-    };
-    handleScroll();
-    viewport.addEventListener("scroll", handleScroll, { passive: true });
-    return () => viewport.removeEventListener("scroll", handleScroll);
-  }, [getMessageViewport]);
-
-  const streamingTailLength = useMemo(() => {
-    const tail = streamingSegments[streamingSegments.length - 1];
-    if (!tail) return 0;
-    if (tail.type === "text" || tail.type === "reasoning") return tail.content.length;
-    return tail.tool.args.length + (tail.tool.result?.length || 0);
-  }, [streamingSegments]);
-
-  // 流式更新按动画帧即时跟随，避免每个 token 重启平滑滚动动画。
-  useEffect(() => {
-    if (isStreamingForCurrentView || hasStreamedThisCycle || displayMessages.length > 0) {
-      scrollToBottom();
-    }
-  }, [
-    displayMessages.length,
-    streamingSegments.length,
-    streamingTailLength,
-    isStreamingForCurrentView,
-    hasStreamedThisCycle,
-    scrollToBottom,
-  ]);
-
-  // 切换会话后滚动到最底部
-  useEffect(() => {
-    shouldFollowOutputRef.current = true;
-    scrollToBottom(true);
-  }, [targetSessionId, scrollToBottom]);
-
-  useEffect(() => {
-    return () => {
-      if (autoScrollFrameRef.current !== null) {
-        cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = null;
-      }
-    };
-  }, []);
-
   // 判断会话是否可交互（后端有已编译 graph 且状态非 error/idle）
   const isSessionInteractive = useCallback((session: SessionDetail | null): boolean => {
     if (!session) return false;
@@ -243,30 +217,20 @@ export default function ChatPage() {
     return session.status !== "error" && session.status !== "idle";
   }, []);
 
-  // 切换到查看某个会话
-  const handleViewSession = useCallback(async (sessionId: string) => {
-    // 如果点击的是当前正在查看的，取消查看回到主会话视图
-    if (viewingSessionId === sessionId) {
-      setViewingSessionId(null);
-      setViewingSession(null);
-      switchToSession(null);
-      return;
-    }
+  const isViewingOther = viewingSessionId !== null;
+  const isReadOnly = isViewingOther && !isSessionInteractive(viewingSession);
+  const canSend = Boolean(targetSessionId && connected && phase === "ready" && !isReadOnly);
+  const timelineError = conversationError ||
+    ((!connected || phase === "loading") ? historyError : null);
+  const handleRetryHistory = useCallback(() => {
+    setHistoryReloadToken((value) => value + 1);
+    resync();
+  }, [resync]);
 
-    setLoadingSession(true);
-    try {
-      const detail = await fetchSessionDetail(sessionId);
-      setViewingSessionId(sessionId);
-      setViewingSession(detail);
-      // 加载历史消息到缓存并切换视图
-      loadSessionHistory(sessionId, detail.messages || [], detail.token_usage || null);
-      switchToSession(sessionId);
-    } catch (e) {
-      console.error("加载会话详情失败:", e);
-    } finally {
-      setLoadingSession(false);
-    }
-  }, [viewingSessionId, switchToSession, loadSessionHistory]);
+  // 切换到查看某个会话
+  const handleViewSession = useCallback((sessionId: string) => {
+    setViewingSessionId(viewingSessionId === sessionId ? null : sessionId);
+  }, [setViewingSessionId, viewingSessionId]);
 
   // 删除会话
   const handleDeleteSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {
@@ -281,15 +245,14 @@ export default function ChatPage() {
           if (viewingSessionId === sessionId) {
             setViewingSessionId(null);
             setViewingSession(null);
-            switchToSession(null);
           }
           loadSessions();
-        } catch (err) {
-          console.error("删除会话失败:", err);
+        } catch {
+          setActionError("删除会话失败，请重试");
         }
       },
     });
-  }, [viewingSessionId, switchToSession, loadSessions]);
+  }, [viewingSessionId, setViewingSessionId, loadSessions]);
 
   // 终止会话
   const handleKillSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {
@@ -302,8 +265,8 @@ export default function ChatPage() {
         try {
           await killSession(sessionId);
           loadSessions();
-        } catch (err) {
-          console.error("终止会话失败:", err);
+        } catch {
+          setActionError("终止会话失败，请重试");
         }
       },
     });
@@ -316,20 +279,24 @@ export default function ChatPage() {
 
   // 中止当前查看会话的流式输出
   const handleStop = useCallback(async () => {
-    const targetId = getTargetSessionId();
-    if (!targetId) return;
-    await abortStream(targetId);
-  }, [getTargetSessionId, abortStream]);
+    if (!targetSessionId) return;
+    try {
+      await abortSession(targetSessionId);
+    } finally {
+      resync();
+    }
+  }, [resync, targetSessionId]);
 
   // 手动触发上下文压缩
   const handleCompress = useCallback(async () => {
     const targetId = viewingSessionId || mainSessionId;
     if (!targetId || compressing) return;
     setCompressing(true);
+    setActionError(null);
     try {
       await compressSession(targetId);
-    } catch (e) {
-      console.error("压缩失败:", e);
+    } catch {
+      setActionError("压缩失败，请重试");
     } finally {
       setCompressing(false);
     }
@@ -337,17 +304,9 @@ export default function ChatPage() {
 
   // 点击预设短语
   const handlePresetSend = useCallback((content: string) => {
-    if (!connected) return;
-    const targetId = getTargetSessionId();
-    if (!targetId) return;
-    const { isStreaming: targetStreaming } = getSessionStreaming(targetId);
-    if (targetStreaming) return;
-    if (viewingSessionId && viewingSession && isSessionInteractive(viewingSession)) {
-      sendMessageToSession(viewingSessionId, content);
-    } else {
-      sendMessage(content);
-    }
-  }, [connected, viewingSessionId, viewingSession, isSessionInteractive, sendMessageToSession, sendMessage, getTargetSessionId, getSessionStreaming]);
+    if (!canSend) return;
+    sendMessage(content);
+  }, [canSend, sendMessage]);
 
   // 编辑对话框 - 打开新增
   const openAddDialog = useCallback(() => {
@@ -368,6 +327,7 @@ export default function ChatPage() {
   // 保存预设短语
   const handleSavePresetPhrase = useCallback(async () => {
     if (!editLabel.trim() || !editContent.trim()) return;
+    setActionError(null);
     try {
       if (editingId) {
         const updated = await updatePresetPhrase(editingId, { label: editLabel.trim(), content: editContent.trim() });
@@ -377,95 +337,45 @@ export default function ChatPage() {
         setPresetPhrases((prev) => [...prev, created]);
       }
       setEditDialogOpen(false);
-    } catch (e) {
-      console.error("保存预设短语失败:", e);
+    } catch {
+      setActionError("保存预设短语失败，请重试");
     }
   }, [editLabel, editContent, editingId]);
 
   // 新建主会话（支持指定 agent_type）
   const handleCreateSession = useCallback(async (agentType?: string) => {
-    setCreateSessionError(null);
+    setActionError(null);
     try {
       const result = await createNewMainSession(agentType);
       await loadSessions();
       // 自动选中新建的会话
       if (result.session_id) {
-        handleViewSession(result.session_id);
+        setViewingSessionId(result.session_id);
       }
     } catch (e) {
-      setCreateSessionError("新建会话失败：" + (e as Error).message);
+      setActionError("新建会话失败：" + (e as Error).message);
     }
-  }, [loadSessions, handleViewSession]);
+  }, [loadSessions, setViewingSessionId]);
 
   // 删除预设短语
   const handleDeletePresetPhrase = useCallback(async (phraseId: string) => {
+    setActionError(null);
     try {
       await deletePresetPhrase(phraseId);
       setPresetPhrases((prev) => prev.filter((p) => p.id !== phraseId));
-    } catch (e) {
-      console.error("删除预设短语失败:", e);
+    } catch {
+      setActionError("删除预设短语失败，请重试");
     }
   }, []);
 
   const handleSend = () => {
-    if (!input.trim() || !connected) return;
-    const targetId = getTargetSessionId();
-    if (!targetId) return;
-    // 目标会话正在流式输出时阻止发送
-    const { isStreaming: targetStreaming } = getSessionStreaming(targetId);
-    if (targetStreaming) return;
-
-    if (viewingSessionId && viewingSession && isSessionInteractive(viewingSession)) {
-      sendMessageToSession(viewingSessionId, input.trim());
-    } else {
-      sendMessage(input.trim());
-    }
-    setInput("");
+    if (!input.trim() || !canSend) return;
+    if (sendMessage(input.trim())) setInput("");
   };
 
   const handleEditDisplayedMessage = useCallback((msgId: string, newContent: string) => {
-    const targetId = getTargetSessionId();
-    if (targetId) {
-      editMessageAndResend(targetId, msgId, newContent);
-    }
-  }, [getTargetSessionId, editMessageAndResend]);
-
-  // 预合并工具结果：将连续的 assistant + tool 消息合并，使 ToolCallCard 统一显示 args + result
-  const mergedMessages = useMemo(() => {
-    const result: Message[] = [];
-    let i = 0;
-    while (i < displayMessages.length) {
-      const msg = displayMessages[i];
-      if (msg.type === "tool") {
-        i++;
-        continue;
-      }
-      if (msg.type === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
-        const toolResults: Record<string, string> = {};
-        let j = i + 1;
-        while (j < displayMessages.length && displayMessages[j].type === "tool") {
-          const toolMsg = displayMessages[j];
-          if (toolMsg.tool_call_id) {
-            toolResults[toolMsg.tool_call_id] = toolMsg.content || "";
-          }
-          j++;
-        }
-        const enhancedToolCalls = msg.tool_calls.map((tc) => ({
-          ...tc,
-          function: {
-            ...tc.function,
-            result: toolResults[tc.id] || tc.function.result,
-          },
-        }));
-        result.push({ ...msg, tool_calls: enhancedToolCalls });
-        i = j;
-      } else {
-        result.push(msg);
-        i++;
-      }
-    }
-    return result;
-  }, [displayMessages]);
+    editMessageAndResend(msgId, newContent);
+  }, [editMessageAndResend]);
 
   // 计算可编辑消息范围：最后一条 compression_divider 之后的 user 消息可编辑
   const editableMap = useMemo(() => {
@@ -487,10 +397,6 @@ export default function ChatPage() {
     }
     return map;
   }, [displayMessages]);
-
-  const isViewingOther = viewingSessionId !== null;
-  // 判断是否是不可交互的历史会话（已完成/出错的非活跃会话）
-  const isReadOnly = isViewingOther && !isSessionInteractive(viewingSession);
 
   // 会话列表按 updated_at 降序排序（最近活跃的在前）
   const sortedSessions = useMemo(
@@ -519,7 +425,7 @@ export default function ChatPage() {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0" role="main" aria-label="聊天区域">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0" role="main" aria-label="聊天区域">
         {/* 审批通知面板 */}
         <ApprovalPanel
           pendingApprovals={pendingApprovals}
@@ -529,86 +435,38 @@ export default function ChatPage() {
           onClearResolved={clearResolved}
         />
 
-        {/* Messages */}
-        <ScrollArea ref={messageScrollAreaRef} className="flex-1 px-6 py-4">
-          <div className="w-full max-w-4xl mx-auto">
-            {mergedMessages.length === 0 && !isStreamingForCurrentView && !loadingSession && (
-              <div className="flex flex-col items-center justify-center h-64 text-center" role="status" aria-label="暂无消息">
-                <div className="mb-4 h-16 w-16 animate-float motion-reduce:animate-none">
-                  <img
-                    src={BRAND_MARK_DARK}
-                    alt=""
-                    className="h-full w-full"
-                    aria-hidden="true"
-                  />
-                </div>
-                <h2 className="text-xl font-semibold text-slate-200 mb-2">
-                  {isViewingOther ? "此会话暂无消息" : PRODUCT_NAME}
-                </h2>
-                <p className="text-muted-foreground text-sm">
-                  {isViewingOther
-                    ? "可以在下方输入框向此会话发送消息"
-                    : "输入消息开始对话，或切换到 Workflow 构建可恢复的 AI 流程"
-                  }
-                </p>
+        <ConversationTimeline
+          messages={displayMessages}
+          streamingSegments={streamingSegments}
+          isStreaming={isStreamingForCurrentView}
+          loading={phase === "loading" || (loadingSession && displayMessages.length === 0)}
+          error={timelineError}
+          onRetry={handleRetryHistory}
+          conversationId={targetSessionId}
+          readonly={isReadOnly}
+          onEditMessage={handleEditDisplayedMessage}
+          onCommand={isReadOnly ? undefined : sendCommand}
+          isMessageEditable={(message) =>
+            message.type === "user" && !!message.id && editableMap.has(message.id)
+          }
+          ariaLabel="聊天消息"
+          contentClassName="w-full max-w-4xl mx-auto px-6 py-4"
+          emptyState={(
+            <div className="flex flex-col items-center justify-center h-64 text-center" role="status" aria-label="暂无消息">
+              <div className="mb-4 h-16 w-16 animate-float motion-reduce:animate-none">
+                <img src={BRAND_MARK_DARK} alt="" className="h-full w-full" aria-hidden="true" />
               </div>
-            )}
-
-            {loadingSession && (
-              <div className="flex items-center justify-center h-32 text-muted-foreground text-sm" role="status" aria-label="加载会话消息中">
-                <div className="animate-spin motion-reduce:animate-none w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full mr-2" aria-hidden="true" />
-                <span className="sr-only">加载中</span>
-                加载会话消息中...
-              </div>
-            )}
-
-            {mergedMessages.map((msg, i) => (
-              <ChatMessage
-                key={`${viewingSessionId || "live"}-${i}`}
-                message={msg}
-                onEdit={handleEditDisplayedMessage}
-                editable={msg.type === "user" && !!msg.id && editableMap.has(msg.id)}
-                streaming={msg.type === "user" ? isStreamingForCurrentView : undefined}
-                readonly={isReadOnly}
-              />
-            ))}
-
-            {/* Streaming segments - show when streaming for the currently viewed session */}
-            {isStreamingForCurrentView && streamingSegments.map((seg, i) => {
-              if (seg.type === "text") {
-                return (
-                  <StreamingMessage
-                    key={`seg-text-${i}`}
-                    content={seg.content}
-                    showCursor={isStreamingForCurrentView && i === streamingSegments.length - 1}
-                  />
-                );
-              }
-              if (seg.type === "reasoning") {
-                const isLastReasoning = i === streamingSegments.length - 1;
-                return (
-                  <div key={`seg-reasoning-${i}`} className="flex justify-start mb-4">
-                    <div className="max-w-[85%]">
-                      <ThinkingChain
-                        content={seg.content}
-                        isStreaming={isLastReasoning && isStreamingForCurrentView}
-                      />
-                    </div>
-                  </div>
-                );
-              }
-              return (
-                <ToolCallCard
-                  key={`seg-tool-${seg.tool.run_id}`}
-                  name={seg.tool.name}
-                  args={seg.tool.args}
-                  result={seg.tool.result}
-                  status={seg.tool.status}
-                />
-              );
-            })}
-          </div>
-        </ScrollArea>
+              <h2 className="text-xl font-semibold text-slate-200 mb-2">
+                {isViewingOther ? "此会话暂无消息" : PRODUCT_NAME}
+              </h2>
+              <p className="text-muted-foreground text-sm">
+                {isViewingOther
+                  ? "可以在下方输入框向此会话发送消息"
+                  : "输入消息开始对话，或切换到 Workflow 构建可恢复的 AI 流程"}
+              </p>
+            </div>
+          )}
+        />
 
         {/* Input Area */}
         <div className="px-6 pb-4">
@@ -624,7 +482,7 @@ export default function ChatPage() {
                       type="button"
                       key={phrase.id}
                       onClick={() => handlePresetSend(phrase.content)}
-                      disabled={isReadOnly || !connected}
+                      disabled={!canSend}
                       aria-label={`发送预设短语: ${phrase.label}`}
                       className="px-2.5 py-1 text-xs rounded-full bg-slate-700/60 text-slate-300 hover:bg-indigo-500/20 hover:text-indigo-400 border border-border/40 transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
                     >
@@ -685,7 +543,7 @@ export default function ChatPage() {
                         : "输入消息... (Shift+Enter 换行)"
                   }
                   rows={1}
-                  disabled={isReadOnly}
+                  disabled={!canSend && !isStreamingForCurrentView}
                   className="w-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground resize-none max-h-32 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-indigo-500/30 rounded-lg"
                   style={{ minHeight: "44px" }}
                 />
@@ -705,10 +563,10 @@ export default function ChatPage() {
                 <button
                   type="button"
                   onClick={handleSend}
-                  disabled={!input.trim() || isStreamingForCurrentView || isReadOnly || !connected}
+                  disabled={!input.trim() || !canSend}
                   aria-label="发送消息"
                   className={`p-2 rounded-lg transition-colors duration-200 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center ${
-                    input.trim() && !isStreamingForCurrentView && !isReadOnly && connected
+                    input.trim() && canSend
                       ? "bg-indigo-500 hover:bg-indigo-400 text-white"
                       : "bg-slate-700 text-muted-foreground cursor-not-allowed"
                   }`}
@@ -717,7 +575,7 @@ export default function ChatPage() {
                 </button>
               )}
             </div>
-            {!connected && (
+            {!connected && targetSessionId && phase !== "loading" && (
               <div className="text-center text-red-400 text-xs mt-2" role="alert" aria-live="polite">WebSocket 未连接，请检查后端服务</div>
             )}
           </div>
@@ -912,17 +770,17 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* 新建会话错误提示 */}
-      {createSessionError && (
+      {/* 操作错误提示 */}
+      {actionError && (
         <div
           className="fixed bottom-4 right-4 z-50 max-w-sm bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 flex items-center gap-3 shadow-lg"
           role="alert"
           aria-live="polite"
         >
-          <span className="text-xs text-red-300 flex-1">{createSessionError}</span>
+          <span className="text-xs text-red-300 flex-1">{actionError}</span>
           <button
             type="button"
-            onClick={() => setCreateSessionError(null)}
+            onClick={() => setActionError(null)}
             className="text-red-400 hover:text-red-300 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="关闭错误提示"
           >
