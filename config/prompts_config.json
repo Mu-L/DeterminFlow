@@ -37,8 +37,8 @@
         },
         {
           "name": "skills_guidance",
-          "content": "## Skills\n\n下方列出当前可见的 Skills。遇到匹配任务时，先使用 get_skills 读取完整说明，再按说明执行。\n\n{{skills_section}}",
-          "token_estimate": 45,
+          "content": "## Skills\n\n下方列出当前可见的 Skills。遇到匹配任务时，先使用 get_skills 读取完整说明，再按说明执行。创建或修改 Skill/Rule 时加载 `skill-rule-authoring-guide`；操作 Workflow 时加载 `workflow-guide`。\n\n{{skills_section}}\n\n运行时 Skill 使用 `skill_manage` 管理；随 Core 发版的版本化 Skill 位于 `src/core/defaults/skills/`，不要把 `data/skills/` 的实例副本当作发行源。",
+          "token_estimate": 101,
           "cache_break": false,
           "cache_break_reason": "",
           "enabled": true,

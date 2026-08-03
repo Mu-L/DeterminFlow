@@ -9,6 +9,36 @@
     }
   ],
   "skill_configs": {
+    "agent-definition-guide": {
+      "enabled": true,
+      "priority": 50,
+      "auto_inject": true,
+      "workflow_only": false
+    },
+    "automation-guide": {
+      "enabled": true,
+      "priority": 50,
+      "auto_inject": true,
+      "workflow_only": false
+    },
+    "prompt-template-guide": {
+      "enabled": true,
+      "priority": 50,
+      "auto_inject": true,
+      "workflow_only": false
+    },
+    "script-library-guide": {
+      "enabled": true,
+      "priority": 50,
+      "auto_inject": true,
+      "workflow_only": false
+    },
+    "skill-rule-authoring-guide": {
+      "enabled": true,
+      "priority": 50,
+      "auto_inject": true,
+      "workflow_only": false
+    },
     "workflow-guide": {
       "enabled": true,
       "priority": 50,
@@ -17,6 +47,36 @@
     }
   },
   "skills": {
+    "agent-definition-guide": {
+      "group_ids": [
+        "default"
+      ],
+      "auto_inject": true
+    },
+    "automation-guide": {
+      "group_ids": [
+        "default"
+      ],
+      "auto_inject": true
+    },
+    "prompt-template-guide": {
+      "group_ids": [
+        "default"
+      ],
+      "auto_inject": true
+    },
+    "script-library-guide": {
+      "group_ids": [
+        "default"
+      ],
+      "auto_inject": true
+    },
+    "skill-rule-authoring-guide": {
+      "group_ids": [
+        "default"
+      ],
+      "auto_inject": true
+    },
     "workflow-guide": {
       "group_ids": [
         "default"
