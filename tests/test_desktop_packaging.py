@@ -67,6 +67,7 @@ def test_stage_defaults_uses_sanitized_overrides(
     }
     plugin_source = json.loads((output / "plugin-sources.json").read_text())
     assert plugin_source["official_sources"][0]["url"].startswith("https://github.com/")
+    assert plugin_source["official_sources"][0]["ref"] == "v0.2.1"
     assert (output / "models_config.json").read_text() == (
         output / "models_config.example.json"
     ).read_text()
