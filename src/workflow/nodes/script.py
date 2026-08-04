@@ -18,6 +18,7 @@ import logging
 import re
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -424,12 +425,18 @@ class ScriptNode(BaseNodePlugin):
         )
 
         try:
+            subprocess_options = {}
+            if sys.platform == "win32":
+                subprocess_options["creationflags"] = getattr(
+                    subprocess, "CREATE_NO_WINDOW", 0x08000000
+                )
             process = await asyncio.create_subprocess_exec(
                 *cmd_line,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
                 env=env,
+                **subprocess_options,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(), timeout=timeout,

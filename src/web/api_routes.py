@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from src.web.event_bus import event_bus
 from src.core.utils import is_visible_to_frontend
+from src.config import USER_INJECTION_CONFIG_FILE
 
 
 
@@ -2482,9 +2483,6 @@ async def delete_preset_phrase(phrase_id: str, request: Request):
 
 
 # ============ 用户消息注入 API ============
-
-USER_INJECTION_CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "user_injection_config.json"
-
 
 def _load_user_injection_config() -> dict:
     """加载用户消息注入配置"""

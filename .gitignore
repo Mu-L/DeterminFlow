@@ -44,6 +44,14 @@ tasks/
 web/node_modules/
 web/dist/
 
+# Desktop build output
+desktop/generated/
+desktop/node_modules/
+desktop/runtime/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/.build/
+
 # OS
 .DS_Store
 Thumbs.db

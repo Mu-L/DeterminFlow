@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeterminFlow</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: #0b0d11;
+        color: #f3f4f6;
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 50% 35%, rgba(66, 99, 235, 0.16), transparent 34rem),
+          #0b0d11;
+      }
+      main { width: min(34rem, calc(100vw - 3rem)); text-align: center; }
+      .mark {
+        width: 3.25rem;
+        height: 3.25rem;
+        margin: 0 auto 1.25rem;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 1rem;
+        display: grid;
+        place-items: center;
+        font-size: 1.25rem;
+        font-weight: 700;
+        letter-spacing: -0.05em;
+        background: rgba(255, 255, 255, 0.05);
+      }
+      h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.03em; }
+      p { margin: 0.7rem 0 0; color: #9ca3af; line-height: 1.6; }
+      .progress {
+        width: 12rem;
+        height: 2px;
+        margin: 1.5rem auto 0;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.09);
+      }
+      .progress::after {
+        content: "";
+        display: block;
+        width: 42%;
+        height: 100%;
+        background: #7c9cff;
+        animation: loading 1.2s ease-in-out infinite;
+      }
+      #error { display: none; color: #fca5a5; }
+      @keyframes loading {
+        from { transform: translateX(-120%); }
+        to { transform: translateX(340%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .progress::after { animation-duration: 2.4s; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">DF</div>
+      <h1>DeterminFlow</h1>
+      <p id="status">正在启动本地服务，请稍候…</p>
+      <p id="error"></p>
+      <div class="progress" id="progress" aria-label="正在启动"></div>
+    </main>
+    <script>
+      window.showBackendError = (message) => {
+        document.getElementById("status").textContent = "启动失败";
+        document.getElementById("error").textContent = message;
+        document.getElementById("error").style.display = "block";
+        document.getElementById("progress").style.display = "none";
+      };
+    </script>
+  </body>
+</html>

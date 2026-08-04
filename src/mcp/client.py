@@ -18,6 +18,8 @@ from contextlib import AsyncExitStack
 from mcp import StdioServerParameters, ClientSession
 from mcp.client.stdio import stdio_client
 
+from src.environment import get_determinflow_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,8 +188,11 @@ class MCPClient:
         1. 项目 config/ 目录下的 mcp_servers.json
         2. 未找到时返回 None（跳过外部 Server 加载）
         """
-        # 项目 config 目录
-        project_config = Path(__file__).parent.parent.parent / "config" / "mcp_servers.json"
+        project_root = Path(__file__).parent.parent.parent
+        config_root = Path(
+            get_determinflow_env("CONFIG_DIR", str(project_root / "config"))
+        ).expanduser().resolve()
+        project_config = config_root / "mcp_servers.json"
         if project_config.exists():
             return project_config
 
