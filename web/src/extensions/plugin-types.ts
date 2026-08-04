@@ -126,12 +126,14 @@ export interface PluginRepositorySource {
   ref: string;
   kind: "official" | "custom";
   builtin: boolean;
+  mirrors: string[];
 }
 
 export interface PluginCatalogSource extends PluginRepositorySource {
   resolved_commit: string;
   plugin_count: number;
   error: string;
+  selected_url: string;
 }
 
 export interface PluginCatalogResponse {

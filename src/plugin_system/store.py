@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -24,6 +25,7 @@ from .models import (
     validate_plugin_subdirectory,
     validate_resource_prefix,
 )
+from .source_selection import select_git_source
 
 
 LOCK_SCHEMA_VERSION = 1
@@ -51,6 +53,7 @@ class PluginStore:
         root: Path,
         *,
         official_sources: Iterable[str] = (),
+        official_source_mirrors: Mapping[str, Iterable[str]] | None = None,
         git_binary: str = "git",
     ):
         self.root = Path(root).expanduser().resolve()
@@ -65,6 +68,15 @@ class PluginStore:
         self._official_sources = frozenset(
             self.canonicalize_source(source)[0] for source in official_sources
         )
+        self._official_source_candidates: dict[str, tuple[str, ...]] = {}
+        for source, mirrors in (official_source_mirrors or {}).items():
+            canonical, _, clone_source = self.canonicalize_source(source)
+            candidates = [clone_source]
+            for mirror in mirrors:
+                candidates.append(self.canonicalize_source(mirror)[2])
+            self._official_source_candidates[canonical] = tuple(
+                dict.fromkeys(candidates)
+            )
 
     def install(
         self,
@@ -92,6 +104,7 @@ class PluginStore:
             normalized_subdirectory = self._validate_subdirectory(subdirectory)
             revision = self._materialize(
                 plugin_id,
+                canonical_source,
                 clone_source,
                 ref,
                 normalized_subdirectory,
@@ -157,6 +170,7 @@ class PluginStore:
                 )
             revision = self._materialize(
                 plugin_id,
+                canonical_source,
                 clone_source,
                 ref,
                 normalized_subdirectory,
@@ -374,6 +388,7 @@ class PluginStore:
     def _materialize(
         self,
         plugin_id: str,
+        canonical_source: str,
         clone_source: str,
         ref: str,
         subdirectory: str,
@@ -385,15 +400,26 @@ class PluginStore:
         clone_root = stage_root / "repository"
         prepared = stage_root / "package"
         try:
+            candidates = self._official_source_candidates.get(
+                canonical_source,
+                (clone_source,),
+            )
+            selected = select_git_source(
+                candidates,
+                requested_ref,
+                git_binary=self.git_binary,
+            )
             self._run_git(
                 "clone",
                 "--quiet",
                 "--no-checkout",
                 "--",
-                clone_source,
+                selected.url,
                 str(clone_root),
             )
             commit = self._resolve_ref(clone_root, requested_ref)
+            if selected.commit and commit != selected.commit:
+                raise RuntimeError("Plugin 镜像在拉取期间发生版本漂移")
             self._run_git(
                 "-C",
                 str(clone_root),

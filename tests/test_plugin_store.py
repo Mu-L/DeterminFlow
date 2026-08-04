@@ -6,12 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from src.plugin_system import store as store_module
 from src.plugin_system import (
     InvalidPluginPackageError,
     PluginStore,
     PluginStoreError,
     SourceTrustError,
 )
+from src.plugin_system.source_selection import GitSourceSelection
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -95,6 +97,60 @@ def test_install_local_subdirectory_locks_exact_commit_and_manifest(tmp_path: Pa
     assert manifest_paths[0].parent.is_relative_to((tmp_path / "store").resolve())
     assert json.loads(store.lock_path.read_text(encoding="utf-8"))["schema_version"] == 1
     assert store.snapshot() == store.snapshot()
+
+
+def test_official_mirror_is_transport_only_and_lock_keeps_primary_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mirror, _, commit = _create_repo(tmp_path)
+    primary = tmp_path / "primary-unavailable"
+    expected_primary = primary.resolve().as_uri()
+    expected_mirror = mirror.resolve().as_uri()
+
+    def select(urls, ref, **kwargs):
+        assert tuple(urls) == (expected_primary, expected_mirror)
+        assert ref == "main"
+        return GitSourceSelection(expected_mirror, commit, 0.1)
+
+    monkeypatch.setattr(store_module, "select_git_source", select)
+    store = PluginStore(
+        tmp_path / "store",
+        official_sources=[str(primary)],
+        official_source_mirrors={str(primary): [str(mirror)]},
+    )
+
+    record = store.install("demo-plugin", str(primary), ref="main")
+
+    assert record.source == expected_primary
+    assert record.trust == "official"
+    assert record.active_revision.commit == commit
+
+
+def test_install_rejects_mirror_ref_drift_after_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mirror, _, _ = _create_repo(tmp_path)
+    primary = tmp_path / "primary-unavailable"
+    expected_mirror = mirror.resolve().as_uri()
+    monkeypatch.setattr(
+        store_module,
+        "select_git_source",
+        lambda *args, **kwargs: GitSourceSelection(
+            expected_mirror,
+            "f" * 40,
+            0.1,
+        ),
+    )
+    store = PluginStore(
+        tmp_path / "store",
+        official_sources=[str(primary)],
+        official_source_mirrors={str(primary): [str(mirror)]},
+    )
+
+    with pytest.raises(PluginStoreError, match="拉取期间发生版本漂移"):
+        store.install("demo-plugin", str(primary), ref="main")
 
 
 def test_install_uses_manifest_resource_prefix_unless_explicitly_overridden(

@@ -713,14 +713,19 @@ dependencies = [
 
 [[package]]
 name = "determinflow-desktop"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
+ "futures-util",
+ "reqwest",
+ "semver",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "url",
 ]
 
 [[package]]

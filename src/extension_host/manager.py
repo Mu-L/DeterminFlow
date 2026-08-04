@@ -144,6 +144,11 @@ class ExtensionManager:
                     for source in self.plugin_sources
                     if source.kind == "official"
                 ),
+                official_source_mirrors={
+                    source.url: source.mirrors
+                    for source in self.plugin_sources
+                    if source.kind == "official"
+                },
             )
         self._applied_plugin_records = self.plugin_store.apply_pending()
         self.plugin_config_store = PluginConfigStore(self.plugins_dir / "config")

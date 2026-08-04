@@ -15,6 +15,15 @@ import {
   type DesktopUpdatePhase,
 } from "./context-value";
 
+interface UpdateMetadata {
+  rid: number;
+  currentVersion: string;
+  version: string;
+  date?: string;
+  body?: string;
+  rawJson: Record<string, unknown>;
+}
+
 function readLastCheck(): string | null {
   try {
     return window.localStorage.getItem(DESKTOP_UPDATE_LAST_CHECK_KEY);
@@ -56,13 +65,20 @@ export function DesktopUpdateProvider({ children }: { children: ReactNode }) {
     setProgress(null);
 
     try {
-      const [{ getVersion }, { check }] = await Promise.all([
+      const [{ getVersion }, { Update, check }, { invoke }] = await Promise.all([
         import("@tauri-apps/api/app"),
         import("@tauri-apps/plugin-updater"),
+        import("@tauri-apps/api/core"),
       ]);
       const installedVersion = await getVersion();
       setCurrentVersion(installedVersion);
-      const availableUpdate = await check({ timeout: 15_000 });
+      let availableUpdate: Update | null;
+      try {
+        const metadata = await invoke<UpdateMetadata | null>("check_update_sources");
+        availableUpdate = metadata ? new Update(metadata) : null;
+      } catch {
+        availableUpdate = await check({ timeout: 15_000 });
+      }
       rememberSuccessfulCheck();
       await releaseUpdateResource();
 

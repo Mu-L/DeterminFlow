@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod updater;
 
 use std::sync::Arc;
 
@@ -53,7 +54,10 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(backend_state)
-        .invoke_handler(tauri::generate_handler![prepare_for_update])
+        .invoke_handler(tauri::generate_handler![
+            prepare_for_update,
+            updater::check_update_sources,
+        ])
         .setup(|app| {
             let window = app.get_webview_window("main").ok_or("无法创建主窗口")?;
             let LaunchedBackend { child, url } = backend::launch(app.handle())?;

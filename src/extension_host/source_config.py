@@ -22,6 +22,7 @@ from src.plugin_system import (
     validate_plugin_ref,
     validate_plugin_subdirectory,
 )
+from src.plugin_system.source_selection import select_git_source
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,11 @@ class PluginSourceConfig:
     id: str = ""
     kind: str = "official"
     builtin: bool = True
+    mirrors: tuple[str, ...] = ()
+
+    @property
+    def clone_urls(self) -> tuple[str, ...]:
+        return (self.url, *self.mirrors)
 
 
 def _source_id(kind: str, name: str, url: str) -> str:
@@ -60,6 +66,20 @@ def _parse_source(item: Any, *, kind: str) -> PluginSourceConfig:
         normalized_ref = validate_plugin_ref(ref)
     except (RuntimeError, ValueError) as exc:
         raise ValueError(f"{label} 配置无效: {exc}") from exc
+    raw_mirrors = item.get("mirrors", [])
+    if not isinstance(raw_mirrors, list) or not all(
+        isinstance(value, str) for value in raw_mirrors
+    ):
+        raise ValueError(f"{label}.mirrors 必须是字符串数组")
+    mirrors: list[str] = []
+    for raw_mirror in raw_mirrors:
+        try:
+            mirror = PluginStore.canonicalize_source(raw_mirror.strip())[0]
+        except (RuntimeError, ValueError) as exc:
+            raise ValueError(f"{label}.mirrors 配置无效: {exc}") from exc
+        if mirror == url or mirror in mirrors:
+            raise ValueError(f"{label}.mirrors 包含重复地址")
+        mirrors.append(mirror)
     raw_id = item.get("id")
     if raw_id is None:
         source_id = _source_id(kind, name.strip(), url)
@@ -77,6 +97,7 @@ def _parse_source(item: Any, *, kind: str) -> PluginSourceConfig:
         ref=normalized_ref,
         kind=kind,
         builtin=kind == "official",
+        mirrors=tuple(mirrors),
     )
 
 
@@ -116,10 +137,11 @@ def load_plugin_sources(path: Path) -> list[PluginSourceConfig]:
     for source in sources:
         if source.id in seen_ids:
             raise ValueError(f"Plugin 仓库 ID 重复: {source.id}")
-        if source.url in seen_urls:
-            raise ValueError(f"Plugin 仓库地址重复: {source.url}")
+        duplicate = next((url for url in source.clone_urls if url in seen_urls), None)
+        if duplicate is not None:
+            raise ValueError(f"Plugin 仓库地址重复: {duplicate}")
         seen_ids.add(source.id)
-        seen_urls.add(source.url)
+        seen_urls.update(source.clone_urls)
     return sources
 
 
@@ -139,6 +161,7 @@ def source_config_response(source: PluginSourceConfig) -> dict[str, Any]:
         "ref": source.ref,
         "kind": source.kind,
         "builtin": source.builtin,
+        "mirrors": list(source.mirrors),
     }
 
 
@@ -394,20 +417,25 @@ def fetch_plugin_catalog(
             "resolved_commit": "",
             "plugin_count": 0,
             "error": "",
+            "selected_url": "",
         }
         source_plugins: list[dict[str, Any]] = []
         try:
             with tempfile.TemporaryDirectory(prefix="determinflow-plugin-catalog-") as raw:
                 repository = Path(raw) / "repository"
+                selected = select_git_source(source.clone_urls, source.ref)
                 _run_git(
                     "clone",
                     "--quiet",
                     "--no-checkout",
                     "--",
-                    source.url,
+                    selected.url,
                     str(repository),
                 )
+                source_result["selected_url"] = selected.url
                 source_commit = _resolve_ref(repository, source.ref)
+                if selected.commit and source_commit != selected.commit:
+                    raise RuntimeError("Plugin 镜像在拉取期间发生版本漂移")
                 entries = _parse_repository_index(
                     _git_file(repository, source_commit, "plugin-repository.toml"),
                     source,

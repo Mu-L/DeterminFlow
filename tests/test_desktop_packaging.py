@@ -118,13 +118,22 @@ def test_desktop_lifecycle_cleans_up_the_backend_before_every_exit() -> None:
         / "windows"
         / "installer-hooks.nsh"
     ).read_text(encoding="utf-8")
+    updater_source = (
+        REPO_ROOT / "desktop" / "src-tauri" / "src" / "updater.rs"
+    ).read_text(encoding="utf-8")
 
     single_instance = main_source.index("tauri_plugin_single_instance::init")
     process_plugin = main_source.index("tauri_plugin_process::init")
     updater_plugin = main_source.index("tauri_plugin_updater::Builder::new")
     assert single_instance < process_plugin < updater_plugin
     assert "fn prepare_for_update" in main_source
-    assert "generate_handler![prepare_for_update]" in main_source
+    assert "prepare_for_update," in main_source
+    assert "updater::check_update_sources," in main_source
+    assert "releases/latest/download/latest.json" in updater_source
+    assert "gitee.com/api/v5/repos/alikon/DeterminFlow/releases/latest" in updater_source
+    assert "github_version > gitee_version" in updater_source
+    assert "github.elapsed <= gitee.elapsed" in updater_source
+    assert 'invoke<UpdateMetadata | null>("check_update_sources")' in updater_context
     assert 'matches!(event, RunEvent::Exit)' in main_source
     assert main_source.count(".stop();") >= 2
     download = updater_context.index("await resource.download(")
@@ -186,6 +195,9 @@ def test_stage_defaults_uses_sanitized_overrides(
     }
     plugin_source = json.loads((output / "plugin-sources.json").read_text())
     assert plugin_source["official_sources"][0]["url"].startswith("https://github.com/")
+    assert plugin_source["official_sources"][0]["mirrors"] == [
+        "https://gitee.com/alikon/DeterminFlow-Plugins.git"
+    ]
     assert plugin_source["official_sources"][0]["ref"] == "main"
     assert (output / "models_config.json").read_text() == (
         output / "models_config.example.json"
@@ -379,7 +391,7 @@ def test_desktop_versions_are_consistent() -> None:
         encoding="utf-8"
     )
 
-    assert tauri["version"] == "1.0.3"
+    assert tauri["version"] == "1.0.4"
     assert package["version"] == tauri["version"]
     assert f'version = "{tauri["version"]}"' in cargo
 

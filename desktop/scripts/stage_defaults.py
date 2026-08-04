@@ -38,6 +38,9 @@ DESKTOP_OVERRIDES: dict[str, Any] = {
                 "id": "determinflow-official",
                 "name": "DeterminFlow Official Plugins",
                 "url": "https://github.com/alikon-art/DeterminFlow-Plugins.git",
+                "mirrors": [
+                    "https://gitee.com/alikon/DeterminFlow-Plugins.git"
+                ],
                 "ref": "main",
             }
         ],
