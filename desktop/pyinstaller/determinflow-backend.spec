@@ -9,6 +9,7 @@ project_root = Path(SPECPATH).parents[1]
 generated_config = project_root / "desktop" / "generated" / "default-config"
 web_dist = project_root / "web" / "dist"
 core_defaults = project_root / "src" / "core" / "defaults"
+bundled_plugins = project_root / "desktop" / "generated" / "bundled-plugins"
 
 for required_path in (generated_config, web_dist, core_defaults):
     if not required_path.exists():
@@ -19,6 +20,8 @@ datas = [
     (str(web_dist), "web/dist"),
     (str(core_defaults), "src/core/defaults"),
 ]
+if bundled_plugins.is_dir():
+    datas.append((str(bundled_plugins), "bundled-plugins"))
 for distribution in (
     "fastapi",
     "langchain-core",

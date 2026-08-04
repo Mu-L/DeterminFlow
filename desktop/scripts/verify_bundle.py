@@ -15,6 +15,8 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from desktop.scripts.stage_defaults import SENSITIVE_KEYS
+from src.plugin_system.release import load_release_plugin
+from src.plugin_system.store import PluginStore
 
 
 LOGGER = logging.getLogger("desktop.verify_bundle")
@@ -61,6 +63,27 @@ def verify_defaults(config_dir: Path) -> None:
     leaked = [item for item in forbidden if item in combined]
     if leaked:
         raise RuntimeError(f"桌面默认配置包含私有边界内容: {', '.join(leaked)}")
+
+
+def verify_bundled_plugins(snapshot_dir: Path) -> list[str]:
+    if not snapshot_dir.is_dir():
+        raise RuntimeError(f"桌面 Full Plugin 快照不存在: {snapshot_dir}")
+    metadata_path = snapshot_dir / "release-plugins.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        plugin_ids = sorted(metadata["plugins"])
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError("桌面 Full Plugin 快照元数据无效") from error
+    if not plugin_ids:
+        raise RuntimeError("桌面 Full Plugin 快照不能为空")
+    store = PluginStore(snapshot_dir)
+    if sorted(store.read_lock()) != plugin_ids:
+        raise RuntimeError("桌面 Full Plugin 快照锁与元数据不一致")
+    for plugin_id in plugin_ids:
+        store.verify(plugin_id)
+        load_release_plugin(snapshot_dir, plugin_id)
+    LOGGER.info("桌面 Full Plugin 快照验证通过: %s", ", ".join(plugin_ids))
+    return plugin_ids
 
 
 def verify_windows_gui_executable(executable: Path) -> None:
@@ -116,6 +139,7 @@ def main() -> int:
     parser.add_argument("--installer", type=Path)
     parser.add_argument("--updater-signature", type=Path)
     parser.add_argument("--desktop-executable", type=Path)
+    parser.add_argument("--expected-flavor", choices=("core", "full"))
     options = parser.parse_args()
 
     verify_defaults(repo_root / "desktop" / "generated" / "default-config")
@@ -123,6 +147,13 @@ def main() -> int:
     backend = repo_root / "desktop" / "runtime" / "backend" / executable_name
     if not backend.is_file():
         raise RuntimeError(f"桌面后端不存在: {backend}")
+
+    if options.expected_flavor:
+        runtime_snapshot = backend.parent / "_internal" / "bundled-plugins"
+        if options.expected_flavor == "full":
+            verify_bundled_plugins(runtime_snapshot)
+        elif runtime_snapshot.exists():
+            raise RuntimeError("桌面 Core 后端意外包含 Full Plugin 快照")
 
     if options.desktop_executable:
         verify_windows_gui_executable(options.desktop_executable.resolve())

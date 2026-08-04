@@ -13,6 +13,18 @@
 | 更新 | Tauri Updater + GitHub Releases | 每日静默检查，用户确认后下载签名更新并重启 |
 | 构建 | GitHub Actions `windows-2025` | 在真实 x64 Windows Runner 上生成、安装、启动并卸载验证安装包 |
 
+同一版本生成两个安装包：
+
+| 安装包 | 内容 | 后续更新 |
+|---|---|---|
+| Core | 纯净 DeterminFlow Core | 通过 `latest.json` 更新 Core |
+| Full | 同一 Core，加构建时全部公开官方 Plugin 快照 | Core 仍走同一 `latest.json`；Plugin 由 Plugin 页面独立更新 |
+
+Full 不是单独 Edition，也不使用第二套应用标识、数据目录或 Core 更新通道。Full 首次
+启动会把快照中精确锁定的 Plugin 合并进用户数据并启用一次；已存在的 Plugin 记录不会
+被覆盖。之后安装普通 Core 更新包不会删除 Plugin，用户手动停用的 Plugin 也不会在日常
+启动时被重新启用。
+
 桌面进程每次选择一个空闲的 `127.0.0.1` 端口。Windows Release 使用 GUI Subsystem，只显示主界面，不额外打开 CMD 窗口；应用、安装器和卸载器统一使用 `web/public/brand/determinflow-mark.svg` 对应的正式图标。窗口在 `/api/system/status` 返回成功后才进入现有 Web UI；重复打开只会唤起已有窗口；窗口退出时会终止内置后端及其子进程。
 
 ## 数据边界
@@ -27,6 +39,10 @@ io.determinflow.desktop/
 ```
 
 构建只读取 Git `HEAD` 中的白名单配置。模型配置由 `models_config.example.json` 生成；MCP Server 和 Extension 默认关闭；Plugin Source 固定为公开仓库。忽略的 `config/models_config.json`、工作区数据、本地 Plugin 状态和凭据不会进入安装包。
+
+升级不会覆盖模型、会话、Workflow、Workspace、Plugin 锁或用户自定义 Plugin 仓库；
+Core 拥有且 UI 中不可编辑的官方 Plugin Source 会随桌面 Runtime 刷新，因此 Plugin
+Catalog 可以在不发布新 Core 的情况下继续跟踪官方仓库 `main`。
 
 ## 本地验证
 
@@ -44,17 +60,22 @@ python desktop/scripts/verify_bundle.py
 (cd desktop/src-tauri && cargo test)
 ```
 
-GitHub 临时分支 `codex/desktop-tauri-poc` 会运行 `.github/workflows/desktop-windows.yml`，只上传 14 天有效的候选构建 Artifact；不会创建 Tag、Release 或修改 `main`。候选安装包包含 Tauri 更新签名，但尚未做 Windows Authenticode（代码签名）。
+GitHub 临时分支 `codex/desktop-tauri-poc` 会运行 `.github/workflows/desktop-windows.yml`，分别上传 14 天有效的 Core/Full 候选 Artifact，不创建 Tag 或 Release。`v*` Tag 则在两种安装包全部通过 Windows 安装、启动和卸载验证后，创建正式 GitHub Release。
 
 ## 桌面更新发布
 
-桌面端只信任 `alikon-art/DeterminFlow` 最新 GitHub Release 中的 `latest.json`。正式发布时，该 Release 必须同时上传 NSIS 安装包、同名 `.sig` 和 `latest.json`；清单可通过 `desktop/scripts/create_update_manifest.py` 生成。更新私钥不得进入 Git，只通过 GitHub Actions Secret `TAURI_SIGNING_PRIVATE_KEY` 注入构建。
+桌面端只信任 `alikon-art/DeterminFlow` 最新 GitHub Release 中的 `latest.json`，清单始终指向 Core 安装包。正式发布时，该 Release 同时上传 Core/Full NSIS 安装包、各自同名 `.sig`、SHA-256 文件和 `latest.json`；清单可通过 `desktop/scripts/create_update_manifest.py` 生成。更新私钥不得进入 Git，只通过 GitHub Actions Secret `TAURI_SIGNING_PRIVATE_KEY` 注入构建。
+
+Full 构建从官方 Plugin 仓库的 `main` Catalog 解析当时全部公开 Plugin，执行声明式资源
+预检后锁定精确 Commit 与内容摘要，再写入安装包。Core 自动更新不重置 Plugin 状态。
+当前 Plugin 在线安装和后续更新仍调用系统 Git；没有 Git 的用户可以使用 Full 的内置
+快照，但要从 UI 更新到未来 Plugin 版本仍需先安装 Git。
 
 服务版仍按原入口运行，不初始化 Tauri 更新插件，也不显示更新 UI。若最新 GitHub Release 没有 `latest.json`，桌面端会保留当前版本并提示更新服务尚未发布，不影响应用本身使用。
 
 ## 首版限制
 
 - 安装包尚未做 Authenticode（Windows 代码签名），因此不同 Windows 设备上的 SmartScreen 表现可能不同。
-- 首次公开桌面 Release 尚未创建，因此当前只能验证检查入口、错误回退和签名候选产物，不能完成跨版本升级实测。
+- `v1.0.1` 发布后仍需使用既有 `v1.0.0` 候选完成一次真实跨版本升级验收。
 - 不内置 Node.js、npm、Git 或 Git Bash。`execute_command` 使用 Windows `cmd.exe`；Python Workflow 由冻结后端兼容执行；Shell Workflow 需要用户另行安装 Git Bash。
 - `downloadBootstrapper` 保持安装包较小。Windows 10/11 通常已有 WebView2；缺失时安装器需要联网下载。

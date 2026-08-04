@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - codex/desktop-tauri-poc
+    tags:
+      - "v*"
     paths:
       - ".github/workflows/desktop-windows.yml"
       - "config/**"
@@ -22,9 +24,15 @@ concurrency:
 
 jobs:
   build:
-    name: Build NSIS updater candidate
+    name: Build ${{ matrix.flavor }} NSIS installer
     runs-on: windows-2025
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor:
+          - core
+          - full
     env:
       PYTHONUTF8: "1"
     steps:
@@ -60,9 +68,9 @@ jobs:
 
       - name: Build and smoke-test frozen backend
         run: |
-          python desktop/scripts/build_backend.py
+          python desktop/scripts/build_backend.py --flavor ${{ matrix.flavor }}
           python desktop/scripts/smoke_backend.py
-          python desktop/scripts/verify_bundle.py
+          python desktop/scripts/verify_bundle.py --expected-flavor ${{ matrix.flavor }}
 
       - name: Install desktop build dependencies
         working-directory: desktop
@@ -78,10 +86,21 @@ jobs:
         id: installer
         shell: pwsh
         run: |
+          $version = (Get-Content "desktop/src-tauri/tauri.conf.json" | ConvertFrom-Json).version
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$version") {
+            throw "Tag ${{ github.ref_name }} does not match desktop version v$version"
+          }
           $installer = Get-ChildItem "desktop/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer was not generated" }
           $signature = "$($installer.FullName).sig"
           if (-not (Test-Path $signature)) { throw "Tauri updater signature was not generated" }
+          $suffix = if ("${{ matrix.flavor }}" -eq "full") { "_x64-full-setup.exe" } else { "_x64-setup.exe" }
+          $target = Join-Path $installer.DirectoryName "DeterminFlow_${version}${suffix}"
+          $targetSignature = "$target.sig"
+          Move-Item $installer.FullName $target -Force
+          Move-Item $signature $targetSignature -Force
+          $installer = Get-Item $target
+          $signature = $targetSignature
           python desktop/scripts/verify_bundle.py --desktop-executable "desktop/src-tauri/target/release/determinflow-desktop.exe" --installer $installer.FullName --updater-signature $signature
           "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
           "checksum=$($installer.FullName).sha256" >> $env:GITHUB_OUTPUT
@@ -89,14 +108,60 @@ jobs:
 
       - name: Smoke-test NSIS install and uninstall
         shell: pwsh
-        run: ./desktop/scripts/smoke_installer.ps1 -Installer "${{ steps.installer.outputs.path }}"
+        run: ./desktop/scripts/smoke_installer.ps1 -Installer "${{ steps.installer.outputs.path }}" -Flavor "${{ matrix.flavor }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DeterminFlow-Windows-x64-candidate
+          name: DeterminFlow-Windows-x64-${{ matrix.flavor }}
           path: |
             ${{ steps.installer.outputs.path }}
             ${{ steps.installer.outputs.checksum }}
             ${{ steps.installer.outputs.signature }}
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DeterminFlow-Windows-x64-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create updater manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          installer="release-assets/DeterminFlow_${version}_x64-setup.exe"
+          python desktop/scripts/create_update_manifest.py \
+            --version "$version" \
+            --installer "$installer" \
+            --signature "$installer.sig" \
+            --base-url "https://github.com/alikon-art/DeterminFlow/releases/download/$RELEASE_TAG" \
+            --notes-file "desktop/release-notes/$RELEASE_TAG.md" \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output release-assets/latest.json
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "DeterminFlow $RELEASE_TAG" \
+              --notes-file "desktop/release-notes/$RELEASE_TAG.md"
+          fi

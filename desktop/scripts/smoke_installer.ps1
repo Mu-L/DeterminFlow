@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Installer
+    [string]$Installer,
+    [ValidateSet("core", "full")]
+    [string]$Flavor = "core"
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +11,7 @@ $UserData = Join-Path $env:LOCALAPPDATA "io.determinflow.desktop"
 $AppProcess = $null
 $Uninstaller = $null
 $Installed = $false
+$BackendBaseUrl = $null
 
 function Get-UninstallEntry {
     Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
@@ -66,6 +69,7 @@ try {
                         -TimeoutSec 2
                     if ($Response.StatusCode -eq 200) {
                         $Ready = $true
+                        $BackendBaseUrl = "http://127.0.0.1:$($Listener.LocalPort)"
                         break
                     }
                 }
@@ -82,6 +86,22 @@ try {
     }
     if (-not (Test-Path (Join-Path $UserData "config\models_config.json"))) {
         throw "Installed application did not create isolated user configuration"
+    }
+    $Plugins = (Invoke-RestMethod -Uri "$BackendBaseUrl/api/plugins" -TimeoutSec 5).plugins
+    $Bishu = $Plugins | Where-Object { $_.id -eq "bishu-novel" } | Select-Object -First 1
+    if ($Flavor -eq "full") {
+        if (-not $Bishu) {
+            throw "Full installer did not seed bishu-novel"
+        }
+        if (-not $Bishu.active_enabled -or -not $Bishu.desired_enabled) {
+            throw "Full installer did not enable bishu-novel"
+        }
+        if ($Bishu.runtime_status -ne "running") {
+            throw "Full installer Plugin is not running: $($Bishu.runtime_status)"
+        }
+    }
+    elseif ($Bishu) {
+        throw "Core installer unexpectedly seeded bishu-novel"
     }
     Write-Output "Installed application status endpoint verified"
 }
@@ -103,6 +123,9 @@ finally {
         }
         if (-not (Test-Path (Join-Path $UserData "config\models_config.json"))) {
             throw "Uninstaller removed persistent user configuration"
+        }
+        if ($Flavor -eq "full" -and -not (Test-Path (Join-Path $UserData "data\plugins\plugins.lock.json"))) {
+            throw "Uninstaller removed persistent Plugin state"
         }
         Write-Output "NSIS uninstall and user-data preservation verified"
     }
