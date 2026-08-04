@@ -17,6 +17,7 @@ from desktop.scripts.stage_defaults import SENSITIVE_KEYS
 
 
 LOGGER = logging.getLogger("desktop.verify_bundle")
+WINDOWS_GUI_SUBSYSTEM = 2
 
 
 def _inspect_secrets(value: Any, location: str) -> list[str]:
@@ -61,6 +62,33 @@ def verify_defaults(config_dir: Path) -> None:
         raise RuntimeError(f"桌面默认配置包含私有边界内容: {', '.join(leaked)}")
 
 
+def verify_windows_gui_executable(executable: Path) -> None:
+    """Require a Windows PE GUI subsystem so release startup has no console."""
+    image = executable.read_bytes()
+    if len(image) < 64 or image[:2] != b"MZ":
+        raise RuntimeError(f"桌面程序不是有效的 Windows PE 文件: {executable}")
+
+    pe_offset = int.from_bytes(image[0x3C:0x40], "little")
+    optional_header = pe_offset + 24
+    subsystem_offset = optional_header + 68
+    if (
+        subsystem_offset + 2 > len(image)
+        or image[pe_offset : pe_offset + 4] != b"PE\x00\x00"
+        or int.from_bytes(image[optional_header : optional_header + 2], "little")
+        not in {0x10B, 0x20B}
+    ):
+        raise RuntimeError(f"桌面程序的 Windows PE Header 无效: {executable}")
+
+    subsystem = int.from_bytes(
+        image[subsystem_offset : subsystem_offset + 2], "little"
+    )
+    if subsystem != WINDOWS_GUI_SUBSYSTEM:
+        raise RuntimeError(
+            f"桌面程序必须使用 Windows GUI Subsystem，实际值={subsystem}: {executable}"
+        )
+    LOGGER.info("Windows GUI Subsystem 验证通过: %s", executable)
+
+
 def write_checksum(installer: Path) -> Path:
     digest = hashlib.sha256(installer.read_bytes()).hexdigest()
     checksum_path = installer.with_suffix(installer.suffix + ".sha256")
@@ -72,6 +100,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
     parser.add_argument("--installer", type=Path)
+    parser.add_argument("--desktop-executable", type=Path)
     options = parser.parse_args()
 
     verify_defaults(repo_root / "desktop" / "generated" / "default-config")
@@ -79,6 +108,9 @@ def main() -> int:
     backend = repo_root / "desktop" / "runtime" / "backend" / executable_name
     if not backend.is_file():
         raise RuntimeError(f"桌面后端不存在: {backend}")
+
+    if options.desktop_executable:
+        verify_windows_gui_executable(options.desktop_executable.resolve())
 
     if options.installer:
         installer = options.installer.resolve()

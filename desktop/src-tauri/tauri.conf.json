@@ -40,6 +40,8 @@
       "nsis": {
         "installMode": "currentUser",
         "compression": "lzma",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "languages": ["SimpChinese", "English"]
       }
     }

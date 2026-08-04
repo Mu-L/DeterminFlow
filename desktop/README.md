@@ -12,7 +12,7 @@
 | 安装包 | NSIS `currentUser` | 安装到当前用户目录，不申请管理员权限 |
 | 构建 | GitHub Actions `windows-2025` | 在真实 x64 Windows Runner 上生成、安装、启动并卸载验证安装包 |
 
-桌面进程每次选择一个空闲的 `127.0.0.1` 端口。窗口在 `/api/system/status` 返回成功后才进入现有 Web UI；重复打开只会唤起已有窗口；窗口退出时会终止内置后端及其子进程。
+桌面进程每次选择一个空闲的 `127.0.0.1` 端口。Windows Release 使用 GUI Subsystem，只显示主界面，不额外打开 CMD 窗口；应用、安装器和卸载器统一使用 `web/public/brand/determinflow-mark.svg` 对应的正式图标。窗口在 `/api/system/status` 返回成功后才进入现有 Web UI；重复打开只会唤起已有窗口；窗口退出时会终止内置后端及其子进程。
 
 ## 数据边界
 

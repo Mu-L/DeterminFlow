@@ -11,7 +11,11 @@ import pytest
 from desktop.python.entrypoint import _run_python_compatibility_mode
 from desktop.python.runtime import seed_user_config
 from desktop.scripts import stage_defaults as defaults_module
-from desktop.scripts.verify_bundle import verify_defaults, write_checksum
+from desktop.scripts.verify_bundle import (
+    verify_defaults,
+    verify_windows_gui_executable,
+    write_checksum,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,14 +28,35 @@ def test_tauri_bundle_is_a_per_user_nsis_installer() -> None:
         )
     )
 
+    bundle = config["bundle"]
+    nsis = bundle["windows"]["nsis"]
+
     assert config["productName"] == "DeterminFlow"
-    assert config["bundle"]["targets"] == ["nsis"]
-    assert config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser"
+    assert bundle["targets"] == ["nsis"]
+    assert bundle["icon"] == ["icons/icon.ico", "icons/icon.png"]
+    assert nsis["installMode"] == "currentUser"
+    assert nsis["installerIcon"] == "icons/icon.ico"
+    assert nsis["uninstallerIcon"] == "icons/icon.ico"
     assert (
-        config["bundle"]["windows"]["webviewInstallMode"]["type"]
+        bundle["windows"]["webviewInstallMode"]["type"]
         == "downloadBootstrapper"
     )
     assert "plugins" not in config or "updater" not in config["plugins"]
+
+    icons_dir = REPO_ROOT / "desktop" / "src-tauri" / "icons"
+    assert (icons_dir / "icon.ico").stat().st_size > 1024
+    assert (icons_dir / "icon.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_tauri_release_shell_uses_the_windows_gui_subsystem() -> None:
+    main_source = (REPO_ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]'
+        in main_source
+    )
 
 
 def test_desktop_workflow_uses_a_real_windows_runner_and_only_uploads_artifact() -> None:
@@ -42,6 +67,7 @@ def test_desktop_workflow_uses_a_real_windows_runner_and_only_uploads_artifact()
     assert "runs-on: windows-2025" in workflow
     assert "desktop/scripts/smoke_backend.py" in workflow
     assert "desktop/scripts/smoke_installer.ps1" in workflow
+    assert "--desktop-executable" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "tauri-action" not in workflow
     assert "softprops/action-gh-release" not in workflow
@@ -151,3 +177,25 @@ def test_checksum_file_is_portable_across_line_endings(tmp_path: Path) -> None:
 
     assert checksum.read_bytes().endswith(b"\n")
     assert b"\r\n" not in checksum.read_bytes()
+
+
+def test_windows_desktop_executable_must_use_the_gui_subsystem(tmp_path: Path) -> None:
+    def write_pe(path: Path, subsystem: int) -> None:
+        image = bytearray(256)
+        image[:2] = b"MZ"
+        image[0x3C:0x40] = (64).to_bytes(4, "little")
+        image[64:68] = b"PE\x00\x00"
+        optional_header = 64 + 24
+        image[optional_header : optional_header + 2] = (0x20B).to_bytes(2, "little")
+        image[optional_header + 68 : optional_header + 70] = subsystem.to_bytes(
+            2, "little"
+        )
+        path.write_bytes(image)
+
+    executable = tmp_path / "determinflow-desktop.exe"
+    write_pe(executable, subsystem=2)
+    verify_windows_gui_executable(executable)
+
+    write_pe(executable, subsystem=3)
+    with pytest.raises(RuntimeError, match="GUI Subsystem"):
+        verify_windows_gui_executable(executable)

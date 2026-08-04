@@ -78,7 +78,7 @@ jobs:
         run: |
           $installer = Get-ChildItem "desktop/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer was not generated" }
-          python desktop/scripts/verify_bundle.py --installer $installer.FullName
+          python desktop/scripts/verify_bundle.py --desktop-executable "desktop/src-tauri/target/release/determinflow-desktop.exe" --installer $installer.FullName
           "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
           "checksum=$($installer.FullName).sha256" >> $env:GITHUB_OUTPUT
 
