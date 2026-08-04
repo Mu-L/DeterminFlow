@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build unsigned NSIS installer
+    name: Build NSIS updater candidate
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -70,6 +70,8 @@ jobs:
 
       - name: Build NSIS installer
         working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: npm run build
 
       - name: Locate and verify installer
@@ -78,9 +80,12 @@ jobs:
         run: |
           $installer = Get-ChildItem "desktop/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer was not generated" }
-          python desktop/scripts/verify_bundle.py --desktop-executable "desktop/src-tauri/target/release/determinflow-desktop.exe" --installer $installer.FullName
+          $signature = "$($installer.FullName).sig"
+          if (-not (Test-Path $signature)) { throw "Tauri updater signature was not generated" }
+          python desktop/scripts/verify_bundle.py --desktop-executable "desktop/src-tauri/target/release/determinflow-desktop.exe" --installer $installer.FullName --updater-signature $signature
           "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
           "checksum=$($installer.FullName).sha256" >> $env:GITHUB_OUTPUT
+          "signature=$signature" >> $env:GITHUB_OUTPUT
 
       - name: Smoke-test NSIS install and uninstall
         shell: pwsh
@@ -88,9 +93,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DeterminFlow-Windows-x64-unsigned
+          name: DeterminFlow-Windows-x64-candidate
           path: |
             ${{ steps.installer.outputs.path }}
             ${{ steps.installer.outputs.checksum }}
+            ${{ steps.installer.outputs.signature }}
           if-no-files-found: error
           retention-days: 14

@@ -7,6 +7,8 @@ import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
 import { useGlobalEvents } from "./hooks/useGlobalEvents";
 import { useUrlParam } from "./hooks/useUrlParam";
 import { useExtensions } from "./extensions/context-value";
+import { DesktopUpdateProvider } from "./desktop-updater/context";
+import { DesktopUpdateNotice } from "./desktop-updater/DesktopUpdateNotice";
 
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
@@ -125,8 +127,9 @@ function App() {
   };
 
   return (
-    <ToastProvider>
-      <div className="min-h-screen bg-slate-900 flex flex-col">
+    <DesktopUpdateProvider>
+      <ToastProvider>
+        <div className="min-h-screen bg-slate-900 flex flex-col">
       {/* Top Navigation Bar */}
       <header className="fixed top-0 left-0 right-0 z-50 h-14 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50">
         <div className="h-full flex items-center gap-3 px-4">
@@ -178,8 +181,10 @@ function App() {
           {CorePage ? <CorePage /> : ExtensionPage ? <ExtensionPage /> : null}
         </Suspense>
       </main>
-    </div>
-    </ToastProvider>
+          <DesktopUpdateNotice onOpenSettings={() => handleTabChange("settings")} />
+        </div>
+      </ToastProvider>
+    </DesktopUpdateProvider>
   );
 }
 

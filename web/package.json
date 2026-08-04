@@ -13,7 +13,8 @@
     "test:extensions": "tsx --test src/extensions/*.test.ts src/lib/plugin-api.test.ts",
     "test:workflow": "tsx --test src/components/workflow/*.test.ts",
     "test:conversation": "tsx --test src/features/conversation/*.test.ts src/components/conversation/*.test.ts src/hooks/useUrlParam.test.ts src/lib/roundtableStream.test.ts",
-    "test": "npm run test:extensions && npm run test:workflow && npm run test:conversation",
+    "test:desktop": "tsx --test src/lib/desktop-update.test.ts",
+    "test": "npm run test:extensions && npm run test:workflow && npm run test:conversation && npm run test:desktop",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -37,6 +38,9 @@
     "@reactflow/background": "^11.3.14",
     "@reactflow/controls": "^11.2.14",
     "@reactflow/core": "^11.11.4",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "autoprefixer": "^10.4.20",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

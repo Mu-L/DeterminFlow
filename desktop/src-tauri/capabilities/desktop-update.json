@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-update",
+  "description": "Allow the bundled loopback UI to check and install signed desktop updates.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*"]
+  },
+  "permissions": [
+    "core:app:allow-version",
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

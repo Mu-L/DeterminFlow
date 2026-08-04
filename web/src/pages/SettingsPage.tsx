@@ -8,6 +8,7 @@ import { useSettings } from "../hooks/useSettings";
 import { ConfigItemMeta } from "../types";
 import ModelProviderCard, { type ModelProvider, type ProviderSchema } from "../components/ModelProviderCard";
 import { getModelProviders, getProviderSchemas, updateModelProvider, deleteModelProvider, setDefaultModel as apiSetDefaultModel, addModelProvider } from "../lib/api";
+import { DesktopUpdatePanel } from "../desktop-updater/DesktopUpdatePanel";
 
 interface ConfigGroupDef {
   key: string;
@@ -377,6 +378,8 @@ export default function SettingsPage() {
             </button>
           </div>
         </nav>
+
+        <DesktopUpdatePanel />
 
         {/* 模型供应商配置 */}
         <section aria-label="模型配置" className="bg-slate-800/80 rounded-xl border border-slate-700/50 overflow-hidden">

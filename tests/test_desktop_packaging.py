@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -11,8 +12,10 @@ import pytest
 from desktop.python.entrypoint import _run_python_compatibility_mode
 from desktop.python.runtime import seed_user_config
 from desktop.scripts import stage_defaults as defaults_module
+from desktop.scripts.create_update_manifest import create_manifest
 from desktop.scripts.verify_bundle import (
     verify_defaults,
+    verify_updater_signature,
     verify_windows_gui_executable,
     write_checksum,
 )
@@ -33,19 +36,55 @@ def test_tauri_bundle_is_a_per_user_nsis_installer() -> None:
 
     assert config["productName"] == "DeterminFlow"
     assert bundle["targets"] == ["nsis"]
+    assert bundle["createUpdaterArtifacts"] is True
     assert bundle["icon"] == ["icons/icon.ico", "icons/icon.png"]
     assert nsis["installMode"] == "currentUser"
     assert nsis["installerIcon"] == "icons/icon.ico"
     assert nsis["uninstallerIcon"] == "icons/icon.ico"
+    assert nsis["headerImage"] == "images/nsis-header.bmp"
+    assert nsis["sidebarImage"] == "images/nsis-sidebar.bmp"
+    assert nsis["uninstallerHeaderImage"] == "images/nsis-header.bmp"
     assert (
         bundle["windows"]["webviewInstallMode"]["type"]
         == "downloadBootstrapper"
     )
-    assert "plugins" not in config or "updater" not in config["plugins"]
+    updater = config["plugins"]["updater"]
+    assert updater["endpoints"] == [
+        "https://github.com/alikon-art/DeterminFlow/releases/latest/download/latest.json"
+    ]
+    assert len(updater["pubkey"]) > 100
+    assert b"minisign public key" in base64.b64decode(
+        updater["pubkey"], validate=True
+    )
 
     icons_dir = REPO_ROOT / "desktop" / "src-tauri" / "icons"
     assert (icons_dir / "icon.ico").stat().st_size > 1024
     assert (icons_dir / "icon.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    images_dir = REPO_ROOT / "desktop" / "src-tauri" / "images"
+    for name, dimensions in {
+        "nsis-header.bmp": (150, 57),
+        "nsis-sidebar.bmp": (164, 314),
+    }.items():
+        image = (images_dir / name).read_bytes()
+        assert image[:2] == b"BM"
+        assert int.from_bytes(image[18:22], "little") == dimensions[0]
+        assert int.from_bytes(image[22:26], "little") == dimensions[1]
+
+
+def test_desktop_update_capability_only_trusts_the_bundled_loopback_ui() -> None:
+    capability = json.loads(
+        (REPO_ROOT / "desktop" / "src-tauri" / "capabilities" / "desktop-update.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert capability["windows"] == ["main"]
+    assert capability["remote"]["urls"] == ["http://127.0.0.1:*/*"]
+    assert capability["permissions"] == [
+        "core:app:allow-version",
+        "updater:default",
+        "process:allow-restart",
+    ]
 
 
 def test_tauri_release_shell_uses_the_windows_gui_subsystem() -> None:
@@ -69,6 +108,8 @@ def test_desktop_workflow_uses_a_real_windows_runner_and_only_uploads_artifact()
     assert "desktop/scripts/smoke_installer.ps1" in workflow
     assert "--desktop-executable" in workflow
     assert "actions/upload-artifact@v4" in workflow
+    assert "TAURI_SIGNING_PRIVATE_KEY" in workflow
+    assert "--updater-signature" in workflow
     assert "tauri-action" not in workflow
     assert "softprops/action-gh-release" not in workflow
     assert "gh release" not in workflow.lower()
@@ -177,6 +218,30 @@ def test_checksum_file_is_portable_across_line_endings(tmp_path: Path) -> None:
 
     assert checksum.read_bytes().endswith(b"\n")
     assert b"\r\n" not in checksum.read_bytes()
+
+
+def test_updater_signature_and_static_manifest(tmp_path: Path) -> None:
+    installer = tmp_path / "DeterminFlow 1.1.0-setup.exe"
+    installer.write_bytes(b"installer")
+    signature = installer.with_suffix(installer.suffix + ".sig")
+    signature.write_text(
+        base64.b64encode(b"signature" * 16).decode("ascii"), encoding="utf-8"
+    )
+
+    verify_updater_signature(signature)
+    manifest = create_manifest(
+        version="1.1.0",
+        installer=installer,
+        signature=signature,
+        base_url="https://github.com/alikon-art/DeterminFlow/releases/download/v1.1.0",
+        notes="桌面更新",
+        pub_date="2026-08-04T00:00:00Z",
+    )
+
+    assert manifest["version"] == "1.1.0"
+    platform = manifest["platforms"]["windows-x86_64"]
+    assert platform["url"].endswith("/DeterminFlow%201.1.0-setup.exe")
+    assert platform["signature"] == signature.read_text(encoding="utf-8")
 
 
 def test_windows_desktop_executable_must_use_the_gui_subsystem(tmp_path: Path) -> None:

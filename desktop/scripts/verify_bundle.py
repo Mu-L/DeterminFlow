@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import logging
@@ -96,10 +97,24 @@ def write_checksum(installer: Path) -> Path:
     return checksum_path
 
 
+def verify_updater_signature(signature: Path) -> None:
+    if not signature.is_file():
+        raise RuntimeError(f"更新签名不存在: {signature}")
+    encoded = signature.read_text(encoding="utf-8").strip()
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except ValueError as error:
+        raise RuntimeError(f"更新签名不是有效的 Base64: {signature}") from error
+    if len(decoded) < 64:
+        raise RuntimeError(f"更新签名内容过短: {signature}")
+    LOGGER.info("Tauri 更新签名验证通过: %s", signature)
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
     parser.add_argument("--installer", type=Path)
+    parser.add_argument("--updater-signature", type=Path)
     parser.add_argument("--desktop-executable", type=Path)
     options = parser.parse_args()
 
@@ -121,6 +136,9 @@ def main() -> int:
         LOGGER.info("SHA-256 文件: %s", checksum)
     else:
         LOGGER.info("桌面运行时边界验证通过")
+
+    if options.updater_signature:
+        verify_updater_signature(options.updater_signature.resolve())
     return 0
 
 
