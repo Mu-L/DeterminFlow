@@ -45,6 +45,7 @@ def test_tauri_bundle_is_a_per_user_nsis_installer() -> None:
     assert bundle["icon"] == ["icons/icon.ico", "icons/icon.png"]
     assert nsis["installMode"] == "currentUser"
     assert nsis["installerIcon"] == "icons/icon.ico"
+    assert nsis["installerHooks"] == "./windows/installer-hooks.nsh"
     assert nsis["uninstallerIcon"] == "icons/icon.ico"
     assert nsis["headerImage"] == "images/nsis-header.bmp"
     assert nsis["sidebarImage"] == "images/nsis-sidebar.bmp"
@@ -103,6 +104,39 @@ def test_tauri_release_shell_uses_the_windows_gui_subsystem() -> None:
     )
 
 
+def test_desktop_lifecycle_cleans_up_the_backend_before_every_exit() -> None:
+    main_source = (REPO_ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text(
+        encoding="utf-8"
+    )
+    updater_context = (
+        REPO_ROOT / "web" / "src" / "desktop-updater" / "context.tsx"
+    ).read_text(encoding="utf-8")
+    hooks = (
+        REPO_ROOT
+        / "desktop"
+        / "src-tauri"
+        / "windows"
+        / "installer-hooks.nsh"
+    ).read_text(encoding="utf-8")
+
+    single_instance = main_source.index("tauri_plugin_single_instance::init")
+    process_plugin = main_source.index("tauri_plugin_process::init")
+    updater_plugin = main_source.index("tauri_plugin_updater::Builder::new")
+    assert single_instance < process_plugin < updater_plugin
+    assert "fn prepare_for_update" in main_source
+    assert "generate_handler![prepare_for_update]" in main_source
+    assert 'matches!(event, RunEvent::Exit)' in main_source
+    assert main_source.count(".stop();") >= 2
+    download = updater_context.index("await resource.download(")
+    prepare = updater_context.index('await invoke("prepare_for_update")')
+    install = updater_context.index("await resource.install()")
+    assert download < prepare < install
+    assert "downloadAndInstall" not in updater_context
+    assert "NSIS_HOOK_PREINSTALL" in hooks
+    assert "NSIS_HOOK_PREUNINSTALL" in hooks
+    assert "/IM determinflow-backend.exe" in hooks
+
+
 def test_desktop_workflow_builds_candidates_and_publishes_tags() -> None:
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "desktop-windows.yml"
@@ -125,6 +159,13 @@ def test_desktop_workflow_builds_candidates_and_publishes_tags() -> None:
     assert "gh release create" in workflow.lower()
     assert "contents: write" in workflow
     assert "release-assets/latest.json" in workflow
+
+    installer_smoke = (
+        REPO_ROOT / "desktop" / "scripts" / "smoke_installer.ps1"
+    ).read_text(encoding="utf-8")
+    assert "CloseMainWindow" in installer_smoke
+    assert "Second launch created duplicate backends" in installer_smoke
+    assert "NSIS reinstall with a stale backend" in installer_smoke
 
 
 def test_stage_defaults_uses_sanitized_overrides(
@@ -338,7 +379,7 @@ def test_desktop_versions_are_consistent() -> None:
         encoding="utf-8"
     )
 
-    assert tauri["version"] == "1.0.1"
+    assert tauri["version"] == "1.0.2"
     assert package["version"] == tauri["version"]
     assert f'version = "{tauri["version"]}"' in cargo
 

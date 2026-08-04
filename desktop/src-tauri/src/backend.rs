@@ -26,32 +26,34 @@ pub struct LaunchedBackend {
 }
 
 impl BackendState {
-    pub fn new(child: Child) -> Self {
+    pub fn new() -> Self {
         Self {
-            child: Mutex::new(Some(child)),
+            child: Mutex::new(None),
         }
     }
 
-    pub fn stop(&self) {
+    pub fn track(&self, mut child: Child) -> Result<(), String> {
         let Ok(mut guard) = self.child.lock() else {
-            return;
+            terminate_child(&mut child);
+            return Err("无法记录内置后端进程".to_string());
+        };
+        if guard.is_some() {
+            terminate_child(&mut child);
+            return Err("内置后端进程已经启动".to_string());
+        }
+        *guard = Some(child);
+        Ok(())
+    }
+
+    pub fn stop(&self) -> bool {
+        let Ok(mut guard) = self.child.lock() else {
+            return false;
         };
         let Some(mut child) = guard.take() else {
-            return;
+            return false;
         };
-        #[cfg(target_os = "windows")]
-        {
-            let pid = child.id().to_string();
-            let _ = Command::new("taskkill")
-                .args(["/PID", pid.as_str(), "/T", "/F"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_child(&mut child);
+        true
     }
 }
 
@@ -59,6 +61,22 @@ impl Drop for BackendState {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+fn terminate_child(child: &mut Child) {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = child.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", pid.as_str(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 pub fn launch(app: &AppHandle) -> Result<LaunchedBackend, String> {
@@ -205,6 +223,29 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
+    fn spawn_long_running_child() -> Child {
+        #[cfg(target_os = "windows")]
+        {
+            let mut command = Command::new("cmd");
+            command
+                .args(["/C", "ping 127.0.0.1 -n 30 > nul"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            return command.spawn().expect("test child should start");
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("test child should start")
+    }
+
     #[test]
     fn reserves_a_loopback_port() {
         let port = reserve_local_port().expect("port should be available");
@@ -216,5 +257,30 @@ mod tests {
     fn rejects_non_http_backend_urls() {
         let error = wait_until_ready("https://127.0.0.1:1").unwrap_err();
         assert!(error.contains("无效的本地服务地址"));
+    }
+
+    #[test]
+    fn stops_the_tracked_backend_once() {
+        let state = BackendState::new();
+        state
+            .track(spawn_long_running_child())
+            .expect("backend should be tracked");
+
+        assert!(state.stop());
+        assert!(!state.stop());
+    }
+
+    #[test]
+    fn rejects_and_terminates_a_second_tracked_backend() {
+        let state = BackendState::new();
+        state
+            .track(spawn_long_running_child())
+            .expect("first backend should be tracked");
+
+        let error = state
+            .track(spawn_long_running_child())
+            .expect_err("second backend should be rejected");
+        assert!(error.contains("已经启动"));
+        assert!(state.stop());
     }
 }

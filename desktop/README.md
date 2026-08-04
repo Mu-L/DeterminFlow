@@ -76,6 +76,7 @@ Full 构建从官方 Plugin 仓库的 `main` Catalog 解析当时全部公开 Pl
 ## 首版限制
 
 - 安装包尚未做 Authenticode（Windows 代码签名），因此不同 Windows 设备上的 SmartScreen 表现可能不同。
-- `v1.0.1` 发布后仍需使用既有 `v1.0.0` 候选完成一次真实跨版本升级验收。
+- 正式发布前必须在 Windows Runner 验证正常关窗、重复启动、Updater 安装、覆盖安装与卸载
+  都不会遗留 `determinflow-backend.exe`，并完成一次真实跨版本升级验收。
 - 不内置 Node.js、npm、Git 或 Git Bash。`execute_command` 使用 Windows `cmd.exe`；Python Workflow 由冻结后端兼容执行；Shell Workflow 需要用户另行安装 Git Bash。
 - `downloadBootstrapper` 保持安装包较小。Windows 10/11 通常已有 WebView2；缺失时安装器需要联网下载。

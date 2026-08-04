@@ -122,7 +122,10 @@ export function DesktopUpdateProvider({ children }: { children: ReactNode }) {
     };
 
     try {
-      await resource.downloadAndInstall(onDownloadEvent, { timeout: 10 * 60 * 1000 });
+      await resource.download(onDownloadEvent, { timeout: 10 * 60 * 1000 });
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("prepare_for_update");
+      await resource.install();
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (caught) {

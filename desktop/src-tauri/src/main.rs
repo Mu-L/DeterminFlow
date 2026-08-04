@@ -2,6 +2,8 @@
 
 mod backend;
 
+use std::sync::Arc;
+
 use backend::{BackendState, LaunchedBackend};
 use tauri::{Manager, RunEvent};
 
@@ -32,10 +34,14 @@ fn navigate_when_ready(window: tauri::WebviewWindow, url: String) {
     });
 }
 
+#[tauri::command]
+fn prepare_for_update(backend_state: tauri::State<'_, Arc<BackendState>>) {
+    backend_state.stop();
+}
+
 fn main() {
+    let backend_state = Arc::new(BackendState::new());
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(
             |app, _arguments, _cwd| {
                 if let Some(window) = app.get_webview_window("main") {
@@ -44,10 +50,14 @@ fn main() {
                 }
             },
         ))
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(backend_state)
+        .invoke_handler(tauri::generate_handler![prepare_for_update])
         .setup(|app| {
             let window = app.get_webview_window("main").ok_or("无法创建主窗口")?;
             let LaunchedBackend { child, url } = backend::launch(app.handle())?;
-            app.manage(BackendState::new(child));
+            app.state::<Arc<BackendState>>().track(child)?;
             navigate_when_ready(window, url);
             Ok(())
         })
@@ -56,7 +66,7 @@ fn main() {
 
     app.run(|app_handle, event| {
         if matches!(event, RunEvent::Exit) {
-            app_handle.state::<BackendState>().stop();
+            app_handle.state::<Arc<BackendState>>().stop();
         }
     });
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "DeterminFlow",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "identifier": "io.determinflow.desktop",
   "build": {
     "frontendDist": "../ui"
@@ -44,6 +44,7 @@
         "headerImage": "images/nsis-header.bmp",
         "sidebarImage": "images/nsis-sidebar.bmp",
         "installerIcon": "icons/icon.ico",
+        "installerHooks": "./windows/installer-hooks.nsh",
         "uninstallerIcon": "icons/icon.ico",
         "uninstallerHeaderImage": "images/nsis-header.bmp",
         "languages": ["SimpChinese", "English"]
