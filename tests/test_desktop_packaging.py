@@ -11,7 +11,7 @@ import pytest
 from desktop.python.entrypoint import _run_python_compatibility_mode
 from desktop.python.runtime import seed_user_config
 from desktop.scripts import stage_defaults as defaults_module
-from desktop.scripts.verify_bundle import verify_defaults
+from desktop.scripts.verify_bundle import verify_defaults, write_checksum
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -139,3 +139,13 @@ def test_runtime_config_consumers_follow_redirected_config_dir(tmp_path: Path) -
         env=environment,
         check=True,
     )
+
+
+def test_checksum_file_is_portable_across_line_endings(tmp_path: Path) -> None:
+    installer = tmp_path / "DeterminFlow-setup.exe"
+    installer.write_bytes(b"installer")
+
+    checksum = write_checksum(installer)
+
+    assert checksum.read_bytes().endswith(b"\n")
+    assert b"\r\n" not in checksum.read_bytes()

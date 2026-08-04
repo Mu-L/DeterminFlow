@@ -64,7 +64,7 @@ def verify_defaults(config_dir: Path) -> None:
 def write_checksum(installer: Path) -> Path:
     digest = hashlib.sha256(installer.read_bytes()).hexdigest()
     checksum_path = installer.with_suffix(installer.suffix + ".sha256")
-    checksum_path.write_text(f"{digest}  {installer.name}\n", encoding="utf-8")
+    checksum_path.write_bytes(f"{digest}  {installer.name}\n".encode("ascii"))
     return checksum_path
 
 
