@@ -16,10 +16,13 @@ from src.extension_host.resource_preparation import (
     _atomic_replace_directory,
     prepare_plugin_resources,
 )
+from src.extension_host.resources import LayeredJsonConfig
 from src.extension_host.workflow_provisioning import (
     provision_plugin_workflows,
 )
 from src.plugin_system import PluginStore
+from src.skills.config_manager import SkillConfigManager
+from src.skills.manager import SkillManager
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -66,8 +69,20 @@ def test_prepares_namespaced_resources_without_modifying_plugin_source(
     _write_json(
         skills,
         {
-            "skills": {"craft": {"group_ids": ["writers"]}},
-            "skill_configs": {"craft": {"group_ids": ["writers"]}},
+            "skills": {
+                "craft": {
+                    "group_ids": ["writers", "default"],
+                    "auto_inject": True,
+                }
+            },
+            "skill_configs": {
+                "craft": {
+                    "enabled": True,
+                    "priority": 70,
+                    "auto_inject": True,
+                    "workflow_only": False,
+                }
+            },
             "groups": [{"id": "writers", "skill_ids": ["craft"]}],
         },
     )
@@ -217,6 +232,42 @@ def test_prepares_namespaced_resources_without_modifying_plugin_source(
     ).is_dir()
     assert resolver.resolve("demo-plugin", "workflow", "build") == "demo-build"
     assert prepared.paths["script_libraries"][0].revision == "abc123:sha256"
+
+    prepared_skills = json.loads(
+        prepared.paths["skills"][0].path.read_text(encoding="utf-8")
+    )
+    assert prepared_skills["skills"]["demo-craft"] == {
+        "group_ids": ["demo-writers", "default"],
+        "auto_inject": True,
+    }
+    assert prepared_skills["skill_configs"]["demo-craft"]["auto_inject"] is True
+
+    base_skills = tmp_path / "config" / "skills_config.json"
+    _write_json(
+        base_skills,
+        {
+            "skills": {},
+            "skill_configs": {},
+            "groups": [{"id": "default", "name": "Default"}],
+        },
+    )
+    config_store = LayeredJsonConfig(
+        base_skills,
+        prepared.paths["skills"],
+        dict_sections=("skills", "skill_configs"),
+        list_sections=("groups",),
+    )
+    skill_manager = SkillManager(
+        tmp_path / "user-skills",
+        SkillConfigManager(base_skills, config_store=config_store),
+        resource_roots=prepared.paths["skill_bundles"],
+    )
+    injected = skill_manager.list_by_agent_type(
+        "main",
+        auto_inject_only=True,
+        visible_skill_group_ids=["default"],
+    )
+    assert [skill.id for skill in injected] == ["demo-craft"]
 
     assert json.loads(agents.read_text(encoding="utf-8"))["agents"] == {
         "writer": {

@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from src.core.model_manager import ModelManager
+from src.core.model_manager import DEFAULT_MAX_CONTEXT_TOKENS, ModelManager
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +18,7 @@ def test_example_model_config_uses_one_api_key_field() -> None:
     )
 
     assert document["providers"]["deepseek"]["api_key"] == "${DEEPSEEK_API_KEY}"
+    assert document["providers"]["deepseek"]["maxContextTokens"] == 128000
     assert all(
         "api_key_env" not in provider
         for provider in document["providers"].values()
@@ -50,6 +51,33 @@ def test_provider_api_key_is_resolved_without_mutating_config(
 
     manager.update_provider("demo", {"name": "Renamed"})
     assert manager.get_provider("demo")["name"] == "Renamed"
+
+
+def test_provider_context_window_can_be_updated_and_persisted(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "demo": {
+                    "name": "Demo",
+                    "api_key": "",
+                    "models": ["demo-model"],
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    manager = ModelManager(str(config_path))
+
+    assert manager.get_model_info("demo:demo-model")["maxContextTokens"] == (
+        DEFAULT_MAX_CONTEXT_TOKENS
+    )
+
+    manager.update_provider("demo", {"maxContextTokens": 64000})
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["providers"]["demo"]["maxContextTokens"] == 64000
+    assert manager.get_model_info("demo:demo-model")["maxContextTokens"] == 64000
 
 
 def test_provider_api_key_does_not_guess_an_environment_variable(

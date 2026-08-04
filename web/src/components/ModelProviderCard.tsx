@@ -3,6 +3,7 @@ import {
   Eye, EyeOff, Plus, Trash2, Save, RefreshCw,
   ChevronDown, ChevronUp, Star, StarOff,
 } from "lucide-react";
+import { DEFAULT_MAX_CONTEXT_TOKENS } from "../lib/modelDefaults";
 
 export interface ModelProvider {
   id: string;
@@ -273,18 +274,23 @@ export default function ModelProviderCard({
             <input
               type="number"
               id={`provider-${provider.id}-max-tokens`}
-              value={localProvider.maxContextTokens || 128000}
+              value={localProvider.maxContextTokens ?? ""}
               onChange={(e) => {
-                setLocalProvider({ ...localProvider, maxContextTokens: parseInt(e.target.value) || 128000 });
+                setLocalProvider({
+                  ...localProvider,
+                  maxContextTokens: e.target.value === "" ? undefined : Number(e.target.value),
+                });
                 setEdited(true);
               }}
               min={1000}
               step={1000}
-              placeholder="128000"
+              placeholder={String(DEFAULT_MAX_CONTEXT_TOKENS)}
               className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-h-[44px]
                 focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
             />
-            <p className="text-xs text-slate-500 mt-1">模型支持的最大上下文窗口大小（tokens）</p>
+            <p className="text-xs text-slate-500 mt-1">
+              未配置时使用系统默认值 {DEFAULT_MAX_CONTEXT_TOKENS} tokens
+            </p>
           </div>
 
           {/* Models */}

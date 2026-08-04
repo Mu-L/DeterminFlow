@@ -2085,12 +2085,16 @@ class AgentSession:
             call_index = self._llm_call_count
 
             # 获取 maxContextTokens
-            max_context_tokens = 8000  # fallback
+            from src.core.model_manager import DEFAULT_MAX_CONTEXT_TOKENS
+
+            max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
             if self.model_id:
                 try:
                     from src.core.model_manager import get_model_manager
                     model_info = get_model_manager().get_model_info(self.model_id)
-                    max_context_tokens = model_info.get("maxContextTokens", 8000)
+                    max_context_tokens = model_info.get(
+                        "maxContextTokens", DEFAULT_MAX_CONTEXT_TOKENS
+                    )
                 except Exception:
                     pass
 

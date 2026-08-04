@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 # get_default_model() 的 mtime 缓存：避免每次调用都读磁盘
 _agents_config_cache: dict = {"mtime": 0.0, "model": None}
 
-# 默认最大上下文 token 数，当模型/供应商未配置 maxContextTokens 时使用
-# 现代模型通常支持 128K+，但 8000 作为保守默认值避免意外消耗过多资源
-DEFAULT_MAX_CONTEXT_TOKENS = 8000
+# 默认最大上下文 token 数，当模型/供应商未配置 maxContextTokens 时使用。
+# 与新增 Provider 和设置页的默认值保持一致。
+DEFAULT_MAX_CONTEXT_TOKENS = 128000
 _ENV_API_KEY_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 # ============================================================
@@ -257,7 +257,7 @@ class ModelManager:
     # 允许通过 update_provider 修改的字段白名单
     _PROVIDER_UPDATE_KEYS = frozenset({
         "name", "display_name", "base_url", "api_key", "models", "models_config",
-        "hyperparameter_values",
+        "maxContextTokens", "hyperparameter_values",
     })
 
     def update_provider(self, provider_id: str, updates: Dict):
@@ -401,7 +401,7 @@ class ModelManager:
             model_override: 模型覆盖，格式 "provider_id:model_name"
 
         Returns:
-            模型的最大上下文token数，默认返回8000
+            模型的最大上下文token数，默认返回128000
         """
         if model_override and ":" in model_override:
             provider_id, model_name = model_override.split(":", 1)

@@ -17,6 +17,7 @@
         "deepseek-v4-flash",
         "deepseek-v4-pro"
       ],
+      "maxContextTokens": 128000,
       "hyperparameter_values": {
         "max_completion_tokens": 32768
       }

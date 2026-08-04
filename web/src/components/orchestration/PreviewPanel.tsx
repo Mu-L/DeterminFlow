@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { FileText, Bot, Wrench, Hash, Zap, Eye, EyeOff, AlertCircle, BookOpen } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { DEFAULT_MAX_CONTEXT_TOKENS } from "../../lib/modelDefaults";
 import {
   PromptSectionData,
   AgentDefinitionData,
@@ -155,14 +156,20 @@ export default function PreviewPanel({
         <div className="px-4 py-2 border-b border-border/30 flex-shrink-0">
           <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
             <span>Token 使用</span>
-            <span className="tabular-nums">{totalTokens} / 8000</span>
+            <span className="tabular-nums">
+              {totalTokens} / {DEFAULT_MAX_CONTEXT_TOKENS}
+            </span>
           </div>
-          <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden" role="progressbar" aria-valuenow={totalTokens} aria-valuemin={0} aria-valuemax={8000} aria-label={`Token 使用: ${totalTokens}/8000`}>
+          <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden" role="progressbar" aria-valuenow={totalTokens} aria-valuemin={0} aria-valuemax={DEFAULT_MAX_CONTEXT_TOKENS} aria-label={`Token 使用: ${totalTokens}/${DEFAULT_MAX_CONTEXT_TOKENS}`}>
             <div
               className={`h-full rounded-full transition-all duration-300 ${
-                totalTokens > 6000 ? "bg-red-500" : totalTokens > 4000 ? "bg-amber-500" : "bg-green-500"
+                totalTokens > DEFAULT_MAX_CONTEXT_TOKENS * 0.75
+                  ? "bg-red-500"
+                  : totalTokens > DEFAULT_MAX_CONTEXT_TOKENS * 0.5
+                    ? "bg-amber-500"
+                    : "bg-green-500"
               }`}
-              style={{ width: `${Math.min((totalTokens / 8000) * 100, 100)}%` }}
+              style={{ width: `${Math.min((totalTokens / DEFAULT_MAX_CONTEXT_TOKENS) * 100, 100)}%` }}
             />
           </div>
         </div>

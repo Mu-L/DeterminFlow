@@ -121,7 +121,7 @@ ROUNDTABLE_COMPRESSOR_WINDOW = _get_int_config("ROUNDTABLE_COMPRESSOR_WINDOW", 2
 ROUNDTABLE_COMPRESSOR_INTERVAL = _get_int_config("ROUNDTABLE_COMPRESSOR_INTERVAL", 3)
 ROUNDTABLE_MAX_IDLE_CYCLES = _get_int_config("ROUNDTABLE_MAX_IDLE_CYCLES", 50)
 
-MAX_CONTEXT_TOKENS = _get_int_config("MAX_CONTEXT_TOKENS", 8000)
+MAX_CONTEXT_TOKENS = _get_int_config("MAX_CONTEXT_TOKENS", 128000)
 
 LANGGRAPH_RECURSION_LIMIT = _get_int_config("LANGGRAPH_RECURSION_LIMIT", 25)
 
@@ -181,7 +181,7 @@ CONFIG_ITEMS: list[dict[str, Any]] = [
     {"key": "ROUNDTABLE_COMPRESSOR_INTERVAL", "label": "压缩器摘要间隔", "group": "roundtable", "type": "number", "min": 1, "max": 20},
     {"key": "ROUNDTABLE_MAX_IDLE_CYCLES", "label": "Moderator 最大空闲循环", "group": "roundtable", "type": "number", "min": 10, "max": 200},
     # 上下文管理
-    {"key": "MAX_CONTEXT_TOKENS", "label": "最大上下文 Token 数", "group": "system", "type": "number", "min": 1000, "max": 100000},
+    {"key": "MAX_CONTEXT_TOKENS", "label": "最大上下文 Token 数", "group": "system", "type": "number", "min": 1000, "max": 2000000},
     # LangGraph
     {"key": "LANGGRAPH_RECURSION_LIMIT", "label": "LangGraph 递归限制", "group": "system", "type": "number", "min": 5, "max": 100},
     # Web 服务（只读）

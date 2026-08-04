@@ -14,7 +14,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, AIMessage, ToolM
 
 from .config import get_compression_config_manager
 from .utils import estimate_messages_tokens
-from src.core.model_manager import get_model_manager
+from src.core.model_manager import DEFAULT_MAX_CONTEXT_TOKENS, get_model_manager
 from src.core.utils import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,9 @@ class CompressionChecker:
 
         # 获取模型配置
         model_info = self.model_manager.get_model_info(model_override)
-        max_context_tokens = model_info.get("maxContextTokens", 8000)
+        max_context_tokens = model_info.get(
+            "maxContextTokens", DEFAULT_MAX_CONTEXT_TOKENS
+        )
 
         # 计算当前上下文token数
         current_tokens = self._estimate_messages_tokens(messages)
@@ -215,7 +217,9 @@ class CompressionChecker:
             统计信息字典
         """
         model_info = self.model_manager.get_model_info(model_override)
-        max_context_tokens = model_info.get("maxContextTokens", 8000)
+        max_context_tokens = model_info.get(
+            "maxContextTokens", DEFAULT_MAX_CONTEXT_TOKENS
+        )
 
         current_tokens = self._estimate_messages_tokens(messages)
         usage_ratio = current_tokens / max_context_tokens if max_context_tokens > 0 else 0
