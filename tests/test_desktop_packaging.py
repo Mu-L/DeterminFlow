@@ -41,6 +41,7 @@ def test_desktop_workflow_uses_a_real_windows_runner_and_only_uploads_artifact()
 
     assert "runs-on: windows-2025" in workflow
     assert "desktop/scripts/smoke_backend.py" in workflow
+    assert "desktop/scripts/smoke_installer.ps1" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "tauri-action" not in workflow
     assert "softprops/action-gh-release" not in workflow

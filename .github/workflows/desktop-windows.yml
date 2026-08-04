@@ -82,6 +82,10 @@ jobs:
           "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
           "checksum=$($installer.FullName).sha256" >> $env:GITHUB_OUTPUT
 
+      - name: Smoke-test NSIS install and uninstall
+        shell: pwsh
+        run: ./desktop/scripts/smoke_installer.ps1 -Installer "${{ steps.installer.outputs.path }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: DeterminFlow-Windows-x64-unsigned

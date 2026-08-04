@@ -10,7 +10,7 @@
 | 后端 | PyInstaller `onedir` | 冻结现有 Python/FastAPI 服务，不要求用户安装 Python |
 | 前端 | 现有 `web/dist` | 由本地 FastAPI 服务提供，入口和服务版一致 |
 | 安装包 | NSIS `currentUser` | 安装到当前用户目录，不申请管理员权限 |
-| 构建 | GitHub Actions `windows-2025` | 在真实 x64 Windows Runner 上生成并冒烟测试安装包 |
+| 构建 | GitHub Actions `windows-2025` | 在真实 x64 Windows Runner 上生成、安装、启动并卸载验证安装包 |
 
 桌面进程每次选择一个空闲的 `127.0.0.1` 端口。窗口在 `/api/system/status` 返回成功后才进入现有 Web UI；重复打开只会唤起已有窗口；窗口退出时会终止内置后端及其子进程。
 
