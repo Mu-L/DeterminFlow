@@ -145,6 +145,7 @@ CODING_WORKSPACE_MAX_SIZE = _get_int_config("CODING_WORKSPACE_MAX_SIZE", 1048576
 
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
 WEB_PORT = _get_int_config("WEB_PORT", 8020)
+SHOW_SYSTEM_PROMPT_TAB = _get_bool_config("SHOW_SYSTEM_PROMPT_TAB", False)
 
 def ensure_dirs():
     """确保运行目录存在，并补齐缺失的 Core 内置资源。"""
@@ -184,6 +185,7 @@ CONFIG_ITEMS: list[dict[str, Any]] = [
     {"key": "MAX_CONTEXT_TOKENS", "label": "最大上下文 Token 数", "group": "system", "type": "number", "min": 1000, "max": 2000000},
     # LangGraph
     {"key": "LANGGRAPH_RECURSION_LIMIT", "label": "LangGraph 递归限制", "group": "system", "type": "number", "min": 5, "max": 100},
+    {"key": "SHOW_SYSTEM_PROMPT_TAB", "label": "顶部展示系统提示词", "group": "system", "type": "boolean"},
     # Web 服务（只读）
     {"key": "WEB_HOST", "label": "Web 服务地址", "group": "system", "type": "string", "readonly": True},
     {"key": "WEB_PORT", "label": "Web 服务端口", "group": "system", "type": "number", "readonly": True},

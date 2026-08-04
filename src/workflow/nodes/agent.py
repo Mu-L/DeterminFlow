@@ -274,6 +274,7 @@ class AgentNode(BaseNodePlugin):
         completion_event = asyncio.Event()
         completion_result = {"summary": "", "status": "success", "error": ""}
         _complete_called = False  # 标记 complete_node_task 是否已显式调用
+        approval_requested = False
 
         async def handle_approval(summary: str, status: str, error: str) -> None:
             nonlocal completion_result
@@ -287,13 +288,25 @@ class AgentNode(BaseNodePlugin):
                     "error": approval_error,
                 }
 
+        def request_approval(summary: str, status: str, error: str) -> None:
+            nonlocal approval_requested, completion_result
+            if approval_requested:
+                return
+            approval_requested = True
+            completion_result = {
+                "summary": summary,
+                "status": status,
+                "error": error,
+            }
+            asyncio.create_task(handle_approval(summary, status, error))
+
         def on_node_complete(session_id: str, summary: str, status: str, error: str):
             nonlocal _complete_called, completion_result
             _complete_called = True
-            completion_result = {"summary": summary, "status": status, "error": error}
             if ctx.needs_approval:
-                asyncio.create_task(handle_approval(summary, status, error))
+                request_approval(summary, status, error)
             else:
+                completion_result = {"summary": summary, "status": status, "error": error}
                 # 不在此处 set completion_event，因为 LLM 在调用
                 # complete_node_task 后可能还会生成一条最终回复。
                 # 由 on_auto_complete 在 graph 完全结束后统一设置。
@@ -307,7 +320,10 @@ class AgentNode(BaseNodePlugin):
                 node_def.id, session_id, status,
             )
             if ctx.needs_approval:
-                return  # 审批模式：由 _handle_approval 控制 completion_event
+                if not _complete_called:
+                    _complete_called = True
+                    request_approval(summary, status, error)
+                return
             if _complete_called:
                 # on_node_complete 已存储结果，只需触发事件
                 completion_event.set()

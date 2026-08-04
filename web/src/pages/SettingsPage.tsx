@@ -2,13 +2,23 @@ import { useState, useEffect, useRef } from "react";
 import {
   Settings, Cpu, Users, MessageCircle, Server, Code,
   Save, RefreshCw, Eye, EyeOff, Lock, ChevronDown, ChevronUp,
-  Plus, X, AlertCircle, Trash2,
+  Plus, Trash2,
 } from "lucide-react";
 import { useSettings } from "../hooks/useSettings";
 import { ConfigItemMeta } from "../types";
 import ModelProviderCard, { type ModelProvider, type ProviderSchema } from "../components/ModelProviderCard";
-import { getModelProviders, getProviderSchemas, updateModelProvider, deleteModelProvider, setDefaultModel as apiSetDefaultModel, addModelProvider } from "../lib/api";
+import AddModelProviderDialog from "../components/AddModelProviderDialog";
+import {
+  addModelProvider,
+  deleteModelProvider,
+  discoverProviderModels,
+  getModelProviders,
+  getProviderSchemas,
+  prioritizeModelProvider,
+  updateModelProvider,
+} from "../lib/api";
 import { DesktopUpdatePanel } from "../desktop-updater/DesktopUpdatePanel";
+import CompressionConfigSection from "./CompressionConfigPage";
 
 interface ConfigGroupDef {
   key: string;
@@ -175,7 +185,7 @@ function ConfigGroup({
   setValue: (key: string, value: string | number | boolean) => void;
   isEdited: (key: string) => boolean;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const editedCount = items.filter((item) => isEdited(item.key)).length;
 
   const sectionId = `config-group-${group.key}`;
@@ -231,17 +241,13 @@ export default function SettingsPage() {
   } = useSettings();
 
   // 模型供应商状态
-  const [providers, setProviders] = useState<Record<string, Omit<ModelProvider, "id"> & { id?: string }>>({});
+  const [providers, setProviders] = useState<Record<string, Omit<ModelProvider, "id">>>({});
   const [schemas, setSchemas] = useState<Record<string, ProviderSchema>>({});
   const [defaultProvider, setDefaultProvider] = useState<string>("");
   const [providersLoading, setProvidersLoading] = useState(true);
   const [providersError, setProvidersError] = useState<string | null>(null);
 
-  // 添加供应商对话框状态
   const [addDialogOpen, setAddDialogOpen] = useState(false);
-  const [addForm, setAddForm] = useState({ id: "", name: "", base_url: "" });
-  const [addFormError, setAddFormError] = useState<string | null>(null);
-  const addDialogRef = useRef<HTMLDivElement>(null);
 
   // 删除供应商确认对话框状态
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -257,14 +263,10 @@ export default function SettingsPage() {
         getModelProviders(),
         getProviderSchemas(),
       ]);
-      // 后端返回 providers 为 Dict 格式（{provider_id: config}），直接使用
-      setProviders(providersData.providers as unknown as Record<string, Omit<ModelProvider, "id"> & { id?: string }>);
+      setProviders(providersData.providers);
       setDefaultProvider(providersData.default_provider || "");
-
-      // 后端返回 schemas 为 Dict 格式（{provider_id: schema}），直接使用
-      setSchemas(schemasData.schemas as unknown as Record<string, ProviderSchema>);
-    } catch (error) {
-      console.error("Failed to load model providers:", error);
+      setSchemas(schemasData.schemas);
+    } catch {
       setProvidersError("加载模型供应商失败，请检查网络连接后重试");
     } finally {
       setProvidersLoading(false);
@@ -274,26 +276,6 @@ export default function SettingsPage() {
   useEffect(() => {
     loadProviders();
   }, []);
-
-  // 对话框焦点管理：自动聚焦 + 焦点循环
-  useEffect(() => {
-    if (!addDialogOpen || !addDialogRef.current) return;
-    const el = addDialogRef.current;
-    const firstInput = el.querySelector<HTMLInputElement>("input");
-    firstInput?.focus();
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { setAddDialogOpen(false); return; }
-      if (e.key !== "Tab") return;
-      const focusable = el.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [addDialogOpen]);
 
   // 删除确认对话框焦点管理
   useEffect(() => {
@@ -391,7 +373,7 @@ export default function SettingsPage() {
             </div>
             <button
               type="button"
-              onClick={() => { setAddForm({ id: "", name: "", base_url: "" }); setAddFormError(null); setAddDialogOpen(true); }}
+              onClick={() => setAddDialogOpen(true)}
               aria-label="添加新的模型供应商"
               className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg border border-slate-600 text-slate-300
                 hover:bg-slate-700 transition-all cursor-pointer min-h-[44px]"
@@ -415,27 +397,13 @@ export default function SettingsPage() {
                   setDeleteProviderId(id);
                   setDeleteDialogOpen(true);
                 }}
-                onSetDefault={async (id) => {
-                  await apiSetDefaultModel(id, providers[id]?.models?.[0] || "");
+                onPrioritize={async (id) => {
+                  await prioritizeModelProvider(id);
                   await loadProviders();
                 }}
-                onAddModel={async (id, modelName) => {
-                  const provider = providers[id];
-                  if (provider && !provider.models.includes(modelName)) {
-                    await updateModelProvider(id, {
-                      models: [...provider.models, modelName],
-                    });
-                    await loadProviders();
-                  }
-                }}
-                onRemoveModel={async (id, modelName) => {
-                  const provider = providers[id];
-                  if (provider) {
-                    await updateModelProvider(id, {
-                      models: provider.models.filter((m: string) => m !== modelName),
-                    });
-                    await loadProviders();
-                  }
+                onDiscoverModels={async (input) => {
+                  const result = await discoverProviderModels(input);
+                  return result.models;
                 }}
               />
             ))}
@@ -459,110 +427,20 @@ export default function SettingsPage() {
             )}
           </div>
 
-          {/* 添加供应商模态对话框 */}
-          {addDialogOpen && (
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-              onClick={(e) => { if (e.target === e.currentTarget) setAddDialogOpen(false); }}
-              role="presentation"
-            >
-              <div
-                ref={addDialogRef}
-                role="dialog"
-                aria-modal="true"
-                aria-label="添加模型供应商"
-                aria-describedby="add-provider-desc"
-                className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md mx-4 space-y-4"
-              >
-                <p id="add-provider-desc" className="sr-only">填写供应商 ID、显示名称和 API Base URL 来添加新的模型供应商</p>
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-slate-100">添加模型供应商</h3>
-                  <button
-                    type="button"
-                    onClick={() => setAddDialogOpen(false)}
-                    aria-label="关闭"
-                    className="text-slate-400 hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                  >
-                    <X size={18} aria-hidden="true" />
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  <div>
-                    <label htmlFor="add-provider-id" className="block text-sm text-slate-300 mb-1">供应商 ID <span className="text-red-400">*</span></label>
-                    <input
-                      id="add-provider-id"
-                      type="text"
-                      value={addForm.id}
-                      onChange={(e) => setAddForm({ ...addForm, id: e.target.value.replace(/[^a-zA-Z0-9_-]/g, "") })}
-                      placeholder="例如: deepseek, openai"
-                      className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-h-[44px] focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
-                    />
-                    <p className="text-xs text-slate-500 mt-1">仅英文、数字、下划线和连字符</p>
-                  </div>
-                  <div>
-                    <label htmlFor="add-provider-name" className="block text-sm text-slate-300 mb-1">显示名称 <span className="text-red-400">*</span></label>
-                    <input
-                      id="add-provider-name"
-                      type="text"
-                      value={addForm.name}
-                      onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
-                      placeholder="例如: DeepSeek, OpenAI"
-                      className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-h-[44px] focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="add-provider-url" className="block text-sm text-slate-300 mb-1">API Base URL <span className="text-red-400">*</span></label>
-                    <input
-                      id="add-provider-url"
-                      type="text"
-                      value={addForm.base_url}
-                      onChange={(e) => setAddForm({ ...addForm, base_url: e.target.value })}
-                      placeholder="https://api.example.com/v1"
-                      className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-h-[44px] focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
-                    />
-                  </div>
-                </div>
-                {addFormError && (
-                  <div role="alert" className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-                    <AlertCircle size={14} className="text-red-400 flex-shrink-0" aria-hidden="true" />
-                    <span className="text-sm text-red-400">{addFormError}</span>
-                  </div>
-                )}
-                <div className="flex justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setAddDialogOpen(false)}
-                    className="px-4 py-2 text-sm rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-800 transition-colors duration-200 cursor-pointer min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!addForm.id.trim() || !addForm.name.trim() || !addForm.base_url.trim()}
-                    onClick={async () => {
-                      setAddFormError(null);
-                      try {
-                        await addModelProvider({
-                          provider_id: addForm.id.trim(),
-                          name: addForm.name.trim(),
-                          base_url: addForm.base_url.trim(),
-                          api_key: "",
-                          models: [],
-                        });
-                        await loadProviders();
-                        setAddDialogOpen(false);
-                      } catch (err) {
-                        setAddFormError(err instanceof Error ? err.message : "添加供应商失败，请重试");
-                      }
-                    }}
-                    className="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 cursor-pointer min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30"
-                  >
-                    添加
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          <AddModelProviderDialog
+            open={addDialogOpen}
+            schemas={schemas}
+            existingProviderIds={Object.keys(providers)}
+            onClose={() => setAddDialogOpen(false)}
+            onAdd={async (input) => {
+              await addModelProvider(input);
+              await loadProviders();
+            }}
+            onDiscoverModels={async (input) => {
+              const result = await discoverProviderModels(input);
+              return result.models;
+            }}
+          />
 
           {/* 删除供应商确认对话框 */}
           {deleteDialogOpen && (
@@ -622,7 +500,24 @@ export default function SettingsPage() {
         </section>
 
         {/* 其他配置分组卡片 */}
-        {CONFIG_GROUPS.map((group) => {
+        {CONFIG_GROUPS.filter((group) => group.key !== "system").map((group) => {
+          const items = groupedMeta[group.key];
+          if (!items || items.length === 0) return null;
+          return (
+            <ConfigGroup
+              key={group.key}
+              group={group}
+              items={items}
+              getDisplayValue={getDisplayValue}
+              setValue={setValue}
+              isEdited={isEdited}
+            />
+          );
+        })}
+
+        <CompressionConfigSection />
+
+        {CONFIG_GROUPS.filter((group) => group.key === "system").map((group) => {
           const items = groupedMeta[group.key];
           if (!items || items.length === 0) return null;
           return (

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo } from "react";
-import { MessageSquare, LayoutDashboard, GitBranch, Users, Layers, Settings, BookOpen, Wifi, WifiOff, FileText, Sliders, Workflow, Clock, Boxes, Loader2, type LucideIcon } from "lucide-react";
+import { MessageSquare, LayoutDashboard, GitBranch, Users, Layers, Settings, BookOpen, Wifi, WifiOff, FileText, Workflow, Clock, Boxes, Loader2, type LucideIcon } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { CORE_TAB_IDS, isCoreTabId, type CoreTabId } from "@/core-tabs";
@@ -9,6 +9,7 @@ import { useUrlParam } from "./hooks/useUrlParam";
 import { useExtensions } from "./extensions/context-value";
 import { DesktopUpdateProvider } from "./desktop-updater/context";
 import { DesktopUpdateNotice } from "./desktop-updater/DesktopUpdateNotice";
+import { useNavigationSettings } from "./hooks/useNavigationSettings";
 
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
@@ -20,7 +21,6 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const SkillsPage = lazy(() => import("./pages/SkillsPage"));
 const RulesPage = lazy(() => import("./pages/RulesPage"));
 const SystemPromptPage = lazy(() => import("./pages/SystemPromptPage"));
-const CompressionConfigPage = lazy(() => import("./pages/CompressionConfigPage"));
 const CronPage = lazy(() => import("./pages/CronPage"));
 const ExtensionsPage = lazy(() => import("./pages/ExtensionsPage"));
 
@@ -38,14 +38,13 @@ const CORE_TAB_METADATA: Record<CoreTabId, Omit<TabConfig, "value">> = {
   graph: { icon: GitBranch, label: "图谱", activeClass: "data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-400" },
   roundtable: { icon: Users, label: "圆桌", activeClass: "data-[state=active]:bg-green-500/20 data-[state=active]:text-green-400" },
   orchestration: { icon: Layers, label: "编排", activeClass: "data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-400" },
-  workflow: { icon: Workflow, label: "Workflow", activeClass: "data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-400" },
-  cron: { icon: Clock, label: "Cron", activeClass: "data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-400" },
+  workflow: { icon: Workflow, label: "工作流", activeClass: "data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-400" },
+  cron: { icon: Clock, label: "定时", activeClass: "data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-400" },
   skills: { icon: BookOpen, label: "Skills", activeClass: "data-[state=active]:bg-pink-500/20 data-[state=active]:text-pink-400" },
   rules: { icon: BookOpen, label: "Rules", activeClass: "data-[state=active]:bg-red-500/20 data-[state=active]:text-red-400" },
-  "system-prompt": { icon: FileText, label: "System Prompt", activeClass: "data-[state=active]:bg-teal-500/20 data-[state=active]:text-teal-400" },
-  "compression-config": { icon: Sliders, label: "压缩配置", activeClass: "data-[state=active]:bg-orange-500/20 data-[state=active]:text-orange-400" },
+  "system-prompt": { icon: FileText, label: "系统提示词", activeClass: "data-[state=active]:bg-teal-500/20 data-[state=active]:text-teal-400" },
   settings: { icon: Settings, label: "配置", activeClass: "data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-400" },
-  extensions: { icon: Boxes, label: "Extensions", activeClass: "data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-400" },
+  extensions: { icon: Boxes, label: "插件", activeClass: "data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-400" },
 };
 
 const CORE_TAB_CONFIG: TabConfig[] = CORE_TAB_IDS.map((value) => ({
@@ -65,7 +64,6 @@ const CORE_PAGE_MAP: Record<CoreTabId, React.ComponentType> = {
   skills: SkillsPage,
   rules: RulesPage,
   "system-prompt": SystemPromptPage,
-  "compression-config": CompressionConfigPage,
   settings: SettingsPage,
   extensions: ExtensionsPage,
 };
@@ -105,17 +103,18 @@ function PageLoadingFallback() {
 
 function App() {
   const extensions = useExtensions();
+  const showSystemPromptTab = useNavigationSettings();
   const [requestedTab, setRequestedTab] = useUrlParam("tab");
   const extensionPages = useMemo(() => extensions.flatMap((extension) => extension.pages || []), [extensions]);
   const tabs = useMemo<TabConfig[]>(() => [
-    ...CORE_TAB_CONFIG,
+    ...CORE_TAB_CONFIG.filter((tab) => tab.value !== "system-prompt" || showSystemPromptTab),
     ...extensionPages.map((page) => ({
       value: page.id,
       icon: page.icon,
       label: page.label,
       activeClass: page.activeClass,
     })),
-  ], [extensionPages]);
+  ], [extensionPages, showSystemPromptTab]);
   const activeTab = tabs.some((tab) => tab.value === requestedTab)
     ? requestedTab!
     : "chat";

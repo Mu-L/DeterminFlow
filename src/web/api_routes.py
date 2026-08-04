@@ -14,9 +14,11 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from typing import Any
 
+import httpx
 
 
 from fastapi import APIRouter, Request, HTTPException, Body
@@ -59,6 +61,12 @@ class SendMessageRequest(BaseModel):
 class CreateMainSessionRequest(BaseModel):
 
     agent_type: str = "main"
+
+
+class UpdateSessionModelRequest(BaseModel):
+
+    model_id: str
+    reasoning_effort: str | None = None
 
 
 
@@ -226,14 +234,14 @@ async def get_session_system_prompt(session_id: str, request: Request):
     from src.core.model_manager import get_model_manager
     from src.config import MAX_CONTEXT_TOKENS, MAX_TOOL_ROUNDS
     model_manager = get_model_manager()
-        # 优先使用会话自身的模型，否则使用全局默认
+    # 优先使用会话自身的模型，否则使用动态默认。
     session_model = session.model_id or model_manager.get_default_model()
-    provider_id = session_model.split(":")[0] if ":" in session_model else "deepseek"
+    provider_id = session_model.split(":", 1)[0] if session_model else ""
     provider_config = model_manager.get_provider(provider_id) or {}
     hyperparams = provider_config.get("hyperparameter_values", {})
 
     model_config = {
-        "model": session_model,
+        "model": session_model or "",
         "temperature": hyperparams.get("temperature", 1.0),
         "max_context_tokens": MAX_CONTEXT_TOKENS,
         "max_tool_rounds": MAX_TOOL_ROUNDS,
@@ -318,6 +326,12 @@ async def get_session_detail(session_id: str, request: Request):
 
         "has_graph": session.compiled_graph is not None,
 
+        "runtime_scope": "workflow" if session.workflow_id else "interactive",
+
+        "model_id": session.model_id,
+
+        "model_params": session.model_params,
+
     }
 
     if session.workspace_path:
@@ -326,6 +340,25 @@ async def get_session_detail(session_id: str, request: Request):
     if session.token_usage:
         result["token_usage"] = session.token_usage
 
+    return result
+
+
+@router.put("/sessions/{session_id}/model")
+async def update_session_model(
+    session_id: str,
+    body: UpdateSessionModelRequest,
+    request: Request,
+):
+    """切换交互 Main 会话的供应商、模型与推理强度。"""
+    sm = _get_session_manager(request)
+    result = await sm.update_session_model(
+        session_id,
+        model_id=body.model_id,
+        reasoning_effort=body.reasoning_effort,
+    )
+    if not result["success"]:
+        status_code = 404 if "未找到会话" in result["message"] else 400
+        raise HTTPException(status_code=status_code, detail=result["message"])
     return result
 
 
@@ -632,7 +665,7 @@ async def get_system_status(request: Request):
         from src.core.model_manager import get_model_manager
         model_manager = get_model_manager()
         default_model = model_manager.get_default_model()
-        provider_id = default_model.split(":")[0] if ":" in default_model else "deepseek"
+        provider_id = default_model.split(":", 1)[0] if default_model else ""
         provider_config = model_manager.get_provider(provider_id) or {}
         hyperparams = provider_config.get("hyperparameter_values", {})
         temperature = hyperparams.get("temperature", 1.0)
@@ -2215,6 +2248,12 @@ class AddModelProviderRequest(BaseModel):
     hyperparameter_values: dict[str, Any] = Field(default_factory=dict)
 
 
+class DiscoverProviderModelsRequest(BaseModel):
+    provider_id: str
+    base_url: str | None = None
+    api_key: str | None = None
+
+
 @router.get("/model-providers")
 async def get_model_providers():
     """获取所有模型供应商配置（api_key 脱敏）"""
@@ -2229,11 +2268,16 @@ async def get_model_providers():
         masked = dict(pconfig)
         resolved = model_manager.get_provider(pid) or {}
         masked["api_key"] = "***" if resolved.get("api_key") else ""
+        masked["capabilities"] = model_manager.get_provider_capabilities(pid)
         masked_providers[pid] = masked
+
+    default_model = model_manager.get_default_model()
+    default_provider = default_model.split(":", 1)[0] if default_model else None
 
     return {
         "providers": masked_providers,
-        "default_model": model_manager.get_default_model(),
+        "default_provider": default_provider,
+        "default_model": default_model,
     }
 
 
@@ -2279,6 +2323,64 @@ async def add_model_provider(body: AddModelProviderRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/model-providers/models/discover")
+async def discover_provider_models(body: DiscoverProviderModelsRequest):
+    """从 OpenAI-compatible /models 端点动态拉取模型列表。"""
+    from src.core.model_manager import get_model_manager
+
+    model_manager = get_model_manager()
+    configured = model_manager.get_provider(body.provider_id) or {}
+    schema = model_manager.get_provider_schema(body.provider_id) or {}
+    base_url = (
+        body.base_url
+        or configured.get("base_url")
+        or schema.get("default_base_url")
+        or ""
+    ).strip()
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="API 地址必须是有效的 http(s) URL")
+
+    submitted_key = (body.api_key or "").strip()
+    api_key = (
+        configured.get("api_key", "")
+        if submitted_key in {"", "***"}
+        else submitted_key
+    )
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    models_url = f"{base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+            response = await client.get(models_url, headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"无法连接供应商模型接口: {exc.__class__.__name__}",
+        ) from exc
+
+    if response.status_code in {401, 403}:
+        raise HTTPException(status_code=400, detail="API Key 无效或无权读取模型列表")
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"供应商模型接口返回 HTTP {response.status_code}",
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="供应商模型接口未返回 JSON") from exc
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        raise HTTPException(status_code=502, detail="供应商模型接口缺少 data 列表")
+    models = list(dict.fromkeys(
+        str(item.get("id", "")).strip()
+        for item in data
+        if isinstance(item, dict) and str(item.get("id", "")).strip()
+    ))
+    return {"models": models}
+
+
 @router.delete("/model-providers/{provider_id}")
 async def delete_model_provider(provider_id: str):
     """删除模型供应商"""
@@ -2296,6 +2398,18 @@ async def get_provider_schemas():
 
     model_manager = get_model_manager()
     return {"schemas": model_manager.get_all_schemas()}
+
+
+@router.put("/model-providers/{provider_id}/priority")
+async def prioritize_model_provider(provider_id: str):
+    """将供应商移到首位，作为 Main 自动模型来源。"""
+    from src.core.model_manager import get_model_manager
+
+    try:
+        get_model_manager().move_provider_to_front(provider_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"success": True, "message": f"供应商 {provider_id} 已移到首位"}
 
 
 @router.get("/models/all")

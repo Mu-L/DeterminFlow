@@ -23,6 +23,10 @@ class ModelCredentialNotConfiguredError(ValueError):
     """The selected model provider has no usable API credential."""
 
 
+class ModelConfigurationNotAvailableError(ValueError):
+    """No configured provider/model is available for an actual LLM call."""
+
+
 # ============================================================
 # Monkey Patch 版本兼容性检查
 # ============================================================
@@ -137,7 +141,13 @@ def _resolve_provider_config(
     provider_id, model_name = model_override.split(":", 1)
     provider_config = model_manager.get_provider(provider_id)
     if not provider_config:
-        raise ValueError(f"Provider {provider_id} not found")
+        raise ModelConfigurationNotAvailableError(
+            f"供应商 {provider_id} 不存在；请在设置页选择可用模型"
+        )
+    if model_name not in provider_config.get("models", []):
+        raise ModelConfigurationNotAvailableError(
+            f"模型 {model_override} 未配置；请在设置页选择可用模型"
+        )
     api_key = provider_config.get("api_key", "")
     if not api_key:
         raise ModelCredentialNotConfiguredError(
@@ -251,13 +261,11 @@ def _resolve_model_override(model_override: str | None, model_manager) -> str:
 
     # 使用默认模型（从 agents_config.json main agent 读取）
     default_model = model_manager.get_default_model()
-    if ":" in default_model:
+    if default_model and ":" in default_model:
         return default_model
 
-    raise ValueError(
-        f"无法确定模型配置：model_override={model_override!r}, "
-        f"get_default_model() 返回 {default_model!r}。"
-        f"请检查 agents_config.json 的 main agent model 字段。"
+    raise ModelConfigurationNotAvailableError(
+        "尚未配置可用模型；请先在设置页添加供应商和模型"
     )
 
 
@@ -567,8 +575,8 @@ def create_startup_llm(
     }
     try:
         return create_llm(**options)
-    except ModelCredentialNotConfiguredError:
+    except (ModelCredentialNotConfiguredError, ModelConfigurationNotAvailableError):
         logger.warning(
-            "模型凭据尚未配置，服务将继续启动；可在模型设置页面完成配置"
+            "模型或凭据尚未配置，服务将继续启动；可在模型设置页面完成配置"
         )
         return DeferredChatModel(options)

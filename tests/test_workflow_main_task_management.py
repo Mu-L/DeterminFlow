@@ -239,7 +239,11 @@ def test_one_main_can_create_and_list_multiple_persisted_tasks(tmp_path, monkeyp
     manager._ws_manager = WorkspaceManager(base_dir=str(tmp_path / "workspaces"))
 
     first = manager.create_and_attach_task_for_session(workflow_id, "main-1")
-    second = manager.create_and_attach_task_for_session(workflow_id, "main-1")
+    second = manager.create_and_attach_task_for_session(
+        workflow_id,
+        "main-1",
+        main_takeover=True,
+    )
     listed = manager.list_all_tasks(main_session_id="main-1")
 
     assert first["success"] is True
@@ -251,9 +255,63 @@ def test_one_main_can_create_and_list_multiple_persisted_tasks(tmp_path, monkeyp
     first_task = manager._load_task(workflow_id, first["task_id"])
     second_task = manager._load_task(workflow_id, second["task_id"])
     assert first_task is not None and second_task is not None
+    assert first_task.main_takeover is False
+    assert second_task.main_takeover is True
     assert first_task.workspace_mode == second_task.workspace_mode == "task_isolated"
     assert first_task.workspace_override != second_task.workspace_override
     assert sessions.sessions["main-1"].task_id == second["task_id"]
+
+
+def test_workflow_task_main_takeover_defaults_off_and_round_trips():
+    legacy = WorkflowTask.from_dict({
+        "task_id": "task-legacy",
+        "workflow_id": "wf-legacy",
+        "main_session_id": "main-1",
+    })
+    takeover = WorkflowTask(
+        task_id="task-takeover",
+        workflow_id="wf-takeover",
+        main_session_id="main-1",
+        main_takeover=True,
+    )
+
+    assert legacy.main_takeover is False
+    assert legacy.to_dict()["main_takeover"] is False
+    assert WorkflowTask.from_dict(takeover.to_dict()).main_takeover is True
+
+
+def test_legacy_agent_waiting_approval_preserves_main_takeover():
+    restored = WorkflowTask.from_dict({
+        "task_id": "task-waiting",
+        "workflow_id": "wf-waiting",
+        "main_session_id": "main-1",
+        "snapshot_definition": {
+            "nodes": [{"id": "writer", "node_type": "agent"}],
+        },
+        "node_states": {
+            "writer": {
+                "node_id": "writer",
+                "status": "waiting_approval",
+            },
+        },
+    })
+    explicit_approval = WorkflowTask.from_dict({
+        "task_id": "task-explicit-approval",
+        "workflow_id": "wf-explicit-approval",
+        "main_session_id": "main-1",
+        "snapshot_definition": {
+            "nodes": [{"id": "review", "node_type": "approval"}],
+        },
+        "node_states": {
+            "review": {
+                "node_id": "review",
+                "status": "waiting_approval",
+            },
+        },
+    })
+
+    assert restored.main_takeover is True
+    assert explicit_approval.main_takeover is False
 
 
 def test_main_task_creation_rejects_unknown_parameters_nodes_and_schemes(
@@ -376,6 +434,7 @@ def test_task_event_is_sent_to_global_and_owning_main_channels(monkeypatch):
             workflow_id="wf-event",
             status="running",
             main_session_id="main-1",
+            main_takeover=True,
             snapshot_definition={"nodes": [{"id": "plan"}]},
         )
 
@@ -387,6 +446,8 @@ def test_task_event_is_sent_to_global_and_owning_main_channels(monkeypatch):
         assert global_payload["type"] == "wf_task_update"
         assert chat_payload["type"] == "workflow_task_update"
         assert chat_payload["session_id"] == "main-1"
+        assert global_payload["main_takeover"] is True
+        assert chat_payload["main_takeover"] is True
         assert chat_payload["progress"] == {"completed": 0, "total": 1}
 
     asyncio.run(scenario())

@@ -112,6 +112,9 @@ export default function ChatWorkflowTasks({
                     <span className={`rounded px-1.5 py-0.5 ${STATUS_STYLES[task.status]}`}>
                       {STATUS_LABELS[task.status]}
                     </span>
+                    {task.main_takeover && (
+                      <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-violet-300">接管</span>
+                    )}
                     {progress && progress.total > 0 && (
                       <span>{progress.completed}/{progress.total}</span>
                     )}

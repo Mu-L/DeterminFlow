@@ -535,6 +535,13 @@ class WorkflowManager(
                 ),
             }
 
+        if task.main_takeover and task.main_session_id not in self._session_manager.sessions:
+            return {
+                "success": False,
+                "error": "main_takeover_unavailable",
+                "message": "Main 接管审批不可用：任务所属 Main Session 不在运行期",
+            }
+
         if task_id in self._running_tasks:
             t = self._running_tasks[task_id]
             if not t.done():
@@ -697,7 +704,15 @@ class WorkflowManager(
         """后台运行任务的协程。"""
         result_task: WorkflowTask | None = None
         try:
-            result_task = await self._engine.execute_task(definition, task, from_node_id)
+            if task.main_takeover and task.main_session_id not in self._session_manager.sessions:
+                raise RuntimeError(
+                    "Main 接管审批不可用：任务所属 Main Session 不在运行期"
+                )
+            result_task = await self._engine.execute_task(
+                definition,
+                task,
+                from_node_id,
+            )
             self._save_task(result_task)
         except asyncio.CancelledError:
             task.status = "stopped"
@@ -899,6 +914,12 @@ class WorkflowManager(
             return {"success": False, "message": f"任务 {task_id} 不存在"}
         if task.status != "pre_running":
             return {"success": False, "message": f"任务状态为 {task.status}，不是预启动状态"}
+        if task.main_takeover and task.main_session_id not in self._session_manager.sessions:
+            return {
+                "success": False,
+                "error": "main_takeover_unavailable",
+                "message": "Main 接管审批不可用：任务所属 Main Session 不在运行期",
+            }
         if task_id in self._running_tasks and not self._running_tasks[task_id].done():
             return {"success": False, "message": "任务已在运行中"}
 

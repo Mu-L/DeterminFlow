@@ -43,6 +43,8 @@ import { ConversationTimeline } from "../components/conversation";
 import ApprovalPanel from "../components/ApprovalPanel";
 import ResizableSidePanel from "../components/ResizableSidePanel";
 import MonitoringCard from "../components/MonitoringCard";
+import ModelSwitcher from "../components/ModelSwitcher";
+import { shouldShowModelSwitcher } from "../lib/model-options";
 import ChatWorkflowTasks, { upsertWorkflowTask } from "../components/workflow/ChatWorkflowTasks";
 
 import {
@@ -231,7 +233,7 @@ export default function ChatPage() {
     fetchSessionDetail(targetSessionId)
       .then((detail) => {
         if (requestId !== detailRequestRef.current) return;
-        if (viewingSessionId === targetSessionId) setViewingSession(detail);
+        setViewingSession(detail);
         replaceMessages(detail.messages || []);
       })
       .catch((error: unknown) => {
@@ -291,7 +293,15 @@ export default function ChatPage() {
 
   const isViewingOther = viewingSessionId !== null;
   const isReadOnly = isViewingOther && !isSessionInteractive(viewingSession);
-  const canSend = Boolean(targetSessionId && connected && phase === "ready" && !isReadOnly);
+  const showModelSwitcher = shouldShowModelSwitcher(viewingSession);
+  const hasConfiguredModel = Boolean(viewingSession?.model_id);
+  const canSend = Boolean(
+    targetSessionId &&
+    connected &&
+    phase === "ready" &&
+    !isReadOnly &&
+    hasConfiguredModel
+  );
   const timelineError = conversationError ||
     ((!connected || phase === "loading") ? historyError : null);
   const handleRetryHistory = useCallback(() => {
@@ -601,57 +611,84 @@ export default function ChatPage() {
             </div>
 
             {/* 输入框 */}
-            <div className={`flex items-end gap-3 bg-slate-800/80 border border-border/60 rounded-xl p-3 transition-colors duration-200 ${isReadOnly ? "opacity-50" : ""}`}>
-              <div className="flex-1">
-                <textarea
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSend();
-                    }
-                  }}
-                  aria-label="聊天消息输入"
-                  placeholder={
-                    isReadOnly
-                      ? "该会话已结束，无法发送消息"
-                      : isViewingOther
-                        ? `向会话 ${viewingSessionId} 发消息... (Shift+Enter 换行)`
-                        : "输入消息... (Shift+Enter 换行)"
+            <div className={`rounded-2xl border border-border/60 bg-slate-800/80 p-2.5 transition-colors duration-200 focus-within:border-indigo-500/60 ${isReadOnly ? "opacity-50" : ""}`}>
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
                   }
-                  rows={1}
-                  disabled={!canSend && !isStreamingForCurrentView}
-                  className="w-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground resize-none max-h-32 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-indigo-500/30 rounded-lg"
-                  style={{ minHeight: "44px" }}
-                />
+                }}
+                aria-label="聊天消息输入"
+                placeholder={
+                  isReadOnly
+                    ? "该会话已结束，无法发送消息"
+                    : !hasConfiguredModel
+                      ? "请先在模型设置中添加供应商和模型"
+                    : isViewingOther
+                      ? `向会话 ${viewingSessionId} 发消息... (Shift+Enter 换行)`
+                      : "输入消息... (Shift+Enter 换行)"
+                }
+                rows={1}
+                disabled={!canSend && !isStreamingForCurrentView}
+                className="max-h-32 min-h-12 w-full resize-none rounded-lg border-none bg-transparent px-2 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-indigo-500/30 disabled:cursor-not-allowed"
+              />
+              <div className="mt-1 flex min-h-10 items-center justify-end gap-2">
+                {showModelSwitcher ? (
+                  <ModelSwitcher
+                    sessionId={targetSessionId}
+                    session={viewingSession}
+                    disabled={isReadOnly || isStreamingForCurrentView}
+                    onUpdated={(modelId, modelParams) => {
+                      setViewingSession((current) => current ? {
+                        ...current,
+                        model_id: modelId,
+                        model_params: modelParams,
+                      } : current);
+                    }}
+                    onOpenSettings={() => {
+                      const search = patchSearchParams(window.location.search, {
+                        tab: "settings",
+                        session_id: null,
+                      });
+                      window.history.pushState(
+                        window.history.state,
+                        "",
+                        `${window.location.pathname}${search}${window.location.hash}`,
+                      );
+                      window.dispatchEvent(new PopStateEvent("popstate"));
+                    }}
+                  />
+                ) : null}
+                {/* 发送/中止按钮 */}
+                {isStreamingForCurrentView ? (
+                  <button
+                    type="button"
+                    onClick={handleStop}
+                    title="中止输出"
+                    aria-label="中止输出"
+                    className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/20 text-red-400 transition-colors duration-200 hover:bg-red-500/40"
+                  >
+                    <Square size={17} className="fill-current" aria-hidden="true" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleSend}
+                    disabled={!input.trim() || !canSend}
+                    aria-label="发送消息"
+                    className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200 ${
+                      input.trim() && canSend
+                        ? "bg-indigo-500 text-white hover:bg-indigo-400"
+                        : "cursor-not-allowed bg-slate-700 text-muted-foreground"
+                    }`}
+                  >
+                    <Send size={17} aria-hidden="true" />
+                  </button>
+                )}
               </div>
-              {/* 发送/中止按钮 */}
-              {isStreamingForCurrentView ? (
-                <button
-                  type="button"
-                  onClick={handleStop}
-                  title="中止输出"
-                  aria-label="中止输出"
-                  className="p-2 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/40 transition-colors duration-200 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
-                >
-                  <Square size={18} className="fill-current" aria-hidden="true" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  disabled={!input.trim() || !canSend}
-                  aria-label="发送消息"
-                  className={`p-2 rounded-lg transition-colors duration-200 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center ${
-                    input.trim() && canSend
-                      ? "bg-indigo-500 hover:bg-indigo-400 text-white"
-                      : "bg-slate-700 text-muted-foreground cursor-not-allowed"
-                  }`}
-                >
-                  <Send size={18} aria-hidden="true" />
-                </button>
-              )}
             </div>
             {!connected && targetSessionId && phase !== "loading" && (
               <div className="text-center text-red-400 text-xs mt-2" role="alert" aria-live="polite">WebSocket 未连接，请检查后端服务</div>

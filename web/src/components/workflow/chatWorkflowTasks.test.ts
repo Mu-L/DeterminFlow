@@ -32,11 +32,13 @@ test("upsertWorkflowTask updates one TaskRef without replacing sibling tasks", (
     status: "completed",
     updated_at: "2026-08-03T03:00:00Z",
     progress: { completed: 3, total: 3 },
+    main_takeover: true,
   });
 
   assert.deepEqual(updated.map((item) => item.task_id), ["task_a", "task_b"]);
   assert.equal(updated[0].status, "completed");
   assert.deepEqual(updated[0].progress, { completed: 3, total: 3 });
+  assert.equal(updated[0].main_takeover, true);
   assert.equal(updated[1].status, "running");
 });
 

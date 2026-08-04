@@ -89,6 +89,7 @@ class SessionManager:
         # Workflow 管理器（延迟初始化，用于 workflow 工具注入）
         self._workflow_manager = None
         self._extension_manager = None
+        self._agent_config_manager = None
 
     def inject_dependencies(
         self,
@@ -99,6 +100,7 @@ class SessionManager:
         cron_scheduler=None,
         cron_job_manager=None,
         extension_manager=None,
+        agent_config_manager=None,
     ):
         """注入延迟初始化的依赖项（由 web_server lifespan 调用）。"""
         if workspace_manager is not None:
@@ -115,6 +117,8 @@ class SessionManager:
             self._cron_job_manager = cron_job_manager
         if extension_manager is not None:
             self._extension_manager = extension_manager
+        if agent_config_manager is not None:
+            self._agent_config_manager = agent_config_manager
 
     @property
     def cron_scheduler(self):
@@ -267,17 +271,22 @@ class SessionManager:
 
         agent_def = get_agent_definition(agent_type)
 
-        model = None  # 提前声明，避免 llm_client 非 None 时 UnboundLocalError
-        if llm_client is None or (agent_def and agent_def.model):
-            # 若 Agent 指定了独立模型，必须创建新的 LLM 实例，
-            # 不可复用 web_server 传入的全局 llm（全局 llm 在服务启动时创建，模型可能已变更）
-            from src.core.llm_client import create_llm
-            model = agent_def.model if agent_def else None
-            agent_params = agent_def.model_params if agent_def else None
-            llm_client = create_llm(model_override=model, streaming=True, model_params=agent_params)
+        # 每个新 Main 都按当前配置创建模型，避免复用服务启动时的旧 Provider。
+        from src.core.llm_client import create_startup_llm
+        model = agent_def.model if agent_def else None
+        agent_params = agent_def.model_params if agent_def else None
+        llm_client = create_startup_llm(
+            model_override=model,
+            streaming=True,
+            model_params=agent_params,
+        )
 
         # 1. 创建 session（自动生成 UUID）
-        new_session = AgentSession(session_type="main", agent_type=agent_type)
+        new_session = AgentSession(
+            session_type="main",
+            agent_type=agent_type,
+            model_params=agent_params,
+        )
 
         # 记录模型标识到 session
         if agent_def and agent_def.model:
@@ -358,6 +367,87 @@ class SessionManager:
             "success": True,
             "session_id": new_session.session_id,
             "message": f"新主会话 {new_session.session_id} 已创建 (agent_type={agent_type})"
+        }
+
+    async def update_session_model(
+        self,
+        session_id: str,
+        *,
+        model_id: str,
+        reasoning_effort: str | None,
+    ) -> dict:
+        """更新交互 Main 的会话级模型并重编译 Graph。"""
+        session = self.get_session(session_id)
+        if session is None:
+            return {"success": False, "message": f"未找到会话 {session_id}"}
+        if session.session_type != "main" or session.workflow_id:
+            return {"success": False, "message": "仅支持切换交互 Main 会话的模型"}
+
+        from src.core.model_manager import get_model_manager
+        from src.core.llm_client import create_startup_llm
+
+        model_manager = get_model_manager()
+        if model_id not in model_manager.get_all_models():
+            return {"success": False, "message": f"模型未配置: {model_id}"}
+
+        provider_id = model_id.split(":", 1)[0]
+        supported_efforts = model_manager.get_provider_capabilities(
+            provider_id
+        )["reasoning_efforts"]
+        if reasoning_effort is not None and reasoning_effort not in supported_efforts:
+            return {
+                "success": False,
+                "message": f"供应商 {provider_id} 不支持推理强度 {reasoning_effort}",
+            }
+
+        async with session._invoke_lock:
+            if session.invocation_active:
+                return {"success": False, "message": "会话正在生成中，请稍后切换模型"}
+
+            model_params = dict(session.model_params)
+            if reasoning_effort is None:
+                model_params.pop("reasoning_effort", None)
+            else:
+                model_params["reasoning_effort"] = reasoning_effort
+                model_params["thinking_enabled"] = True
+
+            llm = create_startup_llm(
+                model_override=model_id,
+                streaming=True,
+                model_params=model_params,
+            )
+
+            agent_config_manager = self._agent_config_manager
+            if agent_config_manager is not None:
+                current_main = agent_config_manager.get_agent_config("main") or {}
+                synced_model_params = dict(current_main.get("model_params") or {})
+                synced_model_params.update(model_params)
+                if reasoning_effort is None:
+                    synced_model_params.pop("reasoning_effort", None)
+                if not agent_config_manager.update_agent("main", {
+                    "model": model_id,
+                    "model_params": synced_model_params,
+                }):
+                    return {"success": False, "message": "同步 Main 模型覆盖失败"}
+
+            session.setup_graph(llm=llm, tools=session.tools)
+            session.model_id = model_id
+            session.model_params = model_params
+            session.updated_at = datetime.now(timezone.utc).isoformat()
+            await session.async_save()
+
+        _try_emit_event({
+            "type": "session_update",
+            "action": "model_changed",
+            "session_id": session_id,
+            "model_id": model_id,
+            "reasoning_effort": reasoning_effort,
+        })
+        return {
+            "success": True,
+            "message": "会话模型已更新",
+            "model_id": model_id,
+            "model_params": model_params,
         }
 
     async def init_workflow_main(
@@ -686,6 +776,7 @@ class SessionManager:
         agent_params = agent_def.model_params if agent_def else None
         sub_llm = create_llm(model_override=final_model, streaming=True, model_params=agent_params)
         session.model_id = final_model  # 记录模型标识到 session
+        session.model_params = dict(agent_params or {})
         session.setup_graph(llm=sub_llm, tools=sub_tools)
         session.start_consumer()
 

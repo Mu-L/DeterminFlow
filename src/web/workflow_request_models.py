@@ -23,6 +23,7 @@ class WorkflowUpdateRequest(WorkflowCreateRequest):
 
 class PreStartRequest(BaseModel):
     workspace_override: str | None = Field(default=None)
+    main_takeover: bool = Field(default=False)
 
 
 class WorkflowRunRequest(BaseModel):

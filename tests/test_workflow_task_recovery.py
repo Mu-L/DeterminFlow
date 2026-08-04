@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -317,6 +318,101 @@ class _AutomaticRetryProbeNode(BaseNodePlugin):
         if type(self).calls == 1:
             return NodeResult(status="failed", error="transient upstream error")
         return NodeResult(status="success", outputs={"result": "recovered"})
+
+
+class _MainTakeoverParentProbeNode(BaseNodePlugin):
+    node_type = "main_takeover_parent_probe"
+    parent_ids: list[str] = []
+
+    async def execute(self, ctx: NodeContext) -> NodeResult:
+        type(self).parent_ids.append(ctx.parent_id)
+        return NodeResult(status="success")
+
+
+def test_main_takeover_routes_nodes_to_owner_without_completing_chat_main(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(llm_client_module, "create_llm", lambda **_kwargs: object())
+    manager = _manager(tmp_path, monkeypatch)
+    workflow_id = "wf-main-takeover-parent"
+    task_id = "task-main-takeover-parent"
+    owner = SimpleNamespace(
+        session_id="main-owner",
+        status="running",
+        workflow_id="",
+        task_id="",
+        runtime_scope="interactive",
+    )
+    manager._session_manager.sessions[owner.session_id] = owner
+    definition = WorkflowDef(
+        workflow_id=workflow_id,
+        nodes=[WorkflowNode(
+            id="probe",
+            node_type=_MainTakeoverParentProbeNode.node_type,
+        )],
+    )
+    manager._save_task(WorkflowTask(
+        workflow_id=workflow_id,
+        task_id=task_id,
+        status="pending",
+        snapshot_definition=definition.to_dict(),
+        main_session_id=owner.session_id,
+        main_takeover=True,
+    ))
+    _MainTakeoverParentProbeNode.parent_ids = []
+    registry.register(_MainTakeoverParentProbeNode, owner="test-main-takeover-parent")
+
+    async def scenario():
+        try:
+            started = await manager.run_task(workflow_id, task_id)
+            for _ in range(200):
+                current = manager._load_task(workflow_id, task_id)
+                running = manager._running_tasks.get(task_id)
+                if (
+                    current is not None
+                    and current.status == "completed"
+                    and (running is None or running.done())
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            return started, manager._load_task(workflow_id, task_id)
+        finally:
+            await manager.shutdown_task_recovery()
+            registry.unregister_owner("test-main-takeover-parent")
+
+    started, completed = asyncio.run(scenario())
+
+    assert started["success"] is True
+    assert completed.status == "completed"
+    assert _MainTakeoverParentProbeNode.parent_ids == [owner.session_id]
+    assert owner.status == "running"
+
+
+def test_main_takeover_fails_before_start_when_owner_is_not_resident(
+    tmp_path, monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    workflow_id = "wf-main-takeover-missing"
+    task_id = "task-main-takeover-missing"
+    definition = WorkflowDef(
+        workflow_id=workflow_id,
+        nodes=[WorkflowNode(id="writer", node_type="agent")],
+    )
+    manager._save_task(WorkflowTask(
+        workflow_id=workflow_id,
+        task_id=task_id,
+        status="pending",
+        snapshot_definition=definition.to_dict(),
+        main_session_id="main-missing",
+        main_takeover=True,
+    ))
+
+    result = asyncio.run(manager.run_task(workflow_id, task_id))
+    persisted = manager._load_task(workflow_id, task_id)
+
+    assert result["success"] is False
+    assert result["error"] == "main_takeover_unavailable"
+    assert persisted.status == "pending"
 
 
 def test_manager_runs_zero_delay_automatic_retry_end_to_end(

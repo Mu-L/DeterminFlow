@@ -179,7 +179,12 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
             # 节点启动时不再落盘（仅推送 WS 事件），减少并发文件 I/O
             self._push_wf_task_update(definition.workflow_id, task)
 
-        needs_approval = task.main_session_id is not None
+        needs_approval = task.main_takeover
+        node_parent_id = (
+            task.main_session_id
+            if needs_approval and task.main_session_id
+            else wf_main_id
+        )
 
         # 批量标记禁用的节点为 skipped
         disabled_ids = set(task.disabled_node_ids or [])
@@ -231,7 +236,7 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                         branches=branches, converge_step=converge_step or {},
                         disabled_ids=disabled_ids,
                         shared_ws=shared_ws,
-                        parent_id=wf_main_id,
+                        parent_id=node_parent_id,
                         on_node_started=_on_node_started,
                         needs_approval=needs_approval,
                         run_record=run_record,
@@ -254,7 +259,7 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                             step=step,
                             disabled_ids=disabled_ids,
                             shared_ws=shared_ws,
-                            parent_id=wf_main_id,
+                            parent_id=node_parent_id,
                             on_node_started=_on_node_started,
                             needs_approval=needs_approval,
                             run_record=run_record,
@@ -271,7 +276,7 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                             step=step,
                             disabled_ids=disabled_ids,
                             shared_ws=shared_ws,
-                            parent_id=wf_main_id,
+                            parent_id=node_parent_id,
                             on_node_started=_on_node_started,
                             needs_approval=needs_approval,
                             run_record=run_record,
@@ -287,7 +292,7 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                     loop_result = await self._execute_loop_gateway(
                         definition=definition, task=task,
                         step=step, disabled_ids=disabled_ids,
-                        shared_ws=shared_ws, parent_id=wf_main_id,
+                        shared_ws=shared_ws, parent_id=node_parent_id,
                         on_node_started=_on_node_started,
                         needs_approval=needs_approval,
                         run_record=run_record,
@@ -312,7 +317,7 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                         node_ids=[node_id],
                         disabled_ids=disabled_ids,
                         shared_ws=shared_ws,
-                        parent_id=wf_main_id,
+                        parent_id=node_parent_id,
                         on_node_started=_on_node_started,
                         needs_approval=needs_approval,
                         run_record=run_record,
@@ -428,6 +433,7 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                 "task_id": task.task_id, "status": task.status,
                 "name": task.name,
                 "main_session_id": task.main_session_id,
+                "main_takeover": task.main_takeover,
                 "current_node_id": task.current_node_id, "node_states": node_states_dict,
                 "started_at": task.started_at, "completed_at": task.completed_at,
                 "created_at": task.created_at,

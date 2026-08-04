@@ -25,6 +25,7 @@ export interface WorkflowMainDrawerProps {
   workflowId: string;
   taskId: string | null;
   mainSessionId?: string | null;
+  mainTakeover?: boolean;
   workflowName?: string;
   nodeCount?: number;
 
@@ -61,6 +62,7 @@ export default function WorkflowMainDrawer({
   workflowId,
   taskId,
   mainSessionId: propMainSessionId,
+  mainTakeover = false,
   onMainStarted,
   onVariableUpdate,
   onTaskStarted,
@@ -162,7 +164,7 @@ export default function WorkflowMainDrawer({
     setTakeoverState("connecting");
     setStartError(null);
     try {
-      const result = await preStartWorkflow(workflowId);
+      const result = await preStartWorkflow(workflowId, true);
       if (result.session_id && result.task_id) {
         setInternalSessionId(result.session_id);
         onMainStarted?.(result.session_id, result.task_id);
@@ -255,10 +257,15 @@ export default function WorkflowMainDrawer({
   }, [isDraggingHandle, handleDragX, openDrawer]);
 
   // ---- 渲染辅助 ----
+  const takeoverEnabled = mode === "inline" || mainTakeover;
   const takeoverStatusLabel = takeoverState === "connected"
-    ? "预启动 · Main 已接管"
+    ? takeoverEnabled
+      ? "预启动 · Main 已接管"
+      : "Main 正在跟踪任务"
     : takeoverState === "running"
-      ? "任务执行中"
+      ? takeoverEnabled
+        ? "任务执行中 · 逐节点审批"
+        : "任务执行中"
       : "";
 
   const chatHeader = (

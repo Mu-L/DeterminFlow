@@ -14,9 +14,6 @@ from src.environment import get_determinflow_env
 
 logger = logging.getLogger(__name__)
 
-# get_default_model() 的 mtime 缓存：避免每次调用都读磁盘
-_agents_config_cache: dict = {"mtime": 0.0, "model": None}
-
 # 默认最大上下文 token 数，当模型/供应商未配置 maxContextTokens 时使用。
 # 与新增 Provider 和设置页的默认值保持一致。
 DEFAULT_MAX_CONTEXT_TOKENS = 128000
@@ -98,6 +95,8 @@ PROVIDER_SCHEMAS = {
     "deepseek": {
         "display_name": "DeepSeek",
         "default_base_url": "https://api.deepseek.com",
+        "category": "ds",
+        "reasoning_efforts": ["low", "medium", "high", "max"],
         "hyperparams": {
             "max_completion_tokens": {
                 "type": "number",
@@ -111,6 +110,8 @@ PROVIDER_SCHEMAS = {
     "mimo": {
         "display_name": "Xiaomi MiMo",
         "default_base_url": "https://api.xiaomimimo.com/v1",
+        "category": "mimo",
+        "reasoning_efforts": ["low", "medium", "high", "max"],
         "hyperparams": {
             "max_completion_tokens": {
                 "type": "number",
@@ -131,6 +132,8 @@ PROVIDER_SCHEMAS = {
     "alibaba": {
         "display_name": "阿里百炼",
         "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "category": "qwen",
+        "reasoning_efforts": [],
         "hyperparams": {
             "max_completion_tokens": {
                 "type": "number",
@@ -145,6 +148,21 @@ PROVIDER_SCHEMAS = {
                 "max": 131072,
                 "default": None,
                 "label": "思考Token上限"
+            }
+        }
+    },
+    "openai": {
+        "display_name": "OpenAI",
+        "default_base_url": "https://api.openai.com/v1",
+        "category": "gpt",
+        "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+        "hyperparams": {
+            "max_completion_tokens": {
+                "type": "number",
+                "min": 1,
+                "max": 131072,
+                "default": 32768,
+                "label": "最大输出Token"
             }
         }
     }
@@ -171,6 +189,10 @@ class ModelManager:
 
     def __init__(self, config_path: str = _DEFAULT_CONFIG_PATH):
         self.config_path = Path(config_path)
+        self._agents_config_cache: dict[str, Any] = {
+            "mtime": None,
+            "model": None,
+        }
         self.config = self._load_config()
 
     def _load_config(self) -> Dict:
@@ -275,7 +297,20 @@ class ModelManager:
         """添加新供应商"""
         if provider_id in self.config["providers"]:
             raise ValueError(f"Provider {provider_id} already exists")
+        schema = self.get_provider_schema(provider_id) or {}
+        config.setdefault("category", schema.get("category"))
         self.config["providers"][provider_id] = config
+        self.save()
+
+    def move_provider_to_front(self, provider_id: str) -> None:
+        """将供应商移动到首位；首个供应商的首个模型是 Main 自动模型。"""
+        providers = self.config.get("providers", {})
+        if provider_id not in providers:
+            raise ValueError(f"Provider {provider_id} not found")
+        self.config["providers"] = {
+            provider_id: providers[provider_id],
+            **{key: value for key, value in providers.items() if key != provider_id},
+        }
         self.save()
 
     def delete_provider(self, provider_id: str):
@@ -299,19 +334,19 @@ class ModelManager:
             return provider.get("models", [])
         return []
 
-    def get_default_model(self) -> str:
+    def get_default_model(self) -> str | None:
         """返回默认模型标识（从 agents_config.json 的 main agent 定义读取，带 mtime 缓存）"""
         agents_config_path = _AGENTS_CONFIG_PATH
         try:
             if agents_config_path.exists():
                 st = agents_config_path.stat()
-                if st.st_mtime != _agents_config_cache["mtime"]:
+                if st.st_mtime != self._agents_config_cache["mtime"]:
                     with open(agents_config_path, 'r', encoding='utf-8') as f:
                         agents_config = json.load(f)
                     main_agent = agents_config.get("agents", {}).get("main", {})
-                    _agents_config_cache["mtime"] = st.st_mtime
-                    _agents_config_cache["model"] = main_agent.get("model")
-                cached = _agents_config_cache["model"]
+                    self._agents_config_cache["mtime"] = st.st_mtime
+                    self._agents_config_cache["model"] = main_agent.get("model")
+                cached = self._agents_config_cache["model"]
                 if cached:
                     return cached
         except (json.JSONDecodeError, OSError, KeyError) as e:
@@ -323,8 +358,8 @@ class ModelManager:
             logger.warning(f"未找到 agents_config.json main agent 的 model 配置，回退到: {models[0]}")
             return models[0]
 
-        logger.error("没有任何模型可用，返回硬编码默认值")
-        return "deepseek:deepseek-v4-flash"
+        logger.warning("没有任何模型可用；服务可启动，但发送消息前需要配置供应商")
+        return None
 
     def get_default_params(self) -> Dict:
         """获取全局默认模型参数"""
@@ -394,6 +429,13 @@ class ModelManager:
         """获取所有供应商的超参数 Schema"""
         return PROVIDER_SCHEMAS
 
+    def get_provider_capabilities(self, provider_id: str) -> Dict:
+        """返回 UI 可动态读取的供应商能力。"""
+        schema = self.get_provider_schema(provider_id) or {}
+        return {
+            "reasoning_efforts": list(schema.get("reasoning_efforts", [])),
+        }
+
     def get_max_context_tokens(self, model_override: str | None = None) -> int:
         """获取模型的最大上下文token数
 
@@ -417,7 +459,7 @@ class ModelManager:
 
         # 使用默认模型的供应商配置
         default_model = self.get_default_model()
-        if ":" in default_model:
+        if default_model and ":" in default_model:
             default_provider_id = default_model.split(":", 1)[0]
             default_provider = self.get_provider(default_provider_id)
             if default_provider and "maxContextTokens" in default_provider:
@@ -451,14 +493,14 @@ class ModelManager:
 
         # 使用默认模型
         default_model = self.get_default_model()
-        if ":" in default_model:
+        if default_model and ":" in default_model:
             return self.get_model_info(default_model)
 
         return {
-            "provider_id": "deepseek",
-            "model_name": "deepseek-v4-flash",
+            "provider_id": "",
+            "model_name": "",
             "maxContextTokens": DEFAULT_MAX_CONTEXT_TOKENS,
-            "provider_name": "DeepSeek",
+            "provider_name": "",
         }
 
 

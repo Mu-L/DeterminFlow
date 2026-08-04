@@ -222,6 +222,7 @@ async def lifespan(app: FastAPI):
             approval_manager=approval_mgr,
             mcp_client=mcp,
             extension_manager=extension_manager,
+            agent_config_manager=agent_config_mgr,
         )
 
         session_mgr.load_sessions()
@@ -312,6 +313,9 @@ async def lifespan(app: FastAPI):
         from src.core.model_manager import get_model_manager
         from src.agent.definition import get_agent_definition
 
+        model_manager = get_model_manager()
+        configured_models = set(model_manager.get_all_models())
+
         if recoverable_mains:
             for i, existing_main in enumerate(recoverable_mains):
                 logger.info(f"恢复主会话 [{i+1}/{len(recoverable_mains)}]: {existing_main.session_id}")
@@ -329,9 +333,21 @@ async def lifespan(app: FastAPI):
                 )
                 existing_main.refresh_system_prompt(system_prompt)
                 existing_main.status = "running"
-                # 设置会话的模型标识（用于子会话继承）
-                existing_main.model_id = get_model_manager().get_default_model()
-                existing_main.setup_graph(llm=llm, tools=all_tools)
+                # 保留会话自己的选择；已删除的旧模型回退到当前首个模型。
+                session_model = existing_main.model_id
+                if session_model not in configured_models:
+                    session_model = agent_def.model if agent_def else None
+                if session_model not in configured_models:
+                    session_model = model_manager.get_default_model()
+                if not existing_main.model_params and agent_def:
+                    existing_main.model_params = dict(agent_def.model_params or {})
+                session_llm = create_startup_llm(
+                    model_override=session_model,
+                    streaming=True,
+                    model_params=existing_main.model_params,
+                )
+                existing_main.model_id = session_model
+                existing_main.setup_graph(llm=session_llm, tools=all_tools)
                 existing_main.start_consumer()
                 if i == 0:
                     session_mgr.register_main(existing_main)  # 首个设为 Chat WS 默认绑定
@@ -340,8 +356,12 @@ async def lifespan(app: FastAPI):
                 logger.info(f"主会话 {existing_main.session_id} 已恢复，Graph 已重新编译，消费循环已启动")
         else:
             # 创建新的 Main Session
-            main_session = AgentSession(session_type="main", agent_type="main")
             agent_def = get_agent_definition("main")
+            main_session = AgentSession(
+                session_type="main",
+                agent_type="main",
+                model_params=agent_def.model_params if agent_def else None,
+            )
             extension_context = await session_mgr._build_extension_prompt_context(
                 "main",
                 agent_def,
@@ -353,9 +373,14 @@ async def lifespan(app: FastAPI):
                 extension_context=extension_context,
             )
             main_session.refresh_system_prompt(system_prompt)
-            main_session.setup_graph(llm=llm, tools=all_tools)
+            main_llm = create_startup_llm(
+                model_override=agent_def.model if agent_def else None,
+                streaming=True,
+                model_params=main_session.model_params,
+            )
+            main_session.setup_graph(llm=main_llm, tools=all_tools)
             # 设置会话的模型标识（用于子会话继承）
-            main_session.model_id = get_model_manager().get_default_model()
+            main_session.model_id = model_manager.get_default_model()
             main_session.start_consumer()
             session_mgr.register_main(main_session)
             logger.info("Main Session 已创建，Graph 已编译，消费循环已启动")

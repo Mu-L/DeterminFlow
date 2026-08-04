@@ -22,6 +22,7 @@ class _ToolPolicyManager:
     def __init__(self, policies: dict[str, str]):
         self.policies = policies
         self.action_calls: list[str] = []
+        self.create_kwargs: list[dict] = []
 
     def list_workflows(self):
         return [
@@ -58,6 +59,7 @@ class _ToolPolicyManager:
         return self._called("approve_node")
 
     def create_and_attach_task_for_session(self, **kwargs):
+        self.create_kwargs.append(kwargs)
         return self._called("create_and_attach_task_for_session")
 
     def list_all_tasks(self, *args, **kwargs):
@@ -160,7 +162,11 @@ def test_public_workflow_agent_actions_keep_reaching_manager():
     calls = (
         (
             create_create_and_attach_task_tool(manager, sessions),
-            {"workflow_id": "wf-public", "parameter_values": None},
+            {
+                "workflow_id": "wf-public",
+                "parameter_values": None,
+                "main_takeover": True,
+            },
         ),
         (
             create_set_workflow_variable_tool(manager, sessions),
@@ -201,6 +207,16 @@ def test_public_workflow_agent_actions_keep_reaching_manager():
         "list_all_tasks",
         "stop_task",
     ]
+    assert manager.create_kwargs == [{
+        "workflow_id": "wf-public",
+        "session_id": "session-1",
+        "parameter_values": None,
+        "scheme_id": None,
+        "selected_node_ids": None,
+        "workspace_mode": "task_isolated",
+        "workspace_ref": None,
+        "main_takeover": True,
+    }]
 
 
 def test_policy_lookup_failure_denies_action_before_manager_call():

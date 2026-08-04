@@ -291,6 +291,7 @@ class WorkflowTask:
     name: str = ""
     status: str = "running"
     main_session_id: str | None = None
+    main_takeover: bool = False
     current_node_id: str | None = None
     run_id: str | None = None
     created_at: str = field(default_factory=_now_iso)
@@ -332,6 +333,7 @@ class WorkflowTask:
             "parameter_values": self.parameter_values,
             "snapshot_variables": self.snapshot_variables,
             "main_session_id": self.main_session_id,
+            "main_takeover": self.main_takeover,
             "disabled_node_ids": self.disabled_node_ids,
             "scheme_id": self.scheme_id,
             "workspace_override": self.workspace_override,
@@ -342,6 +344,24 @@ class WorkflowTask:
 
     @classmethod
     def from_dict(cls, data: dict) -> WorkflowTask:
+        main_takeover = data.get("main_takeover") is True
+        if "main_takeover" not in data and data.get("main_session_id"):
+            node_types = {
+                node.get("id"): node.get("node_type", "agent")
+                for node in (data.get("snapshot_definition") or {}).get("nodes", [])
+                if isinstance(node, dict) and node.get("id")
+            }
+            for node_id, node_data in data.get("node_states", {}).items():
+                if not isinstance(node_data, dict):
+                    continue
+                if node_types.get(node_id, "agent") != "agent":
+                    continue
+                if (
+                    node_data.get("status") == "waiting_approval"
+                    or node_data.get("next_attempt_trigger") == "recovery_reissue"
+                ):
+                    main_takeover = True
+                    break
         return cls(
             task_id=data.get("task_id", _generate_id("task")),
             workflow_id=data.get("workflow_id", ""),
@@ -361,6 +381,7 @@ class WorkflowTask:
             parameter_values=data.get("parameter_values", {}),
             snapshot_variables=data.get("snapshot_variables"),
             main_session_id=data.get("main_session_id"),
+            main_takeover=main_takeover,
             disabled_node_ids=data.get("disabled_node_ids", []),
             scheme_id=data.get("scheme_id"),
             workspace_override=data.get("workspace_override"),

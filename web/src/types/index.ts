@@ -18,8 +18,41 @@ export interface SessionDetail extends Session {
   system_prompt: string;
   messages: Message[];
   has_graph?: boolean;
+  runtime_scope?: "interactive" | "workflow";
+  model_id?: string | null;
+  model_params?: Record<string, unknown>;
   workspace_path?: string;
   token_usage?: TokenUsage;
+}
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  category?: string;
+  base_url: string;
+  api_key: string;
+  models: string[];
+  maxContextTokens?: number;
+  models_config?: Record<string, { maxContextTokens?: number }>;
+  hyperparameter_values: Record<string, unknown>;
+  capabilities?: {
+    reasoning_efforts: string[];
+  };
+}
+
+export interface ProviderSchema {
+  display_name: string;
+  default_base_url: string;
+  category: string;
+  reasoning_efforts: string[];
+  hyperparams: Record<string, {
+    type: "boolean" | "select" | "number";
+    default: unknown;
+    label: string;
+    options?: string[];
+    min?: number;
+    max?: number;
+  }>;
 }
 
 export interface SessionTree {
@@ -698,7 +731,8 @@ export interface WorkflowTask {
   status: "pending" | "pre_running" | "resume_pending" | "running" | "retry_waiting" | "completed" | "failed" | "stopped";
   current_node_id: string | null;
   run_id: string | null;
-  main_session_id?: string | null;  // 预启动时创建的 main session ID
+  main_session_id?: string | null;  // Task 所属的 Main session ID
+  main_takeover?: boolean;  // 是否启用逐 Agent 节点的 Main 接管审批
   created_at: string;
   updated_at?: string;
   started_at: string | null;
@@ -846,6 +880,7 @@ export interface WfTaskUpdateEvent {
   updated_at?: string;
   name?: string;
   main_session_id?: string | null;
+  main_takeover?: boolean;
   workspace_mode?: "task_isolated" | "named_shared" | "legacy_shared";
   workspace_ref?: string | null;
   progress?: { completed: number; total: number };

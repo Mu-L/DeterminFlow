@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, Plus, Trash2, Bot, Wrench, Eye, Save, Layers, AlertCircle, CheckSquare, Square, FileText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { AgentDefinitionData, ToolInfo, ToolGroup, SkillGroup, RuleGroup } from "../../types";
-import { updateAgentVisibility, getAllModels } from "../../lib/api";
+import { updateAgentVisibility, getAllModels, getModelProviders } from "../../lib/api";
 import { toolGroupLabel, toolGroupColor } from "../../lib/utils-helpers";
 import { useExtensions } from "@/extensions/context-value";
 
@@ -58,6 +58,7 @@ export default function AgentDefinitionEditor({
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<{ provider_id: string; model_name: string; display_name: string; value: string; category: string }[]>([]);
+  const [providerReasoningEfforts, setProviderReasoningEfforts] = useState<Record<string, string[]>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const extensions = useExtensions();
 
@@ -80,8 +81,17 @@ export default function AgentDefinitionEditor({
   useEffect(() => {
     const loadModels = async () => {
       try {
-        const data = await getAllModels();
-        setAvailableModels(data.models || []);
+        const [modelsData, providersData] = await Promise.all([
+          getAllModels(),
+          getModelProviders(),
+        ]);
+        setAvailableModels(modelsData.models || []);
+        setProviderReasoningEfforts(Object.fromEntries(
+          Object.entries(providersData.providers).map(([providerId, provider]) => [
+            providerId,
+            provider.capabilities?.reasoning_efforts || [],
+          ]),
+        ));
       } catch (e) {
         console.error("Failed to load models:", e);
       }
@@ -168,25 +178,12 @@ export default function AgentDefinitionEditor({
     return model?.category || "ds";
   };
 
-  // reasoning_effort 选项映射：不同 category 有不同的可选值
-  const reasoningEffortOptions: Record<string, { value: string; label: string }[]> = {
-    ds: [
-      { value: "high", label: "High - 较高推理力度" },
-      { value: "max", label: "Max - 最大推理力度" },
-    ],
-    mimo: [
-      { value: "high", label: "High - 较高推理力度" },
-      { value: "max", label: "Max - 最大推理力度" },
-    ],
-    gpt: [
-      { value: "medium", label: "Medium - 中等推理力度（默认）" },
-      { value: "low", label: "Low - 较低推理力度" },
-      { value: "high", label: "High - 较高推理力度" },
-      { value: "xhigh", label: "XHigh - 最高推理力度" },
-    ],
-    qwen: [
-      // Qwen 不使用 reasoning_effort
-    ],
+  const effortLabels: Record<string, string> = {
+    low: "低",
+    medium: "中",
+    high: "高",
+    max: "极高",
+    xhigh: "极高",
   };
 
   const handleSaveAll = async (agentType: string) => {
@@ -355,7 +352,7 @@ export default function AgentDefinitionEditor({
                         onChange={(e) => updateAgent(agent.agent_type, { model: e.target.value || null })}
                         className="w-full bg-slate-800/60 border border-border/50 rounded-md px-2 py-1.5 text-xs text-slate-300 outline-none focus:border-indigo-500/50 cursor-pointer"
                       >
-                        <option value="">继承主 Agent</option>
+                        <option value="">{agent.agent_type === "main" ? "自动使用首个模型" : "继承 Main"}</option>
                         {availableModels.map((m) => (
                           <option key={`${m.provider_id}:${m.model_name}`} value={`${m.provider_id}:${m.model_name}`}>
                             {m.display_name}
@@ -390,10 +387,18 @@ export default function AgentDefinitionEditor({
 
                   {/* ===== 模型参数配置 ===== */}
                   {(() => {
-                    const category = getAgentModelCategory(agent.model);
+                    const inheritedMainModel = agents.find((item) => item.agent_type === "main")?.model
+                      || availableModels[0]?.value
+                      || null;
+                    const effectiveModel = agent.model || inheritedMainModel;
+                    const category = getAgentModelCategory(effectiveModel);
                     const isGPT = category === "gpt";
                     const isQwen = category === "qwen";
-                    const effortOptions = reasoningEffortOptions[category] || reasoningEffortOptions["ds"] || [];
+                    const selectedProviderId = effectiveModel?.split(":", 1)[0] || "";
+                    const effortOptions = (providerReasoningEfforts[selectedProviderId] || []).map((effort) => ({
+                      value: effort,
+                      label: effortLabels[effort] || effort,
+                    }));
                     const showThinkingToggle = !isGPT; // GPT 始终推理，无需开关
                     const thinkingActive = isGPT || (agent.model_params?.thinking_enabled ?? false);
 

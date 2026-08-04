@@ -10,10 +10,12 @@ from pydantic import ValidationError
 
 import src.config as config
 from src.web.workflow_routes import (
+    PreStartRequest,
     WorkflowCreateRequest,
     WorkflowUpdateRequest,
     _ensure_http_mutation_allowed,
     create_workflow as create_workflow_route,
+    pre_start_workflow,
     stop_task,
     stop_workflow,
 )
@@ -65,6 +67,42 @@ def test_public_workflow_keeps_existing_lan_ui_mutation_path():
     manager = _ensure_http_mutation_allowed(_request("public"), "wf-user")
 
     assert isinstance(manager, FakeManager)
+
+
+def test_pre_start_forwards_explicit_main_takeover():
+    class PreStartManager(FakeManager):
+        def __init__(self):
+            super().__init__("public")
+            self.calls = []
+
+        async def pre_start_task(self, workflow_id: str, **kwargs):
+            self.calls.append((workflow_id, kwargs))
+            return {
+                "success": True,
+                "task_id": "task-1",
+                "session_id": "main-1",
+                "main_takeover": kwargs["main_takeover"],
+            }
+
+    manager = PreStartManager()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(workflow_manager=manager),
+        ),
+    )
+
+    result = asyncio.run(pre_start_workflow(
+        "wf-user",
+        request,
+        PreStartRequest(main_takeover=True),
+    ))
+
+    assert result["main_takeover"] is True
+    assert manager.calls == [("wf-user", {
+        "workspace_override": None,
+        "main_takeover": True,
+    })]
+    assert PreStartRequest().main_takeover is False
 
 
 def test_unknown_http_execution_policy_fails_closed():

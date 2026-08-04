@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { fetchConfig, updateConfig } from "../lib/api";
+import { notifySettingsUpdated } from "../lib/navigation-settings";
 import { ConfigItemMeta } from "../types";
 
 export interface SettingsState {
@@ -73,6 +74,7 @@ export function useSettings() {
           editedValues: {},
           hasChanges: false,
         }));
+        notifySettingsUpdated();
       } else {
         setState((s) => ({
           ...s,

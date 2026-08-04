@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Save, RefreshCw, Settings, Zap, FileText, RotateCcw, AlertTriangle } from "lucide-react";
+import { Save, RefreshCw, Sliders, Zap, FileText, RotateCcw, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,7 +64,7 @@ const defaultConfig: CompressionConfig = {
   },
 };
 
-export default function CompressionConfigPage() {
+function CompressionConfigEditor() {
   const [config, setConfig] = useState<CompressionConfig>(defaultConfig);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -217,7 +217,7 @@ export default function CompressionConfigPage() {
 
   if (loading) {
     return (
-      <div className="h-[calc(100dvh-3.5rem)] flex items-center justify-center">
+      <div className="flex min-h-32 items-center justify-center">
         <div className="flex items-center gap-2 text-muted-foreground animate-pulse motion-reduce:animate-none" role="status" aria-label="正在加载压缩配置">
           <RefreshCw size={16} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
           <span>加载压缩配置...</span>
@@ -228,8 +228,8 @@ export default function CompressionConfigPage() {
   }
 
   return (
-    <div className="h-[calc(100dvh-3.5rem)] overflow-auto p-6" role="main" aria-label="压缩配置管理页面">
-      <div className="max-w-4xl mx-auto space-y-6">
+    <div aria-label="压缩配置编辑器">
+      <div className="space-y-4">
         {/* 错误提示 */}
         {error && (
           <div className="flex items-center gap-3 p-4 border border-red-500/20 bg-red-500/5 rounded-lg" role="alert" aria-live="polite">
@@ -249,31 +249,19 @@ export default function CompressionConfigPage() {
           </div>
         )}
 
-        {/* 页面标题 */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <Settings className="text-indigo-500" aria-hidden="true" />
-              压缩配置管理
-            </h1>
-            <p className="text-muted-foreground mt-1">
-              配置上下文压缩策略的参数和阈值
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={resetConfig} type="button" aria-label="重置为默认配置" className="cursor-pointer min-h-[44px]">
-              <RotateCcw size={16} className="mr-2" aria-hidden="true" />
-              重置默认
-            </Button>
-            <Button onClick={saveConfig} disabled={saving} type="button" aria-label="保存压缩配置" className="cursor-pointer min-h-[44px]">
-              {saving ? (
-                <RefreshCw size={16} className="mr-2 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-              ) : (
-                <Save size={16} className="mr-2" aria-hidden="true" />
-              )}
-              保存配置
-            </Button>
-          </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={resetConfig} type="button" aria-label="重置为默认配置" className="cursor-pointer min-h-[44px]">
+            <RotateCcw size={16} className="mr-2" aria-hidden="true" />
+            重置默认
+          </Button>
+          <Button onClick={saveConfig} disabled={saving} type="button" aria-label="保存压缩配置" className="cursor-pointer min-h-[44px]">
+            {saving ? (
+              <RefreshCw size={16} className="mr-2 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            ) : (
+              <Save size={16} className="mr-2" aria-hidden="true" />
+            )}
+            保存配置
+          </Button>
         </div>
 
         {/* 通用配置 */}
@@ -627,5 +615,39 @@ export default function CompressionConfigPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function CompressionConfigSection() {
+  const [expanded, setExpanded] = useState(false);
+  const [hasOpened, setHasOpened] = useState(false);
+
+  const toggleExpanded = () => {
+    const nextExpanded = !expanded;
+    setExpanded(nextExpanded);
+    if (nextExpanded) setHasOpened(true);
+  };
+
+  return (
+    <section aria-label="压缩配置" className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/80">
+      <button
+        type="button"
+        onClick={toggleExpanded}
+        aria-expanded={expanded}
+        aria-controls="compression-config-content"
+        className="flex w-full items-center justify-between px-5 py-4 transition-colors hover:bg-white/[0.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30"
+      >
+        <div className="flex items-center gap-3">
+          <Sliders size={18} className="text-orange-400" aria-hidden="true" />
+          <h3 className="text-base font-semibold text-slate-100">压缩配置</h3>
+        </div>
+        {expanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+      </button>
+      {hasOpened && (
+        <div id="compression-config-content" hidden={!expanded} className="border-t border-slate-700/50 px-5 py-5">
+          <CompressionConfigEditor />
+        </div>
+      )}
+    </section>
   );
 }

@@ -4,7 +4,7 @@ description: >-
   创建、编辑、校验、运行或排查 DeterminFlow 工作流时必须先加载此技能；也适用于任务填参、节点审批、变量传递、网关、执行方案、子流程与工作区覆盖。涉及 Agent 定义、Prompt 模板或 Script Library 的专项设计时，继续加载对应 Core Skill。
 metadata:
   display_name: workflow-guide
-  version: 3.1.0
+  version: 3.2.0
   author: system
   category: workflow
   priority: 50
@@ -57,6 +57,11 @@ Main 可以同时管理多个后台 Task。`main_session_id` 是所有权事实�
 `workflow_id/task_id` 只是最近任务的兼容默认值。除发现类工具外，所有任务修改、启动、
 审批、恢复和结果查询都应显式携带完整 TaskRef：`workflow_id + task_id`。只提供其中一个
 会失败，其他 Main 的任务也不可操作。
+
+Main 所有权与逐节点审批是两个独立契约。`create_and_attach_task` 的可选参数
+`main_takeover` 默认 `false`：Main 可以持续跟踪任务，但 Agent 节点完成后正常自动流转。
+只有显式设为 `true` 时，每个 Agent 节点的产出才进入 Main 审批；工作流中显式定义的
+Approval 节点不受该参数影响。
 
 只有 API 不可用且任务明确要求直接维护资源时，才编辑
 `data/workflows/{workflow_id}/definition.json`。直接编辑后必须运行：
@@ -157,7 +162,7 @@ Script 节点新定义使用 `script_argv` 字符串数组，不使用兼容字�
 ## Task 安全顺序
 
 ```text
-create_and_attach_task
+create_and_attach_task（按需显式 main_takeover=true，默认只跟踪）
   -> 保存返回的 workflow_id + task_id
   -> set_workflow_variable（显式 TaskRef，必要时重复）
   -> start_workflow_task（显式 TaskRef，后台执行）
@@ -187,6 +192,8 @@ create_and_attach_task
 - 节点重叠：检查 `position`。
 - `{{key}}` 保留原样：检查 Task 参数、上游输出和 key 拼写。
 - definition 更新未生效：当前 Task 使用旧快照，重新创建 Task。
+- Main 所属任务在每个 Agent 后等待：检查 Task 的 `main_takeover` 是否被显式启用；默认值应为
+  `false`，显式 Approval 节点除外。
 - file 变量为空或失败：检查实际 workspace、路径和 `required`。
 - Loop 失败：检查 JSON 值、两条出边、默认退出边与循环表达式。
 - 并行保存失败：检查 parallel/converge 配对和嵌套限制。

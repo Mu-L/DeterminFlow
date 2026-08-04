@@ -9,7 +9,6 @@ export const CORE_TAB_IDS = [
   "skills",
   "rules",
   "system-prompt",
-  "compression-config",
   "settings",
   "extensions",
 ] as const;

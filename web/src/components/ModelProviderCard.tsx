@@ -1,33 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Eye, EyeOff, Plus, Trash2, Save, RefreshCw,
-  ChevronDown, ChevronUp, Star, StarOff,
+  ArrowUp,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  Save,
+  Trash2,
 } from "lucide-react";
-import { DEFAULT_MAX_CONTEXT_TOKENS } from "../lib/modelDefaults";
+import ModelListEditor from "./ModelListEditor";
+import { mergeUniqueModels } from "../lib/model-options";
+import type { ModelProvider, ProviderSchema } from "../types";
 
-export interface ModelProvider {
-  id: string;
-  name: string;
-  base_url: string;
-  api_key: string;
-  models: string[];
-  maxContextTokens?: number;
-  models_config?: Record<string, { maxContextTokens?: number }>;
-  hyperparameter_values: Record<string, unknown>;
-}
-
-export interface ProviderSchema {
-  display_name: string;
-  default_base_url: string;
-  hyperparams: Record<string, {
-    type: "boolean" | "select" | "number";
-    default: unknown;
-    label: string;
-    options?: string[];
-    min?: number;
-    max?: number;
-  }>;
-}
+export type { ModelProvider, ProviderSchema } from "../types";
 
 interface Props {
   provider: ModelProvider;
@@ -35,9 +21,12 @@ interface Props {
   isDefault: boolean;
   onUpdate: (providerId: string, updates: Partial<ModelProvider>) => Promise<void>;
   onDelete: (providerId: string) => Promise<void>;
-  onSetDefault: (providerId: string) => Promise<void>;
-  onAddModel: (providerId: string, modelName: string) => Promise<void>;
-  onRemoveModel: (providerId: string, modelName: string) => Promise<void>;
+  onPrioritize: (providerId: string) => Promise<void>;
+  onDiscoverModels: (input: {
+    provider_id: string;
+    base_url?: string;
+    api_key?: string;
+  }) => Promise<string[]>;
 }
 
 export default function ModelProviderCard({
@@ -46,35 +35,64 @@ export default function ModelProviderCard({
   isDefault,
   onUpdate,
   onDelete,
-  onSetDefault,
-  onAddModel,
-  onRemoveModel,
+  onPrioritize,
+  onDiscoverModels,
 }: Props) {
+  const [expanded, setExpanded] = useState(false);
+  const [apiAddressExpanded, setApiAddressExpanded] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
-  const [expanded, setExpanded] = useState(true);
-  const [newModel, setNewModel] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [localProvider, setLocalProvider] = useState(provider);
   const [edited, setEdited] = useState(false);
-  const [localProvider, setLocalProvider] = useState<ModelProvider>(provider);
+  const [saving, setSaving] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
 
-  const handleUpdate = async () => {
+  useEffect(() => {
+    setLocalProvider(provider);
+    setEdited(false);
+  }, [provider]);
+
+  const discoverModels = async () => {
+    setDiscovering(true);
+    setDiscoverError(null);
+    try {
+      const models = await onDiscoverModels({
+        provider_id: provider.id,
+        base_url: localProvider.base_url,
+        api_key: localProvider.api_key,
+      });
+      if (models.length === 0) {
+        setDiscoverError("供应商未返回可选模型");
+        return;
+      }
+      setLocalProvider((current) => {
+        const nextModels = mergeUniqueModels(current.models, models);
+        if (nextModels.length !== current.models.length) setEdited(true);
+        return { ...current, models: nextModels };
+      });
+    } catch (error) {
+      setDiscoverError(error instanceof Error ? error.message : "拉取模型失败");
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  const handleSave = async () => {
     setSaving(true);
     try {
-      await onUpdate(provider.id, localProvider);
+      await onUpdate(provider.id, {
+        name: localProvider.name,
+        base_url: localProvider.base_url,
+        api_key: localProvider.api_key,
+        models: localProvider.models,
+        maxContextTokens: localProvider.maxContextTokens,
+        models_config: localProvider.models_config,
+        hyperparameter_values: localProvider.hyperparameter_values,
+      });
       setEdited(false);
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleAddModel = async () => {
-    if (!newModel.trim()) return;
-    await onAddModel(provider.id, newModel.trim());
-    setNewModel("");
-  };
-
-  const handleRemoveModel = async (modelName: string) => {
-    await onRemoveModel(provider.id, modelName);
   };
 
   const updateHyperparam = (key: string, value: unknown) => {
@@ -88,124 +106,41 @@ export default function ModelProviderCard({
     setEdited(true);
   };
 
-  const renderHyperparamInput = (key: string, paramSchema: { type: "boolean" | "select" | "number"; default: unknown; label: string; options?: string[]; min?: number; max?: number }): React.ReactNode => {
-    const value = localProvider.hyperparameter_values[key] ?? paramSchema.default;
-
-    if (paramSchema.type === "boolean") {
-      return (
-        <button
-          type="button"
-          role="switch"
-          aria-checked={!!value}
-          aria-label={paramSchema.label}
-          onClick={() => updateHyperparam(key, !value)}
-          className={`relative w-12 h-6 rounded-full transition-all duration-300 cursor-pointer ${
-            value ? "bg-green-500/30 border-green-500/50" : "bg-slate-800 border-slate-600"
-          } border hover:border-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50`}
-        >
-          <span
-            className={`absolute top-0.5 w-5 h-5 rounded-full transition-all duration-300 ${
-              value
-                ? "left-6 bg-green-500"
-                : "left-0.5 bg-slate-500"
-            }`}
-          />
-        </button>
-      );
-    }
-
-    if (paramSchema.type === "select" && paramSchema.options) {
-      return (
-        <div className="relative">
-          <select
-            id={`hyperparam-${provider.id}-${key}`}
-            value={String(value)}
-            onChange={(e) => updateHyperparam(key, e.target.value)}
-            className="w-full bg-slate-800 border border-slate-600 rounded-lg pl-3 pr-8 py-2 text-sm text-slate-200 min-h-[44px]
-              focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30
-              appearance-none cursor-pointer transition-all duration-200"
-          >
-            {(paramSchema.options ?? []).map((opt: string) => (
-              <option key={opt} value={opt}>{opt}</option>
-            ))}
-          </select>
-          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
-        </div>
-      );
-    }
-
-    if (paramSchema.type === "number") {
-      return (
-        <div className="flex items-center gap-3">
-          <input
-            type="range"
-            id={`hyperparam-${provider.id}-${key}`}
-            min={paramSchema.min ?? 0}
-            max={paramSchema.max ?? 100}
-            step={paramSchema.min !== undefined && paramSchema.min < 1 ? 0.01 : 1}
-            value={Number(value)}
-            onChange={(e) => updateHyperparam(key, Number(e.target.value))}
-            className="flex-1 h-1.5 bg-slate-700 rounded-full appearance-none cursor-pointer
-              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4
-              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500
-              [&::-webkit-slider-thumb]:cursor-pointer"
-          />
-          <span className="text-sm text-slate-300 font-mono w-16 text-right">{String(value)}</span>
-        </div>
-      );
-    }
-
-    return null;
-  };
-
   return (
-    <div className={`bg-slate-900/50 border rounded-xl p-4 transition-all ${
-      isDefault ? "border-indigo-500/50" : "border-slate-700"
-    }`}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
+    <article className={`rounded-xl border bg-slate-900/50 p-4 ${isDefault ? "border-indigo-500/50" : "border-slate-700"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
-              onClick={() => setExpanded(!expanded)}
+            onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
             aria-label={expanded ? "折叠供应商配置" : "展开供应商配置"}
-            className="text-slate-400 hover:text-slate-200 transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 rounded-lg p-1"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-200"
           >
-            {expanded ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+            {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
           </button>
-          <h3 className="text-lg font-semibold text-slate-200">{localProvider.name}</h3>
-          {isDefault && (
-            <span className="px-2 py-0.5 text-xs bg-indigo-500/20 text-indigo-400 rounded-full">
-              默认
-            </span>
-          )}
+          <div className="min-w-0">
+            <h4 className="truncate text-base font-semibold text-slate-100">{localProvider.name}</h4>
+            <p className="mt-0.5 text-xs text-slate-500">{localProvider.models.length} 个模型</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
+          {!isDefault && (
+            <button
+              type="button"
+              onClick={() => onPrioritize(provider.id)}
+              className="flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-xs text-slate-400 hover:bg-indigo-500/10 hover:text-indigo-300"
+            >
+              <ArrowUp size={14} aria-hidden="true" />
+              设为首位
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => onSetDefault(provider.id)}
-            aria-label={isDefault ? "已是默认供应商" : "设为默认供应商"}
-            className={`p-2.5 rounded-lg transition-all duration-200 cursor-pointer min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 ${
-              isDefault
-                ? "text-indigo-400 bg-indigo-500/10"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
-            }`}
-            title={isDefault ? "已是默认供应商" : "设为默认供应商"}
-          >
-            {isDefault ? <Star size={16} /> : <StarOff size={16} />}
-          </button>
-          <button
-            type="button"
-            onClick={handleUpdate}
+            onClick={handleSave}
             disabled={!edited || saving}
-            aria-label={saving ? "保存中..." : "保存更改"}
-            className={`p-2.5 rounded-lg transition-all duration-200 min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 ${
-              edited
-                ? "text-green-400 hover:bg-green-500/10 cursor-pointer"
-                : "text-slate-600 cursor-not-allowed"
-            }`}
-            title="保存更改"
+            aria-label="保存供应商配置"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-green-400 hover:bg-green-500/10 disabled:cursor-not-allowed disabled:text-slate-600"
           >
             {saving ? <RefreshCw size={16} className="animate-spin motion-reduce:animate-none" /> : <Save size={16} />}
           </button>
@@ -213,147 +148,135 @@ export default function ModelProviderCard({
             type="button"
             onClick={() => onDelete(provider.id)}
             aria-label="删除供应商"
-            className="p-2.5 text-slate-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all duration-200 cursor-pointer min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30"
-            title="删除供应商"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-400"
           >
             <Trash2 size={16} />
           </button>
         </div>
       </div>
 
-      {/* Content */}
       {expanded && (
-        <div className="space-y-4">
-          {/* API Key */}
+        <div className="mt-4 space-y-4 border-t border-slate-700/70 pt-4">
           <div>
-            <label htmlFor={`provider-${provider.id}-api-key`} className="block text-sm text-slate-400 mb-1 cursor-pointer">API Key</label>
+            <label htmlFor={`provider-${provider.id}-api-key`} className="mb-1 block text-sm text-slate-300">API Key</label>
             <div className="relative">
               <input
-                type={showApiKey ? "text" : "password"}
                 id={`provider-${provider.id}-api-key`}
+                type={showApiKey ? "text" : "password"}
                 value={localProvider.api_key}
-                onChange={(e) => {
-                  setLocalProvider({ ...localProvider, api_key: e.target.value });
+                onChange={(event) => {
+                  setLocalProvider({ ...localProvider, api_key: event.target.value });
                   setEdited(true);
                 }}
-                placeholder="sk-..."
-                className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-sm text-slate-200 min-h-[44px]
-                  focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
+                placeholder="输入 API Key"
+                className="min-h-11 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 pr-12 text-sm text-slate-200 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
               />
               <button
                 type="button"
                 onClick={() => setShowApiKey(!showApiKey)}
                 aria-label={showApiKey ? "隐藏 API Key" : "显示 API Key"}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors duration-200 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
+                className="absolute right-1 top-0 flex min-h-11 min-w-11 items-center justify-center text-slate-400 hover:text-slate-200"
               >
                 {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </div>
 
-          {/* Base URL */}
           <div>
-            <label htmlFor={`provider-${provider.id}-base-url`} className="block text-sm text-slate-400 mb-1 cursor-pointer">API Base URL</label>
-            <input
-              type="text"
-              id={`provider-${provider.id}-base-url`}
-              value={localProvider.base_url}
-              onChange={(e) => {
-                setLocalProvider({ ...localProvider, base_url: e.target.value });
-                setEdited(true);
-              }}
-              placeholder="https://api.example.com/v1"
-              className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-h-[44px]
-                focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
-            />
-          </div>
-
-          {/* Max Context Tokens */}
-          <div>
-            <label htmlFor={`provider-${provider.id}-max-tokens`} className="block text-sm text-slate-400 mb-1 cursor-pointer">最大上下文 Tokens</label>
-            <input
-              type="number"
-              id={`provider-${provider.id}-max-tokens`}
-              value={localProvider.maxContextTokens ?? ""}
-              onChange={(e) => {
-                setLocalProvider({
-                  ...localProvider,
-                  maxContextTokens: e.target.value === "" ? undefined : Number(e.target.value),
-                });
-                setEdited(true);
-              }}
-              min={1000}
-              step={1000}
-              placeholder={String(DEFAULT_MAX_CONTEXT_TOKENS)}
-              className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-h-[44px]
-                focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
-            />
-            <p className="text-xs text-slate-500 mt-1">
-              未配置时使用系统默认值 {DEFAULT_MAX_CONTEXT_TOKENS} tokens
-            </p>
-          </div>
-
-          {/* Models */}
-          <div>
-            <label htmlFor={`provider-${provider.id}-new-model`} className="block text-sm text-slate-400 mb-2 cursor-pointer">模型列表</label>
-            <div className="flex flex-wrap gap-2 mb-2">
-              {localProvider.models.map((model) => (
-                <span
-                  key={model}
-                  className="inline-flex items-center gap-1 px-3 py-1 bg-slate-800 border border-slate-600 rounded-full text-sm text-slate-300"
-                >
-                  {model}
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveModel(model)}
-                    aria-label={`移除模型 ${model}`}
-                    className="ml-1 text-slate-500 hover:text-red-400 transition-colors duration-200 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
-                  >
-                    <Trash2 size={12} aria-hidden="true" />
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                id={`provider-${provider.id}-new-model`}
-                value={newModel}
-                onChange={(e) => setNewModel(e.target.value)}
-                placeholder="输入模型名称"
-                className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 min-h-[44px]
-                  focus:border-indigo-500/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30 transition-all duration-200"
-                onKeyDown={(e) => e.key === "Enter" && handleAddModel()}
-              />
+            <div className="mb-2 flex items-end justify-between gap-4">
+              <div>
+                <h5 className="text-sm font-medium text-slate-200">模型列表</h5>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {isDefault
+                    ? "第一个会成为 Main 的默认模型，可拖动排序"
+                    : "第一个是该供应商默认模型；设为首位后供 Main 使用"}
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={handleAddModel}
-                disabled={!newModel.trim()}
-                aria-label="添加模型"
-                className="px-3 py-2 bg-indigo-500/20 text-indigo-400 rounded-lg hover:bg-indigo-500/30
-                  disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 cursor-pointer min-h-[44px]"
+                onClick={discoverModels}
+                disabled={discovering}
+                className="flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-50"
               >
-                <Plus size={16} />
+                <RefreshCw size={14} className={discovering ? "animate-spin motion-reduce:animate-none" : ""} />
+                {discovering ? "拉取中" : "拉取模型"}
               </button>
             </div>
+
+            <ModelListEditor
+              models={localProvider.models}
+              onChange={(models) => {
+                setLocalProvider({ ...localProvider, models });
+                setEdited(true);
+              }}
+              inputLabel={`为 ${localProvider.name} 输入模型`}
+            />
+            {discoverError && <p className="mt-1 text-xs text-amber-400" role="alert">{discoverError}</p>}
           </div>
 
-          {/* Hyperparameters */}
-          {schema && Object.keys(schema.hyperparams).length > 0 && (
-            <div>
-              <label className="block text-sm text-slate-400 mb-2">超参数</label>
-              <div className="space-y-3">
-                {Object.entries(schema.hyperparams).map(([key, paramSchema]) => (
-                  <div key={key} className="flex items-center justify-between gap-4">
-                    <label htmlFor={`hyperparam-${provider.id}-${key}`} className="text-sm text-slate-300">{paramSchema.label}</label>
-                    {renderHyperparamInput(key, paramSchema)}
-                  </div>
-                ))}
+          <div className="rounded-lg border border-slate-700/80 bg-slate-800/30">
+            <button
+              type="button"
+              onClick={() => setApiAddressExpanded(!apiAddressExpanded)}
+              aria-expanded={apiAddressExpanded}
+              className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-slate-300 hover:bg-slate-800/60"
+            >
+              API 地址
+              {apiAddressExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </button>
+            {apiAddressExpanded && (
+              <div className="border-t border-slate-700/80 p-3">
+                <input
+                  value={localProvider.base_url}
+                  onChange={(event) => {
+                    setLocalProvider({ ...localProvider, base_url: event.target.value });
+                    setEdited(true);
+                  }}
+                  aria-label="API 地址"
+                  className="min-h-11 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 font-mono text-sm text-slate-200 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                />
               </div>
-            </div>
-          )}
+            )}
+          </div>
+
+          <div className="space-y-3 border-t border-slate-700/70 pt-4">
+            <h5 className="text-sm font-medium text-slate-200">模型参数</h5>
+            <label className="flex items-center justify-between gap-4 text-sm text-slate-300">
+              最大上下文 Tokens
+              <input
+                type="number"
+                min={1000}
+                step={1000}
+                value={localProvider.maxContextTokens ?? 128000}
+                onChange={(event) => {
+                  setLocalProvider({
+                    ...localProvider,
+                    maxContextTokens: Number(event.target.value) || 128000,
+                  });
+                  setEdited(true);
+                }}
+                className="min-h-10 w-36 rounded-lg border border-slate-600 bg-slate-800 px-3 text-right font-mono text-sm text-slate-200 outline-none focus:border-indigo-500"
+              />
+            </label>
+            {schema && Object.entries(schema.hyperparams).map(([key, param]) => {
+                const value = localProvider.hyperparameter_values[key] ?? param.default;
+                return (
+                  <label key={key} className="flex items-center justify-between gap-4 text-sm text-slate-300">
+                    {param.label}
+                    <input
+                      type="number"
+                      min={param.min}
+                      max={param.max}
+                      value={value == null ? "" : Number(value)}
+                      onChange={(event) => updateHyperparam(key, event.target.value === "" ? null : Number(event.target.value))}
+                      className="min-h-10 w-36 rounded-lg border border-slate-600 bg-slate-800 px-3 text-right font-mono text-sm text-slate-200 outline-none focus:border-indigo-500"
+                    />
+                  </label>
+                );
+              })}
+          </div>
         </div>
       )}
-    </div>
+    </article>
   );
 }

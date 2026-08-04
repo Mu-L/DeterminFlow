@@ -18,6 +18,7 @@ class WorkflowMainTaskCreationMixin:
         self,
         workflow_id: str,
         workspace_override: str | None = None,
+        main_takeover: bool = False,
     ) -> dict:
         """预启动工作流：创建 pending task + workspace + workflow-main session。
 
@@ -69,6 +70,7 @@ class WorkflowMainTaskCreationMixin:
             parameter_values=initial_parameter_values,
             snapshot_variables=definition.to_dict().get("variables", []),
             workspace_override=ws_override,
+            main_takeover=main_takeover,
         )
         wf_dir = self._resolve_wf_dir(workflow_id)
         tasks_dir = wf_dir / "tasks"
@@ -107,6 +109,7 @@ class WorkflowMainTaskCreationMixin:
             "success": True,
             "task_id": task.task_id,
             "session_id": session.session_id,
+            "main_takeover": task.main_takeover,
             "message": f"Main 会话已就绪 (session={session.session_id})",
         }
 
@@ -119,12 +122,14 @@ class WorkflowMainTaskCreationMixin:
         selected_node_ids: list[str] | None = None,
         workspace_mode: str = "task_isolated",
         workspace_ref: str | None = None,
+        main_takeover: bool = False,
     ) -> dict:
         """为已有的 Chat Main 创建可独立寻址的 pre_running task。
 
         与 pre_start_task 的区别：
         - 不复用 pre_start_task（它会创建新 workflow-main session）
         - 直接创建 task、设置 main_session_id
+        - main_takeover 默认关闭，仅显式开启时逐 Agent 节点审批
         - session.workflow_id/task_id 只记录最近任务，作为省略 TaskRef 时的兼容默认值
         - 默认使用任务隔离工作空间；可通过安全名称在同一 Main 下显式共享
         - session 对象通过 session_id 从 _session_manager 获取
@@ -242,6 +247,7 @@ class WorkflowMainTaskCreationMixin:
             parameter_values=task_parameter_values,
             snapshot_variables=def_dict.get("variables", []),
             main_session_id=session_id,
+            main_takeover=main_takeover,
             disabled_node_ids=final_disabled,
             scheme_id=resolved_scheme_id,
             workspace_mode=workspace_mode,
@@ -293,6 +299,7 @@ class WorkflowMainTaskCreationMixin:
             "workflow_id": workflow_id,
             "workspace_mode": task.workspace_mode,
             "workspace_ref": task.workspace_ref,
+            "main_takeover": task.main_takeover,
             "selected_node_ids": selected_node_ids,
             "message": (
                 f"已创建工作流任务 {task.task_id}。"

@@ -71,3 +71,22 @@ def test_deferred_startup_llm_remains_retryable_after_an_unconfigured_call(
         "ready:after-configuration"
     )
     assert attempts == 3
+
+
+def test_startup_llm_defers_missing_provider_configuration(monkeypatch) -> None:
+    attempts = 0
+
+    def fake_create_llm(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise llm_client.ModelConfigurationNotAvailableError("no provider")
+
+    monkeypatch.setattr(llm_client, "create_llm", fake_create_llm)
+
+    startup_llm = llm_client.create_startup_llm(streaming=True)
+
+    assert isinstance(startup_llm, llm_client.DeferredChatModel)
+    assert attempts == 1
+    with pytest.raises(llm_client.ModelConfigurationNotAvailableError):
+        asyncio.run(startup_llm.ainvoke("requires-model"))
+    assert attempts == 2

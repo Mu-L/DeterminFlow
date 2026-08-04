@@ -662,7 +662,8 @@ async def pre_start_workflow(workflow_id: str, request: Request,
     返回 task_id 和 session_id，前端随后可连接 WebSocket 与 main 对话填参。"""
     mgr = _ensure_http_mutation_allowed(request, workflow_id)
     result = await mgr.pre_start_task(workflow_id,
-                                       workspace_override=body.workspace_override)
+                                       workspace_override=body.workspace_override,
+                                       main_takeover=body.main_takeover)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("message", "预启动失败"))
     return result

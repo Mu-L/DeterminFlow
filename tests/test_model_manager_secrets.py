@@ -221,3 +221,78 @@ def test_default_model_config_path_can_use_a_secret_file(tmp_path: Path) -> None
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_unspecified_main_uses_first_provider_and_first_model(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "first": {"name": "First", "models": ["model-a", "model-b"]},
+                "second": {"name": "Second", "models": ["model-c"]},
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    manager = ModelManager(str(config_path))
+
+    assert manager.get_default_model() == "first:model-a"
+
+
+def test_no_provider_has_no_hardcoded_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+
+    manager = ModelManager(str(config_path))
+
+    assert manager.get_default_model() is None
+    assert manager.get_model_info() == {
+        "provider_id": "",
+        "model_name": "",
+        "maxContextTokens": 128000,
+        "provider_name": "",
+    }
+
+
+def test_provider_priority_controls_dynamic_main_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "first": {"name": "First", "models": ["model-a"]},
+                "second": {"name": "Second", "models": ["model-b"]},
+            }
+        }),
+        encoding="utf-8",
+    )
+    manager = ModelManager(str(config_path))
+
+    manager.move_provider_to_front("second")
+
+    assert list(manager.get_all_providers()) == ["second", "first"]
+    assert manager.get_default_model() == "second:model-b"
+
+
+def test_provider_templates_expose_reasoning_capabilities(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+    manager = ModelManager(str(config_path))
+
+    assert manager.get_provider_schema("openai")["default_base_url"] == (
+        "https://api.openai.com/v1"
+    )
+    assert manager.get_provider_capabilities("deepseek") == {
+        "reasoning_efforts": ["low", "medium", "high", "max"],
+    }
+    assert manager.get_provider_capabilities("alibaba") == {
+        "reasoning_efforts": [],
+    }
+
+
+def test_default_agent_definitions_inherit_the_main_model() -> None:
+    agents_config_path = Path(__file__).parents[1] / "config" / "agents_config.json"
+    agents = json.loads(agents_config_path.read_text(encoding="utf-8"))["agents"]
+
+    assert agents["main"]["model"] is None
+    assert all(definition["model"] is None for definition in agents.values())

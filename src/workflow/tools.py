@@ -458,6 +458,10 @@ class CreateAndAttachTaskArgs(BaseModel):
         default=None,
         description="named_shared 模式使用的安全共享名称",
     )
+    main_takeover: bool = Field(
+        default=False,
+        description="是否启用 Main 接管审批；默认关闭，启用后每个 Agent 节点完成时等待 Main 审批",
+    )
 
 
 class ListTasksArgs(BaseModel):
@@ -647,6 +651,7 @@ def create_create_and_attach_task_tool(
         selected_node_ids: list[str] | None = None,
         workspace_mode: str = "task_isolated",
         workspace_ref: str | None = None,
+        main_takeover: bool = False,
     ) -> str:
         ctx = get_session_context()
         session_id = ctx.get("session_id", "")
@@ -667,6 +672,7 @@ def create_create_and_attach_task_tool(
                 selected_node_ids=selected_node_ids,
                 workspace_mode=workspace_mode,
                 workspace_ref=workspace_ref,
+                main_takeover=main_takeover,
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:
@@ -681,6 +687,7 @@ def create_create_and_attach_task_tool(
             "你可以用 set_workflow_variable 填充变量，确认无误后用 start_workflow_task 启动执行。"
             "会话只把新任务记录为最近任务，不影响此前任务继续运行。"
             "默认 task_isolated 工作空间；需要跨任务共享时显式使用 named_shared。"
+            "Main 默认只跟踪任务；仅在明确需要逐 Agent 节点审批时设置 main_takeover=true。"
         ),
         args_schema=CreateAndAttachTaskArgs,
         func=lambda **kw: None,

@@ -492,6 +492,8 @@ class AgentSession:
 
         task_id: str | None = None,
 
+        model_params: dict[str, Any] | None = None,
+
     ):
 
         self.session_id: str = session_id or uuid.uuid4().hex[:8]
@@ -541,6 +543,9 @@ class AgentSession:
         # 当前会话使用的模型标识（如 "deepseek:deepseek-v4-pro"）
         # 子会话 model=null 时从此字段继承
         self.model_id: str | None = None
+
+        # 会话级模型参数；对话页切换推理强度后随会话持久化。
+        self.model_params: dict[str, Any] = dict(model_params or {})
 
         # Token 使用监控数据（每次 API 调用覆盖最新值，供前端实时展示）
         self.token_usage: dict | None = None
@@ -2816,6 +2821,8 @@ class AgentSession:
 
             "model_id": self.model_id,
 
+            "model_params": self.model_params,
+
             "created_at": self.created_at,
 
             "updated_at": self.updated_at,
@@ -2864,6 +2871,7 @@ class AgentSession:
             workspace_path=data.get("workspace_path"),
             workflow_id=data.get("workflow_id"),
             task_id=data.get("task_id"),
+            model_params=data.get("model_params"),
         )
         session.node_id = data.get("node_id", "")
         session.model_id = data.get("model_id")

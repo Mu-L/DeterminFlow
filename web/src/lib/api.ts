@@ -43,6 +43,25 @@ export async function fetchSessionDetail(sessionId: string) {
   return request<import("../types").SessionDetail>(`/sessions/${sessionId}`);
 }
 
+export async function updateSessionModel(
+  sessionId: string,
+  modelId: string,
+  reasoningEffort: string | null,
+) {
+  return request<{
+    success: boolean;
+    message: string;
+    model_id: string;
+    model_params: Record<string, unknown>;
+  }>(`/sessions/${sessionId}/model`, {
+    method: "PUT",
+    body: JSON.stringify({
+      model_id: modelId,
+      reasoning_effort: reasoningEffort,
+    }),
+  });
+}
+
 export async function fetchSessionSystemPrompt(sessionId: string) {
   return request<{
     session_id: string;
@@ -334,10 +353,13 @@ export async function getVariableReferences(workflowId: string) {
 }
 
 /** 预启动工作流：创建 pending task + main session + workspace */
-export async function preStartWorkflow(workflowId: string) {
-  return request<{ success: boolean; task_id: string; session_id: string; message: string }>(
+export async function preStartWorkflow(workflowId: string, mainTakeover = false) {
+  return request<{ success: boolean; task_id: string; session_id: string; main_takeover: boolean; message: string }>(
     `/workflows/${workflowId}/pre-start`,
-    { method: "POST" }
+    {
+      method: "POST",
+      body: JSON.stringify({ main_takeover: mainTakeover }),
+    }
   );
 }
 
@@ -711,7 +733,7 @@ export async function deleteToolGroup(groupId: string) {
 
 export async function getModelProviders() {
   return request<{
-    providers: import("../types").ModelProvider[];
+    providers: Record<string, Omit<import("../types").ModelProvider, "id">>;
     default_provider: string | null;
     default_model: string | null;
   }>("/model-providers");
@@ -719,7 +741,7 @@ export async function getModelProviders() {
 
 export async function getProviderSchemas() {
   return request<{
-    schemas: import("../types").ProviderSchema[];
+    schemas: Record<string, import("../types").ProviderSchema>;
   }>("/model-providers/schemas");
 }
 
@@ -736,11 +758,38 @@ export async function deleteModelProvider(providerId: string) {
   });
 }
 
-export async function addModelProvider(provider: Record<string, unknown>) {
+export async function addModelProvider(provider: {
+  provider_id: string;
+  name: string;
+  base_url: string;
+  api_key?: string;
+  models?: string[];
+  maxContextTokens?: number;
+  models_config?: Record<string, { maxContextTokens?: number }>;
+  hyperparameter_values?: Record<string, unknown>;
+}) {
   return request<{ success: boolean; message: string }>("/model-providers", {
     method: "POST",
     body: JSON.stringify(provider),
   });
+}
+
+export async function discoverProviderModels(input: {
+  provider_id: string;
+  base_url?: string;
+  api_key?: string;
+}) {
+  return request<{ models: string[] }>("/model-providers/models/discover", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function prioritizeModelProvider(providerId: string) {
+  return request<{ success: boolean; message: string }>(
+    `/model-providers/${providerId}/priority`,
+    { method: "PUT" },
+  );
 }
 
 export async function setDefaultModel(providerId: string, modelName: string) {

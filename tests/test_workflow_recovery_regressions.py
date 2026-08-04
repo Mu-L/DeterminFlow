@@ -78,6 +78,144 @@ def test_agent_approval_recovery_reissues_without_new_model_session(monkeypatch)
     assert approval_requests == ["generated summary"]
 
 
+def test_agent_auto_flow_requests_approval_after_natural_completion(monkeypatch):
+    class AutoFlowSessionManager:
+        def __init__(self):
+            self.sessions = {}
+
+        async def create_sub_session(self, **kwargs):
+            session_id = "session-auto-flow"
+            self.sessions[session_id] = SimpleNamespace(
+                record=[{"type": "assistant", "content": "natural output"}],
+                get_cumulative_token_usage=lambda: None,
+            )
+            kwargs["on_auto_complete"](
+                session_id,
+                "natural summary",
+                "success",
+                "",
+            )
+            return {"success": True, "session_id": session_id}
+
+    approval_requests: list[str] = []
+
+    async def fake_handle(
+        _self,
+        _ctx,
+        summary,
+        _status,
+        _error,
+        completion_event,
+        _session_manager,
+    ):
+        approval_requests.append(summary)
+        completion_event.set()
+
+    monkeypatch.setattr(AgentNode, "_handle_approval", fake_handle)
+    node = WorkflowNode(
+        id="writer",
+        node_type="agent",
+        first_message="write",
+        output_variable="draft",
+        auto_flow=True,
+        enable_complete_node_task=False,
+    )
+
+    async def scenario():
+        return await asyncio.wait_for(
+            AgentNode().execute(
+                NodeContext(
+                    definition=WorkflowDef(
+                        workflow_id="wf-agent-auto-flow-approval",
+                        nodes=[node],
+                    ),
+                    node_def=node,
+                    node_state=NodeExecutionState(node_id=node.id),
+                    needs_approval=True,
+                    session_manager=AutoFlowSessionManager(),
+                )
+            ),
+            timeout=0.2,
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.status == "completed"
+    assert result.outputs == {"draft": "natural output"}
+    assert approval_requests == ["natural summary"]
+
+
+def test_agent_completion_callbacks_create_only_one_approval(monkeypatch):
+    class DualCompletionSessionManager:
+        def __init__(self):
+            self.sessions = {}
+
+        async def create_sub_session(self, **kwargs):
+            session_id = "session-dual-completion"
+            self.sessions[session_id] = SimpleNamespace(
+                record=[{"type": "assistant", "content": "final output"}],
+                get_cumulative_token_usage=lambda: None,
+            )
+            kwargs["on_node_complete"](
+                session_id,
+                "tool summary",
+                "success",
+                "",
+            )
+            kwargs["on_auto_complete"](
+                session_id,
+                "natural summary",
+                "success",
+                "",
+            )
+            return {"success": True, "session_id": session_id}
+
+    approval_requests: list[str] = []
+
+    async def fake_handle(
+        _self,
+        _ctx,
+        summary,
+        _status,
+        _error,
+        completion_event,
+        _session_manager,
+    ):
+        approval_requests.append(summary)
+        completion_event.set()
+
+    monkeypatch.setattr(AgentNode, "_handle_approval", fake_handle)
+    node = WorkflowNode(
+        id="writer",
+        node_type="agent",
+        first_message="write",
+        output_variable="draft",
+    )
+
+    async def scenario():
+        return await asyncio.wait_for(
+            AgentNode().execute(
+                NodeContext(
+                    definition=WorkflowDef(
+                        workflow_id="wf-agent-single-approval",
+                        nodes=[node],
+                    ),
+                    node_def=node,
+                    node_state=NodeExecutionState(node_id=node.id),
+                    needs_approval=True,
+                    session_manager=DualCompletionSessionManager(),
+                )
+            ),
+            timeout=0.2,
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.status == "completed"
+    assert result.outputs == {"draft": "final output"}
+    assert approval_requests == ["tool summary"]
+
+
 def test_agent_file_output_requires_a_final_ai_message(tmp_path):
     class EmptyOutputSessionManager:
         def __init__(self):
@@ -150,6 +288,7 @@ def test_agent_approval_recovery_route_failure_fails_without_waiting():
             }
 
     manager = RecoverySessionManager()
+    WorkflowEngine(manager)
     node = WorkflowNode(
         id="writer",
         node_type="agent",

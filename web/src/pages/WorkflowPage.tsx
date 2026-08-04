@@ -95,6 +95,9 @@ export default function WorkflowPage() {
   const mainSessionId = taskRestore.taskKey === selectedTaskKey
     ? (taskRestore.task?.main_session_id || null)
     : null;
+  const mainTakeover = taskRestore.taskKey === selectedTaskKey
+    ? Boolean(taskRestore.task?.main_takeover)
+    : false;
 
   const nodeStreaming = useNodeStreaming({
     sessionId: (drawerNodeId && liveNodeStates[drawerNodeId]?.session_id) || drawerInitialSessionId,
@@ -706,13 +709,14 @@ export default function WorkflowPage() {
             liveNodeStates={liveNodeStates}
           />
         </div>
-        {/* Workflow Main 抽屉：仅在有 main_session_id 时渲染 */}
+        {/* Workflow Main 抽屉：展示 Task 所属 Main，会明确区分跟踪与接管 */}
         {mainSessionId && (
           <WorkflowMainDrawer
             mode="drawer"
             workflowId={selectedId!}
             taskId={selectedTaskId!}
             mainSessionId={mainSessionId}
+            mainTakeover={mainTakeover}
             isOpen={mainDrawerOpen}
             onOpenChange={handleMainDrawerOpen}
           />
