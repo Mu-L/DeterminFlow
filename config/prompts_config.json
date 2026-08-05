@@ -27,8 +27,8 @@
         },
         {
           "name": "multi_agent",
-          "content": "## Main / Sub 协作\n\n复杂任务可以使用 create_sub_session 创建独立 Sub Agent。为每个子会话提供完整任务说明和清晰交付物；使用 check_sub_progress 查看进度，使用 send_message 补充信息。子会话完成后，由你核对并整合结果。简单任务直接完成即可。",
-          "token_estimate": 75,
+          "content": "## Main / Sub 协作\n\n复杂任务可以使用 create_sub_session 创建独立 Sub Agent。为每个子会话提供完整任务说明和清晰交付物；需要等待时对指定 session_id 使用 check_sub_progress(wait_for=\"terminal_or_attention\", timeout_seconds=null)，不要反复轮询。终态直接读取 final_output，核对后整合结果；使用 send_message 补充信息。简单任务直接完成即可。",
+          "token_estimate": 95,
           "cache_break": false,
           "cache_break_reason": "",
           "enabled": true,
@@ -53,6 +53,17 @@
           "cache_break_reason": "",
           "enabled": true,
           "workflow_only": false,
+          "order": 5
+        },
+        {
+          "name": "workflow_task_practice",
+          "content": "## Workflow Task 最优执行路径\n\n当用户要求执行现有工作流时，除非明确要求修改模板，统一采用以下路径：\n\n1. 先加载 `workflow-guide`。工作流 ID 未知时用 `list_workflows` 发现，再用 `get_workflow` 核对定义、必填参数和执行方案；不要根据名称猜测。\n2. 用 `create_and_attach_task` 一次传入已知 `parameter_values`，默认保持 `workspace_mode=task_isolated`、`main_takeover=false`；只有用户明确要求逐个 Agent 节点审批时才启用接管。立即保存返回的完整 `workflow_id + task_id`，后续每次调用都显式携带。\n3. 缺失或变更的参数才使用 `set_workflow_variable`，确认必填项后调用 `start_workflow_task`。\n4. 启动后默认直接调用 `get_task_result(..., wait_for=\"terminal_or_attention\", timeout_seconds=null)`。不要循环调用 `list_tasks` 或 `get_task_status`，也不要在终态后再追加一次结果查询。\n5. 若返回 `attention_required=true`，只调用一次 `get_task_status` 取得最新节点状态、`attempt_count` 和 `available_actions`，再执行启动、审批、重试或跳过；完成介入后回到第 4 步。审批或恢复必须使用最新 `attempt_count`，重试有外部副作用的节点前先确认幂等性。\n6. 终态为 `completed` 时验证公开节点输出和必要产物，只有需要正文时才调用 `read_task_artifact`；`failed`、`stopped` 或 `cancelled` 时报告准确错误与可恢复动作，不用重复查询掩盖终态。\n\n`get_task_status(wait_for=\"change\")` 仅用于需要观察中间状态或设定有限等待窗口的场景；`list_tasks` 仅用于找回 TaskRef 或汇总多个任务。",
+          "token_estimate": 380,
+          "cache_break": false,
+          "cache_break_reason": "",
+          "enabled": true,
+          "workflow_only": false,
+          "chat_only": true,
           "order": 4
         },
         {
@@ -63,7 +74,7 @@
           "cache_break_reason": "",
           "enabled": true,
           "workflow_only": true,
-          "order": 5
+          "order": 6
         },
         {
           "name": "workflow_structure",
@@ -73,7 +84,7 @@
           "cache_break_reason": "",
           "enabled": true,
           "workflow_only": true,
-          "order": 6
+          "order": 7
         },
         {
           "name": "workflow_definition",
@@ -83,7 +94,7 @@
           "cache_break_reason": "",
           "enabled": true,
           "workflow_only": true,
-          "order": 7
+          "order": 8
         },
         {
           "name": "cron_tools",
@@ -93,7 +104,7 @@
           "cache_break_reason": "",
           "enabled": true,
           "workflow_only": false,
-          "order": 8
+          "order": 9
         },
         {
           "name": "rules_reminder",
@@ -103,7 +114,7 @@
           "cache_break_reason": "",
           "enabled": true,
           "workflow_only": false,
-          "order": 9
+          "order": 10
         },
         {
           "name": "session_meta",
@@ -113,7 +124,7 @@
           "cache_break_reason": "每个会话不同",
           "enabled": true,
           "workflow_only": false,
-          "order": 10
+          "order": 11
         }
       ],
       "preambles": {}

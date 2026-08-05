@@ -11,7 +11,7 @@ import functools
 import json
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
@@ -159,6 +159,19 @@ def _create_sub_session_args_class():
 
 class CheckSubProgressArgs(BaseModel):
     session_id: str = Field(default="", description="子会话 ID，留空查看所有")
+    wait_for: Literal["none", "change", "terminal_or_attention"] = Field(
+        default="none",
+        description=(
+            "等待条件：none=立即返回，change=变化或超时返回，"
+            "terminal_or_attention=终态或需要 Main 介入时返回"
+        ),
+    )
+    timeout_seconds: float | None = Field(
+        default=0,
+        ge=0,
+        le=86_400,
+        description="最长等待秒数；null 表示无截止时间，仍可取消",
+    )
 
 
 class CheckMainProgressArgs(BaseModel):
@@ -194,8 +207,16 @@ def create_session_tools(session_manager: "SessionManager", llm_client=None) -> 
             parent_id=parent_id)
         return json.dumps(result, ensure_ascii=False)
 
-    async def _check_sub_progress(session_id: str = "") -> str:
-        result = await session_manager.check_sub_progress(session_id=session_id)
+    async def _check_sub_progress(
+        session_id: str = "",
+        wait_for: str = "none",
+        timeout_seconds: float | None = 0,
+    ) -> str:
+        result = await session_manager.check_sub_progress(
+            session_id=session_id,
+            wait_for=wait_for,
+            timeout_seconds=timeout_seconds,
+        )
         return json.dumps(result, ensure_ascii=False)
 
     async def _check_main_progress(session_id: str = "") -> str:
@@ -210,7 +231,16 @@ def create_session_tools(session_manager: "SessionManager", llm_client=None) -> 
 
     tools = [
         StructuredTool(name="create_sub_session", description="创建子会话异步执行任务", args_schema=CreateSubSessionArgs, func=_sync_stub, coroutine=_create_sub_session),
-        StructuredTool(name="check_sub_progress", description="查看子会话执行进度", args_schema=CheckSubProgressArgs, func=_sync_stub, coroutine=_check_sub_progress),
+        StructuredTool(
+            name="check_sub_progress",
+            description=(
+                "查看或事件驱动等待子会话进度。等待时必须提供 session_id；"
+                "终态返回会包含有上限的 final_output。"
+            ),
+            args_schema=CheckSubProgressArgs,
+            func=_sync_stub,
+            coroutine=_check_sub_progress,
+        ),
         StructuredTool(name="check_main_progress", description="查看主会话（main session）的状态和进度信息", args_schema=CheckMainProgressArgs, func=_sync_stub, coroutine=_check_main_progress),
         send_message_tool,
         StructuredTool(name="delete_session", description="批量删除已完成的会话，支持传入多个会话ID", args_schema=DeleteSessionArgs, func=_sync_stub, coroutine=_delete_session),

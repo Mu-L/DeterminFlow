@@ -8,17 +8,23 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
 from src.config import MAX_SUB_SESSIONS, SESSIONS_DIR, SUB_AGENT_MAX_ROUNDS
 from src.agent.session import AgentSession
+from src.core.change_broadcaster import ChangeBroadcaster
 from langgraph.errors import GraphRecursionError
 
 from src.core.utils import is_visible_to_frontend
 from src.extension_api import PromptContextRequest
 
 logger = logging.getLogger(__name__)
+
+_ACTIVE_SUB_STATUSES = {"running", "streaming"}
+_SUB_TERMINAL_STATUSES = {"completed", "error", "stopped", "cancelled"}
+_SUB_RESULT_MAX_CHARS = 20_000
 
 
 class NotificationBroadcaster:
@@ -81,6 +87,7 @@ class SessionManager:
         self.main_session_id: str | None = None
         self.notification_queue: asyncio.Queue = asyncio.Queue()  # 兼容旧接口（已被 broadcaster 取代）
         self.notification_broadcaster: NotificationBroadcaster = NotificationBroadcaster()
+        self._session_changes = ChangeBroadcaster()
         self._sub_tasks: dict[str, asyncio.Task] = {}
         # Workspace 管理器（延迟初始化，在 web_server lifespan 中设置）
         self._workspace_manager = None
@@ -133,6 +140,16 @@ class SessionManager:
     # ============================================================
     # 会话注册与查询
     # ============================================================
+
+    def _signal_session_update(self, session_id: str) -> None:
+        self._session_changes.publish(session_id)
+
+    async def _wait_for_session_update(
+        self,
+        session_id: str,
+        timeout_seconds: float | None,
+    ) -> bool:
+        return await self._session_changes.wait(session_id, timeout_seconds)
 
     def register_main(self, session: AgentSession):
         session.session_type = "main"
@@ -833,6 +850,7 @@ class SessionManager:
                 session.updated_at = datetime.now(timezone.utc).isoformat()
                 await session.async_save()
                 self._sub_tasks.pop(session.session_id, None)
+                self._signal_session_update(session.session_id)
 
         # 使用全新的空 context 创建 task，防止 LangChain callback manager
         # 通过 contextvars 穿透——否则子会话的 astream_events 事件会被主会话的
@@ -1106,6 +1124,8 @@ class SessionManager:
             session = self.sessions.get(session_id)
             event["session_id"] = session_id
             event_type = event.get("type", "")
+            if event_type in {"stream_start", "stream_end", "error"}:
+                self._signal_session_update(session_id)
             # 流式事件推送到 chat 通道（前端 chat WS 能收到）
             if event_type in ("stream_start", "stream_end", "token", "reasoning_token",
                               "tool_call_delta", "error", "tool_start", "tool_end",
@@ -1137,17 +1157,104 @@ class SessionManager:
     # 会话管理（查询、终止、删除、持久化）
     # ============================================================
 
-    async def check_sub_progress(self, session_id: str = "") -> dict:
-        if session_id:
-            session = self.sessions.get(session_id)
-            if not session:
+    @staticmethod
+    def _sub_wait_state(summary: dict, *, task_active: bool) -> tuple[bool, bool]:
+        status = str(summary.get("status") or "")
+        terminal = status in _SUB_TERMINAL_STATUSES
+        attention_required = (
+            status == "waiting"
+            or (status in _ACTIVE_SUB_STATUSES and not task_active)
+        )
+        return terminal, attention_required
+
+    def _attach_sub_result(self, summary: dict) -> dict:
+        session = self.sessions.get(summary["session_id"])
+        if session is None:
+            return summary
+        output = session.get_last_assistant_message()
+        if not output:
+            return summary
+        enriched = dict(summary)
+        enriched["final_output"] = output[:_SUB_RESULT_MAX_CHARS]
+        enriched["final_output_truncated"] = len(output) > _SUB_RESULT_MAX_CHARS
+        return enriched
+
+    async def check_sub_progress(
+        self,
+        session_id: str = "",
+        wait_for: str = "none",
+        timeout_seconds: float | None = 0,
+    ) -> dict:
+        if wait_for != "none" and not session_id:
+            return {
+                "success": False,
+                "message": "等待子会话时必须提供 session_id",
+                "error": "session_id_required_for_wait",
+            }
+
+        started_at = time.monotonic()
+        waited_for_change = False
+        while True:
+            session = self.sessions.get(session_id) if session_id else None
+            if session_id and session is None:
                 return {"success": False, "message": f"未找到会话 {session_id}"}
-            return {"success": True, "sessions": [session.get_summary()]}
-        else:
-            subs = self.get_all_sub_sessions()
-            if not subs:
-                return {"success": True, "message": "当前没有子会话", "sessions": []}
-            return {"success": True, "active_count": self.get_active_sub_count(), "total_count": len(subs), "sessions": [s.get_summary() for s in subs]}
+
+            summary = session.get_summary() if session is not None else None
+            task = self._sub_tasks.get(session_id) if session_id else None
+            task_active = task is not None and not task.done()
+            terminal, attention_required = (
+                self._sub_wait_state(summary, task_active=task_active)
+                if summary is not None
+                else (False, False)
+            )
+
+            if wait_for == "none":
+                break
+            if terminal or attention_required:
+                wait_outcome = "terminal" if terminal else "attention_required"
+                break
+            if wait_for == "change" and waited_for_change:
+                wait_outcome = "changed"
+                break
+
+            elapsed = time.monotonic() - started_at
+            remaining = (
+                None
+                if timeout_seconds is None
+                else max(0.0, timeout_seconds - elapsed)
+            )
+            changed = await self._wait_for_session_update(session_id, remaining)
+            if not changed:
+                wait_outcome = "timeout"
+                break
+            waited_for_change = True
+
+        if session_id:
+            assert summary is not None
+            result_summary = (
+                self._attach_sub_result(summary)
+                if wait_for != "none" and terminal
+                else summary
+            )
+            result = {"success": True, "sessions": [result_summary]}
+            if wait_for != "none":
+                result.update({
+                    "wait_outcome": wait_outcome,
+                    "elapsed_seconds": round(time.monotonic() - started_at, 3),
+                    "terminal": terminal,
+                    "attention_required": attention_required,
+                })
+            return result
+
+        subs = self.get_all_sub_sessions()
+        if not subs:
+            return {"success": True, "message": "当前没有子会话", "sessions": []}
+        return {
+            "success": True,
+            "active_count": self.get_active_sub_count(),
+            "total_count": len(subs),
+            "sessions": [sub.get_summary() for sub in subs],
+        }
 
     async def check_main_progress(self, session_id: str = "") -> dict:
         """查看主会话的状态和进度信息
@@ -1197,6 +1304,7 @@ class SessionManager:
         })
         session.updated_at = datetime.now(timezone.utc).isoformat()
         await session.async_save()
+        self._signal_session_update(session_id)
         logger.info(f"Sub session {session_id} 已被终止")
         _try_emit_event({"type": "session_update", "action": "killed", "session_id": session_id, "status": "error"})
         return {"success": True, "message": f"子会话 {session_id} 已终止"}
@@ -1227,6 +1335,7 @@ class SessionManager:
         from src.agent.session import _persistence_manager
         _persistence_manager.unregister(session_id)
         del self.sessions[session_id]
+        self._signal_session_update(session_id)
         from src.web.event_bus import event_bus
         await event_bus.emit_chat({
             "type": "error",

@@ -69,9 +69,17 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
         self._node_state_lock = asyncio.Lock()
         # 同一任务的检查点必须按调用顺序落盘，避免旧快照覆盖新快照。
         self._task_save_locks: dict[str, asyncio.Lock] = {}
+        self._task_update_listener: Callable[[str, WorkflowTask], None] | None = None
 
     def set_workspace_manager(self, ws_manager):
         self._ws_manager = ws_manager
+
+    def set_task_update_listener(
+        self,
+        listener: Callable[[str, WorkflowTask], None] | None,
+    ) -> None:
+        """注册进程内任务变化监听器，仅用于唤醒状态等待者。"""
+        self._task_update_listener = listener
 
     # ============================================================
     # 核心执行方法
@@ -405,6 +413,8 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
         这是引擎中唯一保留的 create_task 调用（远不如 token 流路径频繁）。
         """
         try:
+            if self._task_update_listener is not None:
+                self._task_update_listener(workflow_id, task)
             loop = asyncio.get_running_loop()
             from src.web.event_bus import event_bus
             from .runtime_models import _node_state_to_dict

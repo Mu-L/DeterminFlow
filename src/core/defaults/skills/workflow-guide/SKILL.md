@@ -63,6 +63,19 @@ Main 所有权与逐节点审批是两个独立契约。`create_and_attach_task`
 只有显式设为 `true` 时，每个 Agent 节点的产出才进入 Main 审批；工作流中显式定义的
 Approval 节点不受该参数影响。
 
+`get_task_status` 和 `get_task_result` 支持事件驱动等待：
+
+- `wait_for=none`：立即返回，是兼容默认值。
+- `wait_for=change`：已持久化 Task 快照变化或超时后返回。
+- `wait_for=terminal_or_attention`：Task 完成、失败、停止、取消，或进入
+  审批/未启动等需要 Main 介入的状态时返回。
+- `timeout_seconds` 是最长等待时间；`null` 表示不设截止时间，但当前调用仍可取消。
+
+等待结果通过 `wait_outcome` 区分 `changed`、`terminal`、
+`attention_required` 与 `timeout`，并返回 `terminal`、`attention_required` 和
+`elapsed_seconds`。状态事件只负责唤醒，工具会重新读取持久化 Task 快照。
+对结果导向的等待优先直接使用 `get_task_result`，避免终态后再调用一次结果工具。
+
 只有 API 不可用且任务明确要求直接维护资源时，才编辑
 `data/workflows/{workflow_id}/definition.json`。直接编辑后必须运行：
 
@@ -166,9 +179,10 @@ create_and_attach_task（按需显式 main_takeover=true，默认只跟踪）
   -> 保存返回的 workflow_id + task_id
   -> set_workflow_variable（显式 TaskRef，必要时重复）
   -> start_workflow_task（显式 TaskRef，后台执行）
-  -> 通过事件查看状态，必要时 get_task_status
+  -> get_task_status（必要时 wait_for=change）
   -> approve_node / retry_node / skip_node（显式 TaskRef + 最新 attempt_count）
-  -> get_task_result（必要时 read_task_artifact）或 stop_task
+  -> get_task_result（可 wait_for=terminal_or_attention）
+  -> 必要时 read_task_artifact 或 stop_task
 ```
 
 启动前检查所有 `required` 输入和 file 路径。运行中不要修改 definition 并期待当前 Task

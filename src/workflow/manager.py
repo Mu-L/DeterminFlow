@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.config import WORKFLOWS_DIR
+from src.core.change_broadcaster import ChangeBroadcaster
 from .definition import (
     WorkflowDef, WorkflowState, WorkflowTask, NodeExecutionState,
     WorkflowRunRecord, WorkflowVariable, ExecutionScheme, _now_iso, _generate_id,
@@ -58,10 +59,33 @@ class WorkflowManager(
             session_manager,
             workflow_environment=workflow_environment,
         )
+        self._task_changes = ChangeBroadcaster()
+        self._engine.set_task_update_listener(self._signal_task_update)
         self._engine.set_workspace_manager(self._ws_manager)
         self._running_tasks: dict[str, asyncio.Task] = {}  # key: task_id
         self._init_task_recovery()
         WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _task_change_key(workflow_id: str, task_id: str) -> str:
+        return f"{workflow_id}\0{task_id}"
+
+    def _signal_task_update(self, workflow_id: str, task: WorkflowTask) -> None:
+        broadcaster = getattr(self, "_task_changes", None)
+        if broadcaster is not None:
+            broadcaster.publish(self._task_change_key(workflow_id, task.task_id))
+
+    async def wait_for_task_update(
+        self,
+        workflow_id: str,
+        task_id: str,
+        timeout_seconds: float | None,
+    ) -> bool:
+        """等待任务一次更新；返回后调用方必须重读持久化快照。"""
+        return await self._task_changes.wait(
+            self._task_change_key(workflow_id, task_id),
+            timeout_seconds,
+        )
 
     def _freeze_snapshot_definition(
         self,
@@ -714,6 +738,7 @@ class WorkflowManager(
                 from_node_id,
             )
             self._save_task(result_task)
+            self._push_task_update(workflow_id, result_task)
         except asyncio.CancelledError:
             task.status = "stopped"
             task.completed_at = _now_iso()
@@ -758,9 +783,11 @@ class WorkflowManager(
 
     def _push_task_update(self, workflow_id: str, task: WorkflowTask) -> None:
         """在引擎已初始化时推送任务快照，保留轻量测试与迁移兼容性。"""
+        self._signal_task_update(workflow_id, task)
         engine = getattr(self, "_engine", None)
-        if engine is not None:
-            engine._push_wf_task_update(workflow_id, task)
+        push_update = getattr(engine, "_push_wf_task_update", None)
+        if callable(push_update):
+            push_update(workflow_id, task)
 
     def _load_task(self, workflow_id: str, task_id: str) -> WorkflowTask | None:
         """从磁盘加载任务。"""
@@ -964,6 +991,7 @@ class WorkflowManager(
                 definition, task, pre_created_session_id=pre_created_session_id,
             )
             self._save_task(result_task)
+            self._push_task_update(workflow_id, result_task)
         except asyncio.CancelledError:
             task.status = "stopped"; task.completed_at = _now_iso(); self._save_task(task)
             self._push_task_update(workflow_id, task)

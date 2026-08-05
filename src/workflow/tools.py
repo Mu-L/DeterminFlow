@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Literal
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _INTERNAL_ONLY_POLICY = "internal_only"
+_TASK_TERMINAL_STATUSES = {"completed", "failed", "stopped", "cancelled"}
 
 
 # ============================================================
@@ -191,6 +193,110 @@ def _task_progress_from_dict(task: dict) -> dict:
     return {"completed": completed, "total": len(executable_ids)}
 
 
+def _task_attention_required(task: dict) -> bool:
+    if task.get("status") in {"pending", "pre_running"}:
+        return True
+    return any(
+        state.get("status") == "waiting_approval"
+        for state in (task.get("node_states") or {}).values()
+    )
+
+
+def _task_wait_fingerprint(task: dict) -> tuple[str, str]:
+    """只以已持久化的任务版本判定变化。"""
+    return (
+        str(task.get("status") or ""),
+        str(task.get("updated_at") or ""),
+    )
+
+
+def _task_wait_metadata(task: dict, outcome: str, started_at: float) -> dict:
+    status = str(task.get("status") or "unknown")
+    terminal = status in _TASK_TERMINAL_STATUSES
+    attention_required = _task_attention_required(task)
+    if status == "failed":
+        attention_required = any(
+            bool(state.get("available_actions"))
+            for state in (task.get("node_states") or {}).values()
+        )
+    return {
+        "wait_outcome": outcome,
+        "elapsed_seconds": round(time.monotonic() - started_at, 3),
+        "terminal": terminal,
+        "attention_required": attention_required,
+    }
+
+
+async def _wait_for_task_snapshot(
+    workflow_manager: "WorkflowManager",
+    workflow_id: str,
+    task_id: str,
+    initial_task: dict,
+    *,
+    wait_for: str,
+    timeout_seconds: float | None,
+) -> tuple[dict | None, dict, str | None]:
+    """事件驱动等待任务，每次唤醒后重读持久化快照。"""
+    if wait_for == "none":
+        return initial_task, {}, None
+
+    started_at = time.monotonic()
+    task = initial_task
+    initial_fingerprint = _task_wait_fingerprint(initial_task)
+    while True:
+        status = str(task.get("status") or "")
+        if status in _TASK_TERMINAL_STATUSES:
+            return task, _task_wait_metadata(task, "terminal", started_at), None
+        if _task_attention_required(task):
+            return (
+                task,
+                _task_wait_metadata(task, "attention_required", started_at),
+                None,
+            )
+        if (
+            wait_for == "change"
+            and _task_wait_fingerprint(task) != initial_fingerprint
+        ):
+            return task, _task_wait_metadata(task, "changed", started_at), None
+
+        elapsed = time.monotonic() - started_at
+        remaining = (
+            None
+            if timeout_seconds is None
+            else max(0.0, timeout_seconds - elapsed)
+        )
+        changed = await workflow_manager.wait_for_task_update(
+            workflow_id,
+            task_id,
+            remaining,
+        )
+        if not changed:
+            latest, ownership_error = _ensure_task_owned(
+                workflow_manager, workflow_id, task_id,
+            )
+            if ownership_error:
+                return None, {}, ownership_error
+            assert latest is not None
+            status = str(latest.get("status") or "")
+            if status in _TASK_TERMINAL_STATUSES:
+                return latest, _task_wait_metadata(
+                    latest, "terminal", started_at,
+                ), None
+            if _task_attention_required(latest):
+                return latest, _task_wait_metadata(
+                    latest, "attention_required", started_at,
+                ), None
+            return latest, _task_wait_metadata(latest, "timeout", started_at), None
+
+        latest, ownership_error = _ensure_task_owned(
+            workflow_manager, workflow_id, task_id,
+        )
+        if ownership_error:
+            return None, {}, ownership_error
+        assert latest is not None
+        task = latest
+
+
 # ============================================================
 # Helper：从 session 对象读取绑定（跨 asyncio task 安全）
 # ============================================================
@@ -355,7 +461,8 @@ def create_start_workflow_task_tool(
         description=(
             "正式启动 Main 所拥有的工作流任务。"
             "调用此工具前请确保所有必要的全局变量已填写完毕。"
-            "启动后，工作流将按节点顺序依次执行，每个节点完成后你需要审批其产出。"
+            "启动后按 Workflow 拓扑自动执行；只有 Task 显式启用 main_takeover "
+            "或定义包含 Approval 节点时才需要审批。"
         ),
         args_schema=StartWorkflowTaskArgs,
         func=lambda **kw: None,
@@ -480,8 +587,8 @@ class ListTasksArgs(BaseModel):
     )
 
 
-class GetTaskStatusArgs(BaseModel):
-    """get_task_status 工具参数"""
+class TaskRefArgs(BaseModel):
+    """Workflow Task 完整引用。"""
     workflow_id: str = Field(
         default="",
         description="工作流 ID。不传则使用当前已绑定工作流",
@@ -490,6 +597,27 @@ class GetTaskStatusArgs(BaseModel):
         default="",
         description="任务 ID。不传则使用当前已绑定任务",
     )
+
+
+class TaskWaitArgs(TaskRefArgs):
+    """支持事件驱动等待的 Workflow Task 查询参数。"""
+    wait_for: Literal["none", "change", "terminal_or_attention"] = Field(
+        default="none",
+        description=(
+            "等待条件：none=立即返回，change=变化或超时返回，"
+            "terminal_or_attention=终态或需要 Main 介入时返回"
+        ),
+    )
+    timeout_seconds: float | None = Field(
+        default=0,
+        ge=0,
+        le=86_400,
+        description="最长等待秒数；null 表示无截止时间，仍可取消",
+    )
+
+
+class GetTaskStatusArgs(TaskWaitArgs):
+    """get_task_status 工具参数。"""
 
 
 class StopTaskArgs(BaseModel):
@@ -504,16 +632,16 @@ class StopTaskArgs(BaseModel):
     )
 
 
-class GetTaskResultArgs(GetTaskStatusArgs):
+class GetTaskResultArgs(TaskWaitArgs):
     """get_task_result 工具参数。"""
 
 
-class GetNodeMessagesArgs(GetTaskStatusArgs):
+class GetNodeMessagesArgs(TaskRefArgs):
     """get_node_messages 工具参数。"""
     node_id: str = Field(description="节点 ID")
 
 
-class ReadTaskArtifactArgs(GetTaskStatusArgs):
+class ReadTaskArtifactArgs(TaskRefArgs):
     """read_task_artifact 工具参数。"""
     artifact_ref: str = Field(description="get_task_result 返回的 artifact_ref")
     offset: int = Field(default=0, description="从第几个字符开始读取")
@@ -761,7 +889,12 @@ def create_get_task_status_tool(
 ) -> StructuredTool:
     """创建 get_task_status 工具 — 获取单个任务执行状态（含节点进度）。"""
 
-    async def _get_task_status(workflow_id: str = "", task_id: str = "") -> str:
+    async def _get_task_status(
+        workflow_id: str = "",
+        task_id: str = "",
+        wait_for: str = "none",
+        timeout_seconds: float | None = 0,
+    ) -> str:
         workflow_id, task_id, ref_error = _resolve_task_ref(
             session_manager, workflow_id, task_id, "查询状态",
         )
@@ -777,6 +910,18 @@ def create_get_task_status_tool(
             )
             if ownership_error:
                 return ownership_error
+            assert task is not None
+
+            task, wait_metadata, wait_error = await _wait_for_task_snapshot(
+                workflow_manager,
+                workflow_id,
+                task_id,
+                task,
+                wait_for=wait_for,
+                timeout_seconds=timeout_seconds,
+            )
+            if wait_error:
+                return wait_error
             assert task is not None
 
             nodes_summary = {}
@@ -803,6 +948,7 @@ def create_get_task_status_tool(
                 started_at=task.get("started_at", ""),
                 completed_at=task.get("completed_at", ""),
                 updated_at=task.get("updated_at", ""),
+                **wait_metadata,
             )
         except Exception as e:
             logger.exception("get_task_status 失败")
@@ -812,6 +958,7 @@ def create_get_task_status_tool(
         name="get_task_status",
         description=(
             "获取当前 Main 所拥有任务的最新状态、节点进度、错误和可用恢复动作。"
+            "可事件驱动等待状态变化、终态或需要 Main 介入的状态。"
             "建议显式提供 workflow_id/task_id；两者都省略时使用最近任务。"
         ),
         args_schema=GetTaskStatusArgs,

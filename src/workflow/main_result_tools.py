@@ -16,6 +16,7 @@ from .tools import (
     _fail,
     _ok,
     _resolve_task_ref,
+    _wait_for_task_snapshot,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ def create_get_task_result_tool(
     async def _get_task_result(
         workflow_id: str = "",
         task_id: str = "",
+        wait_for: str = "none",
+        timeout_seconds: float | None = 0,
     ) -> str:
         workflow_id, task_id, error = _authorize_result_read(
             workflow_manager, session_manager, workflow_id, task_id, "获取结果",
@@ -59,10 +62,26 @@ def create_get_task_result_tool(
         if error:
             return error
         try:
+            task, ownership_error = _ensure_task_owned(
+                workflow_manager, workflow_id, task_id,
+            )
+            if ownership_error:
+                return ownership_error
+            assert task is not None
+            task, wait_metadata, wait_error = await _wait_for_task_snapshot(
+                workflow_manager,
+                workflow_id,
+                task_id,
+                task,
+                wait_for=wait_for,
+                timeout_seconds=timeout_seconds,
+            )
+            if wait_error:
+                return wait_error
             result = workflow_manager.get_task_result(workflow_id, task_id)
             if result is None:
                 return _fail(f"任务 {task_id} 不存在", error="task_not_found")
-            return _ok(**result)
+            return _ok(**{**result, **wait_metadata})
         except Exception as exc:
             logger.exception("get_task_result 失败")
             return _fail(f"查询结果失败: {exc}")
@@ -71,7 +90,8 @@ def create_get_task_result_tool(
         name="get_task_result",
         description=(
             "获取当前 Main 所拥有任务的结果摘要、节点输出和工作空间内产物描述符。"
-            "terminal=false 表示任务尚未结束，返回的是当前快照。"
+            "可在同一次调用中等待终态或需要 Main 介入的状态；"
+            "terminal=false 表示返回的是当前快照。"
         ),
         args_schema=GetTaskResultArgs,
         func=lambda **kw: None,
