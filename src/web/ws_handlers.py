@@ -597,11 +597,11 @@ async def _push_status_updates(ws: WebSocket, app_state):
             status = {
                 "type": "status_update",
                 "data": {
-                    "sessions": [s.get_summary() for s in sm.sessions.values()],
+                    "sessions": sm.get_session_summaries(),
                     "active_sub_count": sm.get_active_sub_count(),
-                    "total_sessions": len(sm.sessions),
+                    "total_sessions": sm.get_total_session_count(),
                     "main_session_id": sm.main_session_id,
-                    "main_sessions": [s.get_summary() for s in sm.get_main_sessions()],
+                    "main_sessions": sm.get_main_session_summaries(),
                 },
             }
             if not event_bus.enqueue_to_ws(ws, status):

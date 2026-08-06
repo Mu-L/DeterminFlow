@@ -98,6 +98,7 @@ _settings_defaults = _load_settings()
 # 多 Agent 会话管理参数
 MAX_SUB_SESSIONS = _get_int_config("MAX_SUB_SESSIONS", 5)
 SUB_AGENT_MAX_ROUNDS = _get_int_config("SUB_AGENT_MAX_ROUNDS", 10)
+SESSION_CACHE_MAX_ENTRIES = max(1, _get_int_config("SESSION_CACHE_MAX_ENTRIES", 64))
 SESSIONS_DIR = DATA_DIR / "sessions"
 
 # 工作流编排
@@ -170,6 +171,7 @@ CONFIG_ITEMS: list[dict[str, Any]] = [
     # 多 Agent
     {"key": "MAX_SUB_SESSIONS", "label": "最大并发子会话数", "group": "agent", "type": "number", "min": 1, "max": 20},
     {"key": "SUB_AGENT_MAX_ROUNDS", "label": "子 Agent 最大轮次", "group": "agent", "type": "number", "min": 1, "max": 50},
+    {"key": "SESSION_CACHE_MAX_ENTRIES", "label": "历史会话内存缓存数", "group": "agent", "type": "number", "min": 1, "max": 512},
     {"key": "AGENT_MESSAGE_HEADER", "label": "Agent 消息标头模板", "group": "agent", "type": "string"},
     # 圆桌
     {"key": "ROUNDTABLE_MAX_SEATS", "label": "最大席位数", "group": "roundtable", "type": "number", "min": 2, "max": 20},

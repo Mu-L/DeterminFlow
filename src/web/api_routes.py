@@ -131,14 +131,11 @@ async def list_sessions(request: Request):
     """获取所有会话列表"""
 
     sm = _get_session_manager(request)
-
-    sessions = []
-
-    for sid, session in sm.sessions.items():
-
-        sessions.append(session.get_summary())
-
-    return {"sessions": sessions, "active_sub_count": sm.get_active_sub_count(), "main_session_id": sm.main_session_id}
+    return {
+        "sessions": sm.get_session_summaries(),
+        "active_sub_count": sm.get_active_sub_count(),
+        "main_session_id": sm.main_session_id,
+    }
 
 
 
@@ -326,7 +323,7 @@ async def get_session_detail(session_id: str, request: Request):
 
         "has_graph": session.compiled_graph is not None,
 
-        "runtime_scope": "workflow" if session.workflow_id else "interactive",
+        "runtime_scope": session.runtime_scope,
 
         "model_id": session.model_id,
 
@@ -656,6 +653,12 @@ async def get_system_status(request: Request):
     prompt_data = pm.get_prompt()
 
     bus_stats = event_bus.get_stats()
+    workflow_manager = getattr(request.app.state, "workflow_manager", None)
+    execution_control = (
+        workflow_manager.get_execution_control()
+        if workflow_manager is not None
+        else None
+    )
 
 
 
@@ -673,13 +676,13 @@ async def get_system_status(request: Request):
         logger.warning(f"获取 temperature 失败: {e}")
 
     main_session = sm.get_main_session()
-    main_sessions = [s.get_summary() for s in sm.get_main_sessions()]
+    main_sessions = sm.get_main_session_summaries()
 
     return {
         "main_session": main_session.get_summary() if main_session else None,
         "main_sessions": main_sessions,
         "active_sub_count": sm.get_active_sub_count(),
-        "total_sessions": len(sm.sessions),
+        "total_sessions": sm.get_total_session_count(),
         "prompt_version": prompt_data.get("version", 0),
         "prompt_last_modified": prompt_data.get("last_modified", ""),
         "temperature": temperature,
@@ -687,6 +690,7 @@ async def get_system_status(request: Request):
         "mcp_servers": list(mcp.connections.keys()),
         "mcp_tools_count": len(mcp.get_tools()),
         "event_bus_stats": bus_stats,
+        "execution_control": execution_control,
     }
 
 

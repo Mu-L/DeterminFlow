@@ -874,6 +874,10 @@ def test_from_node_retry_resets_state_but_preserves_usage_ledger():
     manager = WorkflowManager.__new__(WorkflowManager)
     manager._extension_manager = None
     manager._running_tasks = {}
+    manager._execution_control = SimpleNamespace(read=lambda: {
+        "mode": "normal",
+        "accepting_new_tasks": True,
+    })
     manager._load_task = lambda *_args: task
     manager._save_task = lambda _task: None
 

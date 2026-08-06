@@ -118,7 +118,11 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                 workflow_id=definition.workflow_id,
                 task_description=f"Workflow: {definition.workflow_id}",
             )
-            self._session_manager.sessions[wf_main.session_id] = wf_main
+            register = getattr(self._session_manager, "register_runtime_session", None)
+            if callable(register):
+                register(wf_main)
+            else:
+                self._session_manager.sessions[wf_main.session_id] = wf_main
             wf_main_id = wf_main.session_id
 
         shared_ws = self._ws_manager.resolve_workflow_workspace(
@@ -172,8 +176,13 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
                 llm_client=create_llm(streaming=True),
                 workflow_id=definition.workflow_id,
                 task_description=f"Workflow: {definition.workflow_id}",
+                task_id=task.task_id,
             )
-            self._session_manager.sessions[wf_main.session_id] = wf_main
+            register = getattr(self._session_manager, "register_runtime_session", None)
+            if callable(register):
+                register(wf_main)
+            else:
+                self._session_manager.sessions[wf_main.session_id] = wf_main
             wf_main_id = wf_main.session_id
             logger.info(f"Workflow main 已创建: {wf_main_id} (task={task.task_id})")
 

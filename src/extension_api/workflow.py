@@ -18,6 +18,8 @@ class WorkflowRuntime(Protocol):
 
     def get_effective_agent_definition(self, agent_type: str) -> dict | None: ...
 
+    def get_execution_control(self) -> dict: ...
+
     def create_task(
         self,
         workflow_id: str,

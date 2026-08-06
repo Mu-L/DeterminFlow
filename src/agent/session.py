@@ -492,6 +492,8 @@ class AgentSession:
 
         task_id: str | None = None,
 
+        runtime_scope: str | None = None,
+
         model_params: dict[str, Any] | None = None,
 
     ):
@@ -507,6 +509,15 @@ class AgentSession:
         self.workflow_id: str | None = workflow_id
 
         self.task_id: str | None = task_id
+
+        if runtime_scope in {"interactive", "workflow"}:
+            self.runtime_scope = runtime_scope
+        elif session_type == "sub" and workflow_id:
+            self.runtime_scope = "workflow"
+        elif session_type == "main" and task_description.lstrip().startswith("Workflow:"):
+            self.runtime_scope = "workflow"
+        else:
+            self.runtime_scope = "interactive"
 
         self.node_id: str = ""  # workflow 节点 ID（由 engine._execute_node 设置）
 
@@ -2819,6 +2830,8 @@ class AgentSession:
 
             "agent_type": self.agent_type,
 
+            "runtime_scope": self.runtime_scope,
+
             "model_id": self.model_id,
 
             "model_params": self.model_params,
@@ -2871,6 +2884,7 @@ class AgentSession:
             workspace_path=data.get("workspace_path"),
             workflow_id=data.get("workflow_id"),
             task_id=data.get("task_id"),
+            runtime_scope=data.get("runtime_scope"),
             model_params=data.get("model_params"),
         )
         session.node_id = data.get("node_id", "")

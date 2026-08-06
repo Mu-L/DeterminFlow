@@ -198,6 +198,10 @@ class WorkflowRuntimeFacade:
         """Return non-sensitive identities for actual Core execution files."""
         return self._manager.get_workflow_execution_identity(workflow_id)
 
+    def get_execution_control(self) -> dict:
+        """Return read-only runtime admission state for Extension APIs."""
+        return self._manager.get_execution_control()
+
     def get_effective_agent_definition(self, agent_type: str) -> dict | None:
         """Return the resolved execution fields without prompt or option contents."""
         return build_effective_agent_definition(

@@ -41,7 +41,7 @@ def test_check_sub_progress_waits_for_terminal_and_returns_bounded_result():
             task_description="inspect",
         )
         session.status = "running"
-        manager.sessions[session.session_id] = session
+        manager.register_runtime_session(session)
         keep_active = asyncio.create_task(asyncio.Event().wait())
         manager._sub_tasks[session.session_id] = keep_active
 
@@ -82,7 +82,7 @@ def test_check_sub_progress_wait_requires_target_and_cleans_up_cancellation():
 
         session = AgentSession(session_type="sub", parent_id="main-1")
         session.status = "running"
-        manager.sessions[session.session_id] = session
+        manager.register_runtime_session(session)
         keep_active = asyncio.create_task(asyncio.Event().wait())
         manager._sub_tasks[session.session_id] = keep_active
         waiter = asyncio.create_task(manager.check_sub_progress(

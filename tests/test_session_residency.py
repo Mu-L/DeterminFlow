@@ -1,0 +1,294 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
+
+import src.agent.session as session_module
+import src.agent.session_lifecycle as session_lifecycle_module
+import src.workflow.manager as workflow_manager_module
+from src.agent.session import AgentSession
+from src.agent.session_manager import SessionManager
+from src.workflow.definition import WorkflowDef
+from src.workflow.manager import WorkflowManager
+from src.workflow.runtime_models import WorkflowTask
+
+
+def _write_session(
+    sessions_dir: Path,
+    session_id: str,
+    *,
+    session_type: str,
+    status: str = "completed",
+    parent_id: str | None = None,
+    workflow_id: str | None = None,
+    task_id: str | None = None,
+    task_description: str = "",
+    runtime_scope: str | None = None,
+    content: str = "result",
+) -> None:
+    data = {
+        "session_id": session_id,
+        "session_type": session_type,
+        "parent_id": parent_id,
+        "status": status,
+        "task_description": task_description,
+        "system_prompt": "system",
+        "agent_type": "main" if session_type == "main" else "writer",
+        "created_at": "2026-08-04T00:00:00+00:00",
+        "updated_at": f"2026-08-04T00:00:{len(session_id):02d}+00:00",
+        "record": [
+            {"id": "msg_00001", "type": "user", "content": "input"},
+            {"id": "msg_00002", "type": "assistant", "content": content},
+        ],
+        "context": {"messages": []},
+    }
+    for key, value in {
+        "workflow_id": workflow_id,
+        "task_id": task_id,
+        "runtime_scope": runtime_scope,
+    }.items():
+        if value is not None:
+            data[key] = value
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / f"{session_id}.json").write_text(
+        json.dumps(data, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def isolated_sessions(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setattr(session_lifecycle_module, "SESSIONS_DIR", sessions_dir)
+    monkeypatch.setattr(session_module, "SESSIONS_DIR", sessions_dir)
+    yield sessions_dir
+    for file_path in sessions_dir.glob("*.json"):
+        session_module._persistence_manager.unregister(file_path.stem)
+
+
+def test_startup_indexes_history_without_hydrating_terminal_workflow_sessions(
+    isolated_sessions,
+):
+    _write_session(
+        isolated_sessions,
+        "chat-main",
+        session_type="main",
+        runtime_scope="interactive",
+    )
+    _write_session(
+        isolated_sessions,
+        "wf-finished",
+        session_type="main",
+        workflow_id="wf-example",
+        task_id="task-old",
+        task_description="Workflow: wf-example",
+    )
+    _write_session(
+        isolated_sessions,
+        "wf-running",
+        session_type="main",
+        status="running",
+        workflow_id="wf-example",
+        task_id="task-live",
+        task_description="Workflow: wf-example",
+    )
+    _write_session(
+        isolated_sessions,
+        "sub-finished",
+        session_type="sub",
+        parent_id="wf-finished",
+        workflow_id="wf-example",
+        task_id="task-old",
+    )
+    _write_session(
+        isolated_sessions,
+        "sub-interrupted",
+        session_type="sub",
+        status="streaming",
+        parent_id="wf-running",
+        workflow_id="wf-example",
+        task_id="task-live",
+    )
+
+    manager = SessionManager(cold_cache_max_entries=2)
+    manager.load_sessions()
+
+    assert set(manager.sessions) == {"chat-main", "wf-running"}
+    assert manager.main_session_id == "chat-main"
+    assert manager.get_total_session_count() == 5
+    summaries = {
+        item["session_id"]: item for item in manager.get_session_summaries()
+    }
+    assert summaries["wf-finished"]["last_message"] == "result"
+    assert summaries["sub-interrupted"]["status"] == "error"
+    tree = manager.get_session_tree(main_id="wf-finished")
+    assert [child["session_id"] for child in tree["children"]] == ["sub-finished"]
+
+
+def test_historical_session_load_is_bounded_by_lru(isolated_sessions):
+    for session_id in ("cold-a", "cold-b", "cold-c"):
+        _write_session(
+            isolated_sessions,
+            session_id,
+            session_type="sub",
+            workflow_id="wf-example",
+            task_id=f"task-{session_id}",
+        )
+
+    manager = SessionManager(cold_cache_max_entries=2)
+    manager.load_sessions()
+
+    assert manager.get_session("cold-a") is not None
+    assert manager.get_session("cold-b") is not None
+    assert set(manager.sessions) == {"cold-a", "cold-b"}
+    assert manager.get_session("cold-c") is not None
+    assert set(manager.sessions) == {"cold-b", "cold-c"}
+    assert list(manager._cold_session_lru) == ["cold-b", "cold-c"]
+
+
+def test_dirty_historical_session_is_flushed_before_shutdown(isolated_sessions):
+    _write_session(
+        isolated_sessions,
+        "cold-a",
+        session_type="sub",
+        workflow_id="wf-example",
+        task_id="task-1",
+    )
+    manager = SessionManager(cold_cache_max_entries=1)
+    manager.load_sessions()
+    session = manager.get_session("cold-a")
+    assert session is not None
+    asyncio.run(session.add_message("assistant", "updated"))
+
+    asyncio.run(manager.shutdown())
+
+    persisted = json.loads(
+        (isolated_sessions / "cold-a.json").read_text(encoding="utf-8")
+    )
+    assert persisted["record"][-1]["content"] == "updated"
+
+
+def test_terminal_workflow_release_preserves_history_and_interactive_main(
+    isolated_sessions,
+):
+    manager = SessionManager(cold_cache_max_entries=2)
+    workflow_session = AgentSession(
+        session_id="wf-runtime",
+        session_type="sub",
+        workflow_id="wf-example",
+        task_id="task-1",
+        runtime_scope="workflow",
+    )
+    workflow_session.status = "completed"
+    workflow_session.record = [
+        {"id": "msg_00001", "type": "assistant", "content": "chapter"},
+    ]
+    interactive_main = AgentSession(
+        session_id="chat-main",
+        session_type="main",
+        workflow_id="wf-example",
+        task_id="task-1",
+        runtime_scope="interactive",
+    )
+    manager.register_runtime_session(workflow_session)
+    manager.register_main(interactive_main)
+
+    result = asyncio.run(
+        manager.release_workflow_task_sessions("wf-example", "task-1")
+    )
+
+    assert result == {"matched": 1, "released": 1, "retained": 0}
+    assert set(manager.sessions) == {"chat-main"}
+    restored = manager.get_session("wf-runtime")
+    assert restored is not None
+    assert restored.get_last_assistant_message() == "chapter"
+    assert restored.compiled_graph is None
+    assert "chat-main" in manager.sessions
+
+
+def test_final_save_failure_retains_workflow_session(isolated_sessions, monkeypatch):
+    manager = SessionManager()
+    session = AgentSession(
+        session_id="wf-runtime",
+        session_type="sub",
+        workflow_id="wf-example",
+        task_id="task-1",
+        runtime_scope="workflow",
+    )
+    session.status = "completed"
+    manager.register_runtime_session(session)
+
+    async def fail_save(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(session, "async_save", fail_save)
+    result = asyncio.run(
+        manager.release_workflow_task_sessions("wf-example", "task-1")
+    )
+
+    assert result == {"matched": 1, "released": 0, "retained": 1}
+    assert manager.sessions["wf-runtime"] is session
+
+
+def test_terminal_task_is_saved_before_session_release(tmp_path, monkeypatch):
+    workflows_dir = tmp_path / "workflows"
+    monkeypatch.setattr(workflow_manager_module, "WORKFLOWS_DIR", workflows_dir)
+    observations: list[str] = []
+
+    class RecordingSessionManager:
+        sessions: dict = {}
+
+        async def release_workflow_task_sessions(self, workflow_id: str, task_id: str):
+            task_file = workflows_dir / workflow_id / "tasks" / f"{task_id}.json"
+            observations.append(json.loads(task_file.read_text(encoding="utf-8"))["status"])
+            return {"matched": 1, "released": 1, "retained": 0}
+
+    manager = WorkflowManager(RecordingSessionManager())
+    task = WorkflowTask(
+        workflow_id="wf-example",
+        task_id="task-1",
+        status="running",
+    )
+
+    class CompletedEngine:
+        async def execute_task(self, _definition, current, _from_node_id):
+            current.status = "completed"
+            return current
+
+    manager._engine = CompletedEngine()
+    asyncio.run(
+        manager._run_task_coroutine(
+            "wf-example",
+            "task-1",
+            WorkflowDef(workflow_id="wf-example"),
+            task,
+            None,
+        )
+    )
+
+    assert observations == ["completed"]
+
+
+def test_retry_waiting_task_keeps_runtime_sessions():
+    calls: list[tuple[str, str]] = []
+
+    class RecordingSessionManager:
+        sessions: dict = {}
+
+        async def release_workflow_task_sessions(self, workflow_id: str, task_id: str):
+            calls.append((workflow_id, task_id))
+            return {"matched": 0, "released": 0, "retained": 0}
+
+    manager = WorkflowManager(RecordingSessionManager())
+    task = WorkflowTask(
+        workflow_id="wf-example",
+        task_id="task-1",
+        status="retry_waiting",
+    )
+
+    asyncio.run(manager._release_terminal_task_sessions(task))
+
+    assert calls == []

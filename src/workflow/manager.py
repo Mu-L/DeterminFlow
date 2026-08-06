@@ -19,13 +19,14 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src.config import WORKFLOWS_DIR
+from src.config import DATA_DIR, WORKFLOWS_DIR
 from src.core.change_broadcaster import ChangeBroadcaster
 from .definition import (
     WorkflowDef, WorkflowState, WorkflowTask, NodeExecutionState,
     WorkflowRunRecord, WorkflowVariable, ExecutionScheme, _now_iso, _generate_id,
 )
 from .engine import WorkflowEngine
+from .execution_control import ExecutionControl
 from .main_task_creation import WorkflowMainTaskCreationMixin
 from .task_queries import TaskQueryMixin
 from .task_recovery import WorkflowTaskRecoveryMixin
@@ -63,6 +64,7 @@ class WorkflowManager(
         self._engine.set_task_update_listener(self._signal_task_update)
         self._engine.set_workspace_manager(self._ws_manager)
         self._running_tasks: dict[str, asyncio.Task] = {}  # key: task_id
+        self._execution_control = ExecutionControl(DATA_DIR, WORKFLOWS_DIR)
         self._init_task_recovery()
         WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -86,6 +88,22 @@ class WorkflowManager(
             self._task_change_key(workflow_id, task_id),
             timeout_seconds,
         )
+
+    def get_execution_control(self) -> dict:
+        """Return the persisted admission mode without scanning Task history."""
+        return self._execution_control.read()
+
+    def _new_task_admission_result(self) -> dict | None:
+        state = self._execution_control.read()
+        if state["accepting_new_tasks"]:
+            return None
+        return {
+            "success": False,
+            "error": "runtime_draining",
+            "message": "运行时正在排空，暂不接受新的工作流任务",
+            "retry_after_seconds": state["retry_after_seconds"],
+            "execution_control": state,
+        }
 
     def _freeze_snapshot_definition(
         self,
@@ -459,6 +477,9 @@ class WorkflowManager(
         """
         if not self.is_workflow_owner_enabled(workflow_id):
             return None
+        admission_error = self._new_task_admission_result()
+        if admission_error is not None:
+            return admission_error
         wf_data = self.get_workflow(workflow_id)
         if not wf_data:
             return None
@@ -559,6 +580,11 @@ class WorkflowManager(
                 ),
             }
 
+        if task.status == "pending":
+            admission_error = self._new_task_admission_result()
+            if admission_error is not None:
+                return admission_error
+
         if task.main_takeover and task.main_session_id not in self._session_manager.sessions:
             return {
                 "success": False,
@@ -644,6 +670,8 @@ class WorkflowManager(
         result = self.create_task(workflow_id, from_node_id, parameter_values=parameter_values)
         if result is None:
             return {"success": False, "message": f"工作流 {workflow_id} 不存在"}
+        if not result.get("task_id"):
+            return result
         return await self.run_task(workflow_id, result["task_id"], from_node_id)
 
     async def stop_task(self, workflow_id: str, task_id: str) -> dict:
@@ -739,11 +767,13 @@ class WorkflowManager(
             )
             self._save_task(result_task)
             self._push_task_update(workflow_id, result_task)
+            await self._release_terminal_task_sessions(result_task)
         except asyncio.CancelledError:
             task.status = "stopped"
             task.completed_at = _now_iso()
             self._save_task(task)
             self._push_task_update(workflow_id, task)
+            await self._release_terminal_task_sessions(task)
             raise
         except Exception:
             logger.exception(f"任务 {task_id} (工作流 {workflow_id}) 运行异常")
@@ -751,10 +781,38 @@ class WorkflowManager(
             task.completed_at = _now_iso()
             self._save_task(task)
             self._push_task_update(workflow_id, task)
+            await self._release_terminal_task_sessions(task)
         finally:
             self._running_tasks.pop(task_id, None)
             if result_task is not None and result_task.status == "retry_waiting":
                 self._schedule_retry_for_task(result_task)
+
+    async def _release_terminal_task_sessions(self, task: WorkflowTask) -> None:
+        if task.status not in {"completed", "failed", "stopped", "cancelled"}:
+            return
+        release = getattr(
+            self._session_manager,
+            "release_workflow_task_sessions",
+            None,
+        )
+        if not callable(release):
+            return
+        try:
+            result = await release(task.workflow_id, task.task_id)
+        except Exception:
+            logger.exception(
+                "Workflow Task 终态 Session 释放异常: workflow=%s task=%s",
+                task.workflow_id,
+                task.task_id,
+            )
+            return
+        if result.get("retained"):
+            logger.warning(
+                "Workflow Task 终态 Session 未完全释放: workflow=%s task=%s result=%s",
+                task.workflow_id,
+                task.task_id,
+                result,
+            )
 
     def _save_definition(self, wf_def: WorkflowDef):
         """持久化工作流定义（原子写入，防崩溃损坏）。"""
@@ -947,6 +1005,9 @@ class WorkflowManager(
                 "error": "main_takeover_unavailable",
                 "message": "Main 接管审批不可用：任务所属 Main Session 不在运行期",
             }
+        admission_error = self._new_task_admission_result()
+        if admission_error is not None:
+            return admission_error
         if task_id in self._running_tasks and not self._running_tasks[task_id].done():
             return {"success": False, "message": "任务已在运行中"}
 
@@ -992,14 +1053,17 @@ class WorkflowManager(
             )
             self._save_task(result_task)
             self._push_task_update(workflow_id, result_task)
+            await self._release_terminal_task_sessions(result_task)
         except asyncio.CancelledError:
             task.status = "stopped"; task.completed_at = _now_iso(); self._save_task(task)
             self._push_task_update(workflow_id, task)
+            await self._release_terminal_task_sessions(task)
             raise
         except Exception:
             logger.exception(f"任务 {task_id} 运行异常")
             task.status = "failed"; task.completed_at = _now_iso(); self._save_task(task)
             self._push_task_update(workflow_id, task)
+            await self._release_terminal_task_sessions(task)
         finally:
             self._running_tasks.pop(task_id, None)
             if result_task is not None and result_task.status == "retry_waiting":

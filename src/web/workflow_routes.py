@@ -9,7 +9,8 @@ import json
 import logging
 import re
 from pathlib import Path
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..config import SESSIONS_DIR, WORKFLOWS_DIR
@@ -34,6 +35,16 @@ router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
 # 变量 key 不允许以 _ 开头（保留给 _system.xxx 系统变量）
 _VAR_KEY_RE = re.compile(r"^[a-zA-Z0-9][\w\-]*$")
+
+
+def _raise_runtime_draining(result: dict) -> None:
+    if result.get("error") != "runtime_draining":
+        return
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "runtime_draining", "message": result.get("message")},
+        headers={"Retry-After": str(result["retry_after_seconds"])},
+    )
 
 
 def _load_session_file(session_id: str) -> dict | None:
@@ -200,6 +211,7 @@ async def run_workflow(workflow_id: str, request: Request, body: WorkflowRunRequ
     mgr = _ensure_http_mutation_allowed(request, workflow_id)
     result = await mgr.run_workflow(workflow_id, from_node_id=body.from_node_id)
     if not result.get("success"):
+        _raise_runtime_draining(result)
         raise HTTPException(status_code=400, detail=result.get("message", "启动失败"))
     return result
 
@@ -247,6 +259,7 @@ async def create_task(workflow_id: str, request: Request,
                               workspace_override=body.workspace_override)
     if result is None:
         raise HTTPException(status_code=404, detail="工作流不存在")
+    _raise_runtime_draining(result)
     return result
 
 
@@ -257,6 +270,7 @@ async def run_task(workflow_id: str, task_id: str, request: Request,
     mgr = _ensure_http_mutation_allowed(request, workflow_id)
     result = await mgr.run_task(workflow_id, task_id, from_node_id=body.from_node_id)
     if not result.get("success"):
+        _raise_runtime_draining(result)
         status_code = 409 if result.get("error") == "task_state_conflict" else 400
         raise HTTPException(
             status_code=status_code,
@@ -665,6 +679,7 @@ async def pre_start_workflow(workflow_id: str, request: Request,
                                        workspace_override=body.workspace_override,
                                        main_takeover=body.main_takeover)
     if not result.get("success"):
+        _raise_runtime_draining(result)
         raise HTTPException(status_code=400, detail=result.get("message", "预启动失败"))
     return result
 
@@ -685,6 +700,7 @@ async def start_pre_running_task(workflow_id: str, task_id: str, request: Reques
     mgr = _ensure_http_mutation_allowed(request, workflow_id)
     result = await mgr.start_pre_running_task(workflow_id, task_id)
     if not result.get("success"):
+        _raise_runtime_draining(result)
         raise HTTPException(status_code=400, detail=result.get("message", "启动失败"))
     return result
 

@@ -19,6 +19,52 @@ import src.config as config
 logger = logging.getLogger(__name__)
 
 
+def resolve_workflow_workspace_path(
+    workflow_id: str,
+    override: str | None = None,
+    *,
+    base_dir: str | Path | None = None,
+) -> Path:
+    """Purely resolve a Workflow workspace path without creating it."""
+    safe_workflow_id = WorkspaceManager._sanitize_id(workflow_id)
+    workspace_root = (
+        Path(base_dir).expanduser().resolve()
+        if base_dir is not None
+        else (config.BASE_DIR / config.CODING_WORKSPACE_BASE).resolve()
+    )
+    default_path = workspace_root / safe_workflow_id
+
+    override_path = override.strip() if override else ""
+    if not override_path:
+        return default_path
+
+    if Path(override_path).is_absolute():
+        resolved = Path(override_path).expanduser().resolve()
+        allowed_roots = (
+            config.BASE_DIR.resolve(),
+            config.DATA_DIR.resolve(),
+            workspace_root,
+        )
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            logger.error(
+                "绝对路径 override 逃逸出允许目录: %s 不在 %s 内，回退到默认路径",
+                resolved,
+                allowed_roots,
+            )
+            return default_path
+        return resolved
+
+    resolved = (config.BASE_DIR / override_path).resolve()
+    if not resolved.is_relative_to(config.BASE_DIR.resolve()):
+        logger.error(
+            "相对路径 override 穿越出 BASE_DIR: %s 解析为 %s，回退到默认路径",
+            override_path,
+            resolved,
+        )
+        return default_path
+    return resolved
+
+
 @dataclass
 class WorkspaceInfo:
     """Workspace 信息"""
@@ -234,40 +280,15 @@ class WorkspaceManager:
         Returns:
             解析后的 workspace 绝对路径
         """
-        if override:
-            override_path = override.strip()
-            if override_path:
-                if Path(override_path).is_absolute():
-                    ws_path = Path(override_path).resolve()
-                    allowed_roots = (
-                        config.BASE_DIR.resolve(),
-                        config.DATA_DIR.resolve(),
-                        self.base_dir.resolve(),
-                    )
-                    if not any(
-                        ws_path.is_relative_to(root)
-                        for root in allowed_roots
-                    ):
-                        logger.error(
-                            f"绝对路径 override 逃逸出允许目录: {ws_path} "
-                            f"不在 {allowed_roots} 内，回退到默认路径"
-                        )
-                        return self.create_workflow_workspace(workflow_id)
-                else:
-                    ws_path = (config.BASE_DIR / override_path).resolve()
-                    # 相对路径也做沙箱检查（防止 ../ 穿越）
-                    if not ws_path.is_relative_to(config.BASE_DIR.resolve()):
-                        logger.error(
-                            f"相对路径 override 穿越出 BASE_DIR: {override_path} "
-                            f"解析为 {ws_path}，回退到默认路径"
-                        )
-                        return self.create_workflow_workspace(workflow_id)
-                ws_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Workflow workspace (override): {ws_path}")
-                return ws_path
-
-        # 默认路径
-        return self.create_workflow_workspace(workflow_id)
+        ws_path = resolve_workflow_workspace_path(
+            workflow_id,
+            override=override,
+            base_dir=self.base_dir,
+        )
+        ws_path.mkdir(parents=True, exist_ok=True)
+        if override and override.strip():
+            logger.info("Workflow workspace (override): %s", ws_path)
+        return ws_path
 
     def cleanup_workflow_workspace(self, workflow_id: str) -> bool:
         """清理整个工作流的 workspace 目录。"""

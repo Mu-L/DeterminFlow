@@ -6,14 +6,19 @@
 主/子会话的区别仅在上层控制（工具集、通信工具、通知机制）。
 """
 import asyncio
-import json
+from collections import OrderedDict
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
-from src.config import MAX_SUB_SESSIONS, SESSIONS_DIR, SUB_AGENT_MAX_ROUNDS
+from src.config import (
+    MAX_SUB_SESSIONS,
+    SESSION_CACHE_MAX_ENTRIES,
+    SUB_AGENT_MAX_ROUNDS,
+)
 from src.agent.session import AgentSession
+from src.agent.session_catalog import SessionCatalog
+from src.agent.session_lifecycle import SessionLifecycleMixin
 from src.core.change_broadcaster import ChangeBroadcaster
 from langgraph.errors import GraphRecursionError
 
@@ -21,10 +26,6 @@ from src.core.utils import is_visible_to_frontend
 from src.extension_api import PromptContextRequest
 
 logger = logging.getLogger(__name__)
-
-_ACTIVE_SUB_STATUSES = {"running", "streaming"}
-_SUB_TERMINAL_STATUSES = {"completed", "error", "stopped", "cancelled"}
-_SUB_RESULT_MAX_CHARS = 20_000
 
 
 class NotificationBroadcaster:
@@ -69,7 +70,7 @@ def _try_emit_event(event: dict):
         logger.debug("事件推送失败", exc_info=True)
 
 
-class SessionManager:
+class SessionManager(SessionLifecycleMixin):
     """多会话管理器。
 
     职责：
@@ -82,8 +83,16 @@ class SessionManager:
     不再承担 Graph 执行和消息累积的职责，这些已下沉到 AgentSession。
     """
 
-    def __init__(self):
+    def __init__(self, cold_cache_max_entries: int | None = None):
         self.sessions: dict[str, AgentSession] = {}
+        self._session_catalog = SessionCatalog()
+        self._cold_session_lru: OrderedDict[str, None] = OrderedDict()
+        self._cold_cache_max_entries = max(
+            1,
+            cold_cache_max_entries
+            if cold_cache_max_entries is not None
+            else SESSION_CACHE_MAX_ENTRIES,
+        )
         self.main_session_id: str | None = None
         self.notification_queue: asyncio.Queue = asyncio.Queue()  # 兼容旧接口（已被 broadcaster 取代）
         self.notification_broadcaster: NotificationBroadcaster = NotificationBroadcaster()
@@ -140,62 +149,6 @@ class SessionManager:
     # ============================================================
     # 会话注册与查询
     # ============================================================
-
-    def _signal_session_update(self, session_id: str) -> None:
-        self._session_changes.publish(session_id)
-
-    async def _wait_for_session_update(
-        self,
-        session_id: str,
-        timeout_seconds: float | None,
-    ) -> bool:
-        return await self._session_changes.wait(session_id, timeout_seconds)
-
-    def register_main(self, session: AgentSession):
-        session.session_type = "main"
-        self.sessions[session.session_id] = session
-        session._default_event_callback = self._make_event_callback(session.session_id)
-        self.main_session_id = session.session_id
-        # 设置 Main workspace 路径（统一使用 data/workspaces/{session_id}）
-        if self._workspace_manager:
-            ws_path = self._workspace_manager.create_workspace(session.session_id)
-            session.workspace_path = str(ws_path)
-        logger.info(f"Main session 已注册: {session.session_id}, workspace={session.workspace_path or 'none'}")
-
-    def get_main_session(self) -> AgentSession | None:
-        if self.main_session_id:
-            return self.sessions.get(self.main_session_id)
-        return None
-
-    def get_session(self, session_id: str) -> AgentSession | None:
-        return self.sessions.get(session_id)
-
-    def get_active_sub_count(self) -> int:
-        return sum(1 for s in self.sessions.values() if s.session_type == "sub" and s.status in ("running", "streaming"))
-
-    def get_all_sub_sessions(self) -> list[AgentSession]:
-        return [s for s in self.sessions.values() if s.session_type == "sub"]
-
-    def get_main_sessions(self) -> list[AgentSession]:
-        """返回所有 main 类型会话（支持多 main 并存）。"""
-        return [s for s in self.sessions.values() if s.session_type == "main"]
-
-    def _get_root_main(self, session_id: str) -> str | None:
-        """沿 parent_id 链上溯找到根 main 会话 ID。
-
-        用于 scope 校验：判断两个 session 是否属于同一棵树。
-        """
-        session = self.sessions.get(session_id)
-        visited = set()
-        while session and session.session_id not in visited:
-            if session.session_type == "main":
-                return session.session_id
-            visited.add(session.session_id)
-            if session.parent_id:
-                session = self.sessions.get(session.parent_id)
-            else:
-                break
-        return None
 
     # ============================================================
     # Builder / Assembler 注入
@@ -397,7 +350,7 @@ class SessionManager:
         session = self.get_session(session_id)
         if session is None:
             return {"success": False, "message": f"未找到会话 {session_id}"}
-        if session.session_type != "main" or session.workflow_id:
+        if session.session_type != "main" or session.runtime_scope != "interactive":
             return {"success": False, "message": "仅支持切换交互 Main 会话的模型"}
 
         from src.core.model_manager import get_model_manager
@@ -472,6 +425,7 @@ class SessionManager:
         llm_client,
         workflow_id: str,
         task_description: str = "",
+        task_id: str | None = None,
     ) -> "AgentSession":
         """创建 workflow main session（供 engine.py 调用）。
 
@@ -488,6 +442,8 @@ class SessionManager:
             session_type="main", agent_type="main",
             task_description=task_description or f"Workflow: {workflow_id}",
             workflow_id=workflow_id,
+            task_id=task_id,
+            runtime_scope="workflow",
         )
 
         # 2. 设置 workspace_path（共享 workflow workspace: data/workspaces/{workflow_id}/）
@@ -722,8 +678,7 @@ class SessionManager:
             session.workspace_path = str(ws_path)
             logger.info(f"Sub session {session.session_id} workspace: {ws_path}")
 
-        self.sessions[session.session_id] = session
-        session._default_event_callback = self._make_event_callback(session.session_id)
+        self.register_runtime_session(session)
 
         # 解析 prompt_template 用于路由
         prompt_template = agent_def.prompt_template if agent_def else "subagent"
@@ -1107,339 +1062,3 @@ class SessionManager:
                         "session_id": _sid,
                     })
         return callback
-
-    # ============================================================
-    # Event Callback 工厂
-    # ============================================================
-
-    def _make_event_callback(self, session_id: str) -> Callable[[dict], Awaitable[None]]:
-        """为 session 创建 event_callback。
-
-        流式事件直接推送到 chat 通道（与 ChatPage 的 handle_chat_ws 行为一致），
-        状态事件推送到 events 通道，stream_end 时额外推送 chain_end 全量消息。
-        适用于 main session 和 sub session。
-        """
-        async def callback(event: dict):
-            from src.web.event_bus import event_bus
-            session = self.sessions.get(session_id)
-            event["session_id"] = session_id
-            event_type = event.get("type", "")
-            if event_type in {"stream_start", "stream_end", "error"}:
-                self._signal_session_update(session_id)
-            # 流式事件推送到 chat 通道（前端 chat WS 能收到）
-            if event_type in ("stream_start", "stream_end", "token", "reasoning_token",
-                              "tool_call_delta", "error", "tool_start", "tool_end",
-                              "llm_usage"):
-                await event_bus.emit_chat(event)
-            # 状态事件推送到 events 通道
-            if event_type == "stream_start":
-                await event_bus.emit_event({
-                    "type": "session_update", "action": "status_changed",
-                    "session_id": session_id, "status": "streaming",
-                })
-            elif event_type == "stream_end":
-                await event_bus.emit_event({
-                    "type": "session_update", "action": "status_changed",
-                    "session_id": session_id,
-                    "status": session.status if session else "completed",
-                })
-                # 推送 chain_end（全量消息快照）到 chat 通道
-                if session:
-                    serialized = [m for m in session.record if is_visible_to_frontend(m)]
-                    await event_bus.emit_chat({
-                        "type": "chain_end",
-                        "messages": serialized,
-                        "session_id": session_id,
-                    })
-        return callback
-
-    # ============================================================
-    # 会话管理（查询、终止、删除、持久化）
-    # ============================================================
-
-    @staticmethod
-    def _sub_wait_state(summary: dict, *, task_active: bool) -> tuple[bool, bool]:
-        status = str(summary.get("status") or "")
-        terminal = status in _SUB_TERMINAL_STATUSES
-        attention_required = (
-            status == "waiting"
-            or (status in _ACTIVE_SUB_STATUSES and not task_active)
-        )
-        return terminal, attention_required
-
-    def _attach_sub_result(self, summary: dict) -> dict:
-        session = self.sessions.get(summary["session_id"])
-        if session is None:
-            return summary
-        output = session.get_last_assistant_message()
-        if not output:
-            return summary
-        enriched = dict(summary)
-        enriched["final_output"] = output[:_SUB_RESULT_MAX_CHARS]
-        enriched["final_output_truncated"] = len(output) > _SUB_RESULT_MAX_CHARS
-        return enriched
-
-    async def check_sub_progress(
-        self,
-        session_id: str = "",
-        wait_for: str = "none",
-        timeout_seconds: float | None = 0,
-    ) -> dict:
-        if wait_for != "none" and not session_id:
-            return {
-                "success": False,
-                "message": "等待子会话时必须提供 session_id",
-                "error": "session_id_required_for_wait",
-            }
-
-        started_at = time.monotonic()
-        waited_for_change = False
-        while True:
-            session = self.sessions.get(session_id) if session_id else None
-            if session_id and session is None:
-                return {"success": False, "message": f"未找到会话 {session_id}"}
-
-            summary = session.get_summary() if session is not None else None
-            task = self._sub_tasks.get(session_id) if session_id else None
-            task_active = task is not None and not task.done()
-            terminal, attention_required = (
-                self._sub_wait_state(summary, task_active=task_active)
-                if summary is not None
-                else (False, False)
-            )
-
-            if wait_for == "none":
-                break
-            if terminal or attention_required:
-                wait_outcome = "terminal" if terminal else "attention_required"
-                break
-            if wait_for == "change" and waited_for_change:
-                wait_outcome = "changed"
-                break
-
-            elapsed = time.monotonic() - started_at
-            remaining = (
-                None
-                if timeout_seconds is None
-                else max(0.0, timeout_seconds - elapsed)
-            )
-            changed = await self._wait_for_session_update(session_id, remaining)
-            if not changed:
-                wait_outcome = "timeout"
-                break
-            waited_for_change = True
-
-        if session_id:
-            assert summary is not None
-            result_summary = (
-                self._attach_sub_result(summary)
-                if wait_for != "none" and terminal
-                else summary
-            )
-            result = {"success": True, "sessions": [result_summary]}
-            if wait_for != "none":
-                result.update({
-                    "wait_outcome": wait_outcome,
-                    "elapsed_seconds": round(time.monotonic() - started_at, 3),
-                    "terminal": terminal,
-                    "attention_required": attention_required,
-                })
-            return result
-
-        subs = self.get_all_sub_sessions()
-        if not subs:
-            return {"success": True, "message": "当前没有子会话", "sessions": []}
-        return {
-            "success": True,
-            "active_count": self.get_active_sub_count(),
-            "total_count": len(subs),
-            "sessions": [sub.get_summary() for sub in subs],
-        }
-
-    async def check_main_progress(self, session_id: str = "") -> dict:
-        """查看主会话的状态和进度信息
-
-        Args:
-            session_id: 主会话 ID，留空查看所有主会话
-        """
-        if session_id:
-            session = self.sessions.get(session_id)
-            if not session:
-                return {"success": False, "message": f"未找到会话 {session_id}"}
-            if session.session_type != "main":
-                return {"success": False, "message": f"{session_id} 不是主会话"}
-            return {"success": True, "sessions": [session.get_summary()]}
-        else:
-            # 查看所有主会话
-            main_sessions = [s for s in self.sessions.values() if s.session_type == "main"]
-            if not main_sessions:
-                return {"success": True, "message": "当前没有主会话", "sessions": []}
-            return {"success": True, "total_count": len(main_sessions), "sessions": [s.get_summary() for s in main_sessions]}
-
-    async def kill_session(self, session_id: str) -> dict:
-        session = self.sessions.get(session_id)
-        if not session:
-            return {"success": False, "message": f"未找到会话 {session_id}"}
-        if session_id == self.main_session_id:
-            return {"success": False, "message": "不能终止当前 Chat 活跃的主会话"}
-        if session.status not in ("running", "waiting", "completed", "streaming"):
-            return {"success": False, "message": f"子会话 {session_id} 当前状态为 {session.status}，无法终止"}
-        stopped = await session.cancel_active_invocation(timeout=5.0)
-        if not stopped:
-            return {"success": False, "message": f"会话 {session_id} 仍在停止中，请稍后重试"}
-        task = self._sub_tasks.get(session_id)
-        if task and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-        session.status = "error"
-        from src.web.event_bus import event_bus
-        await event_bus.emit_chat({
-            "type": "error",
-            "message": f"会话 {session_id} 已被终止",
-            "session_id": session_id,
-            "terminal": True,
-        })
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        await session.async_save()
-        self._signal_session_update(session_id)
-        logger.info(f"Sub session {session_id} 已被终止")
-        _try_emit_event({"type": "session_update", "action": "killed", "session_id": session_id, "status": "error"})
-        return {"success": True, "message": f"子会话 {session_id} 已终止"}
-
-    async def delete_session(self, session_id: str) -> dict:
-        session = self.sessions.get(session_id)
-        if not session:
-            return {"success": False, "message": f"未找到会话 {session_id}"}
-        # 允许删除非当前活跃的主会话（历史主会话）
-        if session_id == self.main_session_id:
-            return {"success": False, "message": "不能删除当前活跃的主会话"}
-        if session.status == "streaming" or session.invocation_active or session._invoke_lock.locked():
-            return {"success": False, "message": "会话正在生成中，请先终止后再删除"}
-        # 在首次 busy 检查与实际移除之间封闭会话，避免刚创建的调用任务继续执行。
-        session.request_termination()
-        task = self._sub_tasks.get(session_id)
-        if task and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-        self._sub_tasks.pop(session_id, None)
-        # 清理 workspace
-        if self._workspace_manager and session.session_type == "sub":
-            self._workspace_manager.cleanup_workspace(session_id)
-        # 从定时刷盘管理器注销
-        from src.agent.session import _persistence_manager
-        _persistence_manager.unregister(session_id)
-        del self.sessions[session_id]
-        self._signal_session_update(session_id)
-        from src.web.event_bus import event_bus
-        await event_bus.emit_chat({
-            "type": "error",
-            "message": f"会话 {session_id} 已被删除",
-            "session_id": session_id,
-            "terminal": True,
-        })
-        event_bus.clear_session(session_id)
-        file_path = SESSIONS_DIR / f"{session_id}.json"
-        if file_path.exists():
-            file_path.unlink()
-        _try_emit_event({"type": "session_update", "action": "deleted", "session_id": session_id})
-        logger.info(f"会话 {session_id} 已删除")
-        return {"success": True, "message": f"会话 {session_id} 已删除"}
-
-    async def delete_sessions(self, session_ids: list[str]) -> dict:
-        """批量删除会话，逐个调用 delete_session 并汇总结果。"""
-        results = []
-        success_count = 0
-        fail_count = 0
-        for sid in session_ids:
-            result = await self.delete_session(sid)
-            results.append({"session_id": sid, **result})
-            if result["success"]:
-                success_count += 1
-            else:
-                fail_count += 1
-        return {
-            "success": fail_count == 0,
-            "message": f"删除完成: {success_count} 成功, {fail_count} 失败",
-            "total": len(session_ids),
-            "success_count": success_count,
-            "fail_count": fail_count,
-            "details": results,
-        }
-
-    def get_session_tree(self, main_id: str | None = None) -> dict:
-        """返回会话树结构。支持按指定 main 查询单棵树或返回所有 main 的树。
-
-        Args:
-            main_id: 指定 main session ID 查询其子树；为 None 时返回所有树
-        """
-        if main_id:
-            main = self.sessions.get(main_id)
-            if not main or main.session_type != "main":
-                return {"error": f"未找到主会话 {main_id}"}
-            subs = [s for s in self.sessions.values()
-                    if s.session_type == "sub" and self._get_root_main(s.session_id) == main_id]
-            return {"main": main.get_summary(), "children": [s.get_summary() for s in subs]}
-        # 返回所有 main 的树
-        mains = self.get_main_sessions()
-        trees = []
-        for main in mains:
-            subs = [s for s in self.sessions.values()
-                    if s.session_type == "sub" and self._get_root_main(s.session_id) == main.session_id]
-            trees.append({"main": main.get_summary(), "children": [s.get_summary() for s in subs]})
-        return {"trees": trees}
-
-    def save_all(self):
-        for session in self.sessions.values():
-            session.save()
-
-    def load_sessions(self):
-        if not SESSIONS_DIR.exists():
-            return
-        for file_path in SESSIONS_DIR.glob("*.json"):
-            try:
-                session = AgentSession.load(file_path.stem)
-                if session:
-                    # 主会话：保持 running/error 状态不变，streaming 改为 running（可恢复）
-                    if session.session_type == "main":
-                        if session.status == "streaming":
-                            session.status = "running"
-                    # 子会话：running/streaming 改为 error（不可恢复）
-                    else:
-                        if session.status in ("running", "streaming"):
-                            session.status = "error"
-                    self.sessions[session.session_id] = session
-                    session._default_event_callback = self._make_event_callback(session.session_id)
-                    if session.session_type == "main" and self.main_session_id is None:
-                        self.main_session_id = session.session_id  # 仅首个 main 设为 Chat WS 默认绑定
-            except Exception as e:
-                logger.error(f"加载 session {file_path.stem} 失败: {e}")
-
-    async def shutdown(self):
-        from src.agent.session import _persistence_manager
-        for session_id, task in list(self._sub_tasks.items()):
-            if not task.done():
-                task.cancel()
-                try:
-                    await asyncio.wait_for(task, timeout=5.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
-        for session in self.sessions.values():
-            # 停止前先通知可选 Session lifecycle hooks
-            if session.session_type == "main" and session.record:
-                await self._notify_session_end(session)
-            # 停止消费循环
-            await session.stop_consumer()
-            if session.status in ("running", "streaming"):
-                session.status = "error"
-            await session.async_save(force=True)
-            # 从定时刷盘管理器注销
-            _persistence_manager.unregister(session.session_id)
-        # 停止定时刷盘循环
-        await _persistence_manager.stop()
-        logger.info("SessionManager 已关闭，所有 session 状态已保存")

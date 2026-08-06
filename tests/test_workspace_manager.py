@@ -3,7 +3,10 @@ from pathlib import Path
 import pytest
 
 from src import config
-from src.core.workspace_manager import WorkspaceManager
+from src.core.workspace_manager import (
+    WorkspaceManager,
+    resolve_workflow_workspace_path,
+)
 
 
 @pytest.fixture
@@ -36,6 +39,38 @@ def test_absolute_override_allows_external_data_dir(
 
     assert resolved == override.resolve()
     assert resolved.is_dir()
+
+
+def test_pure_workspace_resolver_matches_runtime_without_creating_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    data_root = tmp_path / "runtime-data"
+    default_root = tmp_path / "default-workspaces"
+    project_root.mkdir()
+    data_root.mkdir()
+    monkeypatch.setattr(config, "BASE_DIR", project_root)
+    monkeypatch.setattr(config, "DATA_DIR", data_root)
+
+    override = "data/workspaces/shared-example"
+    resolved = resolve_workflow_workspace_path(
+        "example-workflow",
+        override=override,
+        base_dir=default_root,
+    )
+
+    assert resolved == (project_root / override).resolve()
+    assert not resolved.exists()
+
+    runtime_resolved = WorkspaceManager(
+        base_dir=str(default_root)
+    ).resolve_workflow_workspace(
+        "example-workflow",
+        override=override,
+    )
+    assert runtime_resolved == resolved
+    assert runtime_resolved.is_dir()
 
 
 def test_absolute_override_still_allows_project_root(

@@ -291,9 +291,17 @@ class WorkflowLoopMixin:
             # 让下一次 cleanup 或全局 persistence manager 可以安全重试。
             await session.async_save(force=True, strict=True)
 
-        self._session_manager.sessions.pop(session_id, None)
-        sub_tasks.pop(session_id, None)
-        _persistence_manager.unregister(session_id)
+        detach = getattr(
+            self._session_manager,
+            "detach_saved_runtime_session",
+            None,
+        )
+        if callable(detach):
+            detach(session_id)
+        else:
+            self._session_manager.sessions.pop(session_id, None)
+            sub_tasks.pop(session_id, None)
+            _persistence_manager.unregister(session_id)
         logger.debug(
             f"循环迭代 #{iteration} 清理旧 session: {session_id}"
         )

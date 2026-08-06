@@ -304,7 +304,8 @@ async def lifespan(app: FastAPI):
         recovery_summary = await workflow_mgr.recover_workflow_tasks()
         logger.info("Workflow 任务恢复完成: %s", recovery_summary)
 
-        # 检查是否有可恢复的主会话（多 main 架构：恢复所有主会话）
+        # 仅恢复热目录中的交互主会话和仍在运行的 Workflow Main。
+        # 已完成的 Workflow 历史保持冷数据，详情由 SessionManager 按需加载。
         recoverable_mains = [
             s for s in session_mgr.sessions.values()
             if s.session_type == "main" and s.status in ("running", "error", "completed")
@@ -316,44 +317,59 @@ async def lifespan(app: FastAPI):
         model_manager = get_model_manager()
         configured_models = set(model_manager.get_all_models())
 
-        if recoverable_mains:
-            for i, existing_main in enumerate(recoverable_mains):
-                logger.info(f"恢复主会话 [{i+1}/{len(recoverable_mains)}]: {existing_main.session_id}")
-                agent_type = existing_main.agent_type or "main"
-                agent_def = get_agent_definition(agent_type)
-                extension_context = await session_mgr._build_extension_prompt_context(
-                    agent_type,
-                    agent_def,
-                )
-                system_prompt = prompt_builder.build(
-                    agent_type,
-                    session=existing_main,
-                    tools=all_tools,
-                    extension_context=extension_context,
-                )
-                existing_main.refresh_system_prompt(system_prompt)
-                existing_main.status = "running"
-                # 保留会话自己的选择；已删除的旧模型回退到当前首个模型。
-                session_model = existing_main.model_id
-                if session_model not in configured_models:
-                    session_model = agent_def.model if agent_def else None
-                if session_model not in configured_models:
-                    session_model = model_manager.get_default_model()
-                if not existing_main.model_params and agent_def:
-                    existing_main.model_params = dict(agent_def.model_params or {})
-                session_llm = create_startup_llm(
-                    model_override=session_model,
-                    streaming=True,
-                    model_params=existing_main.model_params,
-                )
-                existing_main.model_id = session_model
-                existing_main.setup_graph(llm=session_llm, tools=all_tools)
-                existing_main.start_consumer()
-                if i == 0:
-                    session_mgr.register_main(existing_main)  # 首个设为 Chat WS 默认绑定
-                else:
-                    session_mgr.sessions[existing_main.session_id] = existing_main  # 注册但不改 main_session_id
-                logger.info(f"主会话 {existing_main.session_id} 已恢复，Graph 已重新编译，消费循环已启动")
+        for i, existing_main in enumerate(recoverable_mains):
+            logger.info(f"恢复主会话 [{i+1}/{len(recoverable_mains)}]: {existing_main.session_id}")
+            agent_type = existing_main.agent_type or "main"
+            agent_def = get_agent_definition(agent_type)
+            is_workflow_runtime = existing_main.runtime_scope == "workflow"
+            extension_context = await session_mgr._build_extension_prompt_context(
+                agent_type,
+                agent_def,
+                session_type="workflow-main" if is_workflow_runtime else "main",
+                workflow_id=existing_main.workflow_id or "",
+            )
+            session_tools = (
+                tool_assembler.build(agent_type, is_workflow=True)
+                if is_workflow_runtime
+                else all_tools
+            )
+            system_prompt = prompt_builder.build(
+                agent_type,
+                session=existing_main,
+                tools=session_tools,
+                is_workflow=is_workflow_runtime,
+                extension_context=extension_context,
+            )
+            existing_main.refresh_system_prompt(system_prompt)
+            existing_main.status = "running"
+            # 保留会话自己的选择；已删除的旧模型回退到当前首个模型。
+            session_model = existing_main.model_id
+            if session_model not in configured_models:
+                session_model = agent_def.model if agent_def else None
+            if session_model not in configured_models:
+                session_model = model_manager.get_default_model()
+            if not existing_main.model_params and agent_def:
+                existing_main.model_params = dict(agent_def.model_params or {})
+            session_llm = create_startup_llm(
+                model_override=session_model,
+                streaming=True,
+                model_params=existing_main.model_params,
+            )
+            existing_main.model_id = session_model
+            existing_main.setup_graph(llm=session_llm, tools=session_tools)
+            existing_main.start_consumer()
+            session_mgr.register_runtime_session(existing_main)
+            logger.info(f"主会话 {existing_main.session_id} 已恢复，Graph 已重新编译，消费循环已启动")
+
+        interactive_mains = [
+            session for session in recoverable_mains
+            if session.runtime_scope == "interactive"
+        ]
+        if interactive_mains:
+            if session_mgr.main_session_id not in {
+                session.session_id for session in interactive_mains
+            }:
+                session_mgr.main_session_id = interactive_mains[0].session_id
         else:
             # 创建新的 Main Session
             agent_def = get_agent_definition("main")

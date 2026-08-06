@@ -26,6 +26,9 @@ class WorkflowMainTaskCreationMixin:
         """
         if not self.is_workflow_owner_enabled(workflow_id):
             return self._workflow_read_only_result(workflow_id)
+        admission_error = self._new_task_admission_result()
+        if admission_error is not None:
+            return admission_error
         wf_data = self.get_workflow(workflow_id)
         if not wf_data:
             return {"success": False, "message": f"工作流 {workflow_id} 不存在"}
@@ -96,7 +99,11 @@ class WorkflowMainTaskCreationMixin:
             definition=definition,
             parameter_values=task.parameter_values,
         )
-        self._session_manager.sessions[session.session_id] = session
+        register = getattr(self._session_manager, "register_runtime_session", None)
+        if callable(register):
+            register(session)
+        else:
+            self._session_manager.sessions[session.session_id] = session
 
         # 4. 关联 task 与 main session
         task.status = "pre_running"
@@ -136,6 +143,9 @@ class WorkflowMainTaskCreationMixin:
         """
         if not self.is_workflow_owner_enabled(workflow_id):
             return self._workflow_read_only_result(workflow_id)
+        admission_error = self._new_task_admission_result()
+        if admission_error is not None:
+            return admission_error
         wf_data = self.get_workflow(workflow_id)
         if not wf_data:
             return {"success": False, "message": f"工作流 {workflow_id} 不存在"}
