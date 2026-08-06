@@ -19,6 +19,33 @@ def _probe(
     )
 
 
+def test_probe_exact_commit_checks_advertised_refs(monkeypatch) -> None:
+    commit = "a" * 40
+
+    def run(args, **kwargs):
+        assert "HEAD" in args
+        assert "refs/heads/*" in args
+        assert "refs/tags/*" in args
+        return source_selection.subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=f"{commit}\tHEAD\n{commit}\trefs/heads/main\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(source_selection.subprocess, "run", run)
+
+    probe = source_selection._probe_git_source(
+        "https://github.example/plugins.git",
+        commit,
+        git_binary="git",
+        timeout_seconds=1,
+    )
+
+    assert probe.commit == commit
+    assert probe.error == ""
+
+
 def test_selects_fastest_source_at_primary_commit(monkeypatch) -> None:
     commit = "a" * 40
     probes = {

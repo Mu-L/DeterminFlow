@@ -254,7 +254,7 @@ class PluginSourceStore:
         for source in sources:
             if source.id == exclude_id:
                 continue
-            if source.url == candidate.url:
+            if set(source.clone_urls).intersection(candidate.clone_urls):
                 raise ValueError("该 Plugin 仓库已存在")
             if source.id == candidate.id:
                 raise ValueError("Plugin 仓库 ID 已存在")

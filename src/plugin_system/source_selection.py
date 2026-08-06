@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Iterable
+
+
+_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40,64}$")
 
 
 @dataclass(frozen=True)
@@ -31,7 +35,7 @@ def _resolve_remote_commit(output: str, ref: str) -> str:
         if len(fields) != 2 or fields[0].startswith("ref: "):
             continue
         commit, name = fields
-        if len(commit) == 40:
+        if _COMMIT_RE.fullmatch(commit):
             references[name] = commit.lower()
 
     if ref == "HEAD":
@@ -46,7 +50,7 @@ def _resolve_remote_commit(output: str, ref: str) -> str:
         if name in references:
             return references[name]
     normalized = ref.lower()
-    if len(normalized) == 40 and normalized in references.values():
+    if _COMMIT_RE.fullmatch(normalized) and normalized in references.values():
         return normalized
     return ""
 
@@ -59,12 +63,17 @@ def _probe_git_source(
     timeout_seconds: float,
 ) -> _GitSourceProbe:
     started = time.monotonic()
-    patterns = ["HEAD"] if ref == "HEAD" else [
-        ref,
-        f"refs/heads/{ref}",
-        f"refs/tags/{ref}",
-        f"refs/tags/{ref}^{{}}",
-    ]
+    if ref == "HEAD":
+        patterns = ["HEAD"]
+    elif _COMMIT_RE.fullmatch(ref):
+        patterns = ["HEAD", "refs/heads/*", "refs/tags/*", "refs/tags/*^{}"]
+    else:
+        patterns = [
+            ref,
+            f"refs/heads/{ref}",
+            f"refs/tags/{ref}",
+            f"refs/tags/{ref}^{{}}",
+        ]
     try:
         completed = subprocess.run(
             [git_binary, "ls-remote", "--symref", "--", url, *patterns],

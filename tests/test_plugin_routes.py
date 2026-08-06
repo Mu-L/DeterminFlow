@@ -246,6 +246,39 @@ def test_plugin_management_routes_preserve_restart_boundary_and_static_page(
     asyncio.run(restarted.stop())
 
 
+def test_plugin_install_accepts_exact_commit_with_matching_official_mirror(
+    tmp_path: Path,
+    admin_headers: dict[str, str],
+) -> None:
+    source = _create_repo(tmp_path)
+    commit = _git(source, "rev-parse", "HEAD")
+    primary = tmp_path / "primary.git"
+    mirror = tmp_path / "mirror.git"
+    _git(tmp_path, "clone", "--bare", str(source), str(primary))
+    _git(tmp_path, "clone", "--bare", str(source), str(mirror))
+    store = PluginStore(
+        tmp_path / "runtime" / "plugins",
+        official_sources=[str(primary)],
+        official_source_mirrors={str(primary): [str(mirror)]},
+    )
+    client = TestClient(create_app(_manager(tmp_path / "core", store)))
+
+    installed = client.post(
+        "/api/plugins/install",
+        headers=admin_headers,
+        json={
+            "plugin_id": "demo-plugin",
+            "source": str(primary),
+            "ref": commit,
+            "subdirectory": "",
+            "acknowledge_risk": False,
+        },
+    )
+
+    assert installed.status_code == 200
+    assert installed.json()["plugin"]["source"]["resolved_commit"] == commit
+
+
 def test_plugin_list_drops_removed_secret_fields_but_allows_reset(
     tmp_path: Path,
     admin_headers: dict[str, str],

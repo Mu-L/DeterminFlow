@@ -255,6 +255,35 @@ def test_custom_source_store_rejects_builtin_mutation_and_duplicate_url(
         store.create(name="Duplicate", url=str(repository), ref="main")
 
 
+def test_custom_source_store_rejects_official_mirror_without_persisting(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "primary"
+    mirror = tmp_path / "mirror"
+    source_file = tmp_path / "plugin-sources.json"
+    source_file.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "official_sources": [{
+                "name": "Official",
+                "url": str(primary),
+                "mirrors": [str(mirror)],
+                "ref": "main",
+            }],
+            "custom_sources": [],
+        }),
+        encoding="utf-8",
+    )
+    original = source_file.read_text(encoding="utf-8")
+    store = PluginSourceStore(source_file)
+
+    with pytest.raises(ValueError, match="已存在"):
+        store.create(name="Duplicate Mirror", url=str(mirror), ref="main")
+
+    assert source_file.read_text(encoding="utf-8") == original
+    assert len(load_plugin_sources(source_file)) == 1
+
+
 def test_catalog_service_replaces_sources_and_forces_refresh(monkeypatch):
     seen: list[tuple[str, ...]] = []
 
