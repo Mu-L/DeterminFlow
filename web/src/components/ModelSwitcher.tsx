@@ -266,10 +266,13 @@ export default function ModelSwitcher({
         disabled={switchDisabled}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-busy={loading || updating}
         aria-label="切换模型"
         className="flex h-9 max-w-52 items-center gap-2 rounded-full bg-slate-700/75 px-3 text-xs text-slate-300 transition-colors hover:bg-slate-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-45"
       >
-        <span className={`h-3 w-3 shrink-0 rounded-full border border-slate-500 border-t-indigo-400 ${updating || loading ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
+        {updating || loading ? (
+          <Loader2 size={13} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        ) : null}
         <span className="truncate">{selectedModelName || (loading ? "加载模型" : "未配置模型")}</span>
         {selectedModelName ? <span className="shrink-0 text-slate-500">{displayEffort}</span> : null}
         <ChevronDown size={13} className="shrink-0 text-slate-500" aria-hidden="true" />

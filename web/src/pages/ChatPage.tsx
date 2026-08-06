@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
-  Send, Trash2, X,
-  Square, Edit3, Minimize2,
+  Trash2, X,
+  Edit3, Minimize2,
 } from "lucide-react";
 
 // Dialog focus trap helper
@@ -39,7 +39,7 @@ import { useSessions } from "../hooks/useSessions";
 import { useApprovals } from "../hooks/useApprovals";
 import { useUrlParam } from "../hooks/useUrlParam";
 import { useConversation } from "../features/conversation/useConversation";
-import { ConversationTimeline } from "../components/conversation";
+import { ConversationComposer, ConversationTimeline } from "../components/conversation";
 import ApprovalPanel from "../components/ApprovalPanel";
 import ResizableSidePanel from "../components/ResizableSidePanel";
 import MonitoringCard from "../components/MonitoringCard";
@@ -123,7 +123,6 @@ export default function ChatPage() {
     pendingApprovals, resolvedApprovals,
     approve: handleApprove, reject: handleReject, clearResolved,
   } = useApprovals();
-  const [input, setInput] = useState("");
   const [sidePanel, setSidePanel] = useState<"sessions" | "prompt" | "workspace">("sessions");
 
   // 预设短语状态
@@ -450,11 +449,6 @@ export default function ChatPage() {
     }
   }, []);
 
-  const handleSend = () => {
-    if (!input.trim() || !canSend) return;
-    if (sendMessage(input.trim())) setInput("");
-  };
-
   const handleEditDisplayedMessage = useCallback((msgId: string, newContent: string) => {
     editMessageAndResend(msgId, newContent);
   }, [editMessageAndResend]);
@@ -610,33 +604,23 @@ export default function ChatPage() {
               </button>
             </div>
 
-            {/* 输入框 */}
-            <div className={`rounded-2xl border border-border/60 bg-slate-800/80 p-2.5 transition-colors duration-200 focus-within:border-indigo-500/60 ${isReadOnly ? "opacity-50" : ""}`}>
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
-                aria-label="聊天消息输入"
-                placeholder={
-                  isReadOnly
-                    ? "该会话已结束，无法发送消息"
-                    : !hasConfiguredModel
-                      ? "请先在模型设置中添加供应商和模型"
-                    : isViewingOther
-                      ? `向会话 ${viewingSessionId} 发消息... (Shift+Enter 换行)`
-                      : "输入消息... (Shift+Enter 换行)"
-                }
-                rows={1}
-                disabled={!canSend && !isStreamingForCurrentView}
-                className="max-h-32 min-h-12 w-full resize-none rounded-lg border-none bg-transparent px-2 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-indigo-500/30 disabled:cursor-not-allowed"
-              />
-              <div className="mt-1 flex min-h-10 items-center justify-end gap-2">
-                {showModelSwitcher ? (
+            <ConversationComposer
+              sessionId={targetSessionId}
+              onSendMessage={sendMessage}
+              onAbort={handleStop}
+              isStreaming={isStreamingForCurrentView}
+              editable={canSend || isStreamingForCurrentView}
+              sendEnabled={canSend}
+              placeholder={
+                isReadOnly
+                  ? "该会话已结束，无法发送消息"
+                  : !hasConfiguredModel
+                    ? "请先在模型设置中添加供应商和模型"
+                  : isViewingOther
+                    ? `向会话 ${viewingSessionId} 发消息... (Shift+Enter 换行)`
+                    : "输入消息... (Shift+Enter 换行)"
+              }
+              trailingControls={showModelSwitcher ? (
                   <ModelSwitcher
                     sessionId={targetSessionId}
                     session={viewingSession}
@@ -661,35 +645,8 @@ export default function ChatPage() {
                       window.dispatchEvent(new PopStateEvent("popstate"));
                     }}
                   />
-                ) : null}
-                {/* 发送/中止按钮 */}
-                {isStreamingForCurrentView ? (
-                  <button
-                    type="button"
-                    onClick={handleStop}
-                    title="中止输出"
-                    aria-label="中止输出"
-                    className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/20 text-red-400 transition-colors duration-200 hover:bg-red-500/40"
-                  >
-                    <Square size={17} className="fill-current" aria-hidden="true" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleSend}
-                    disabled={!input.trim() || !canSend}
-                    aria-label="发送消息"
-                    className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200 ${
-                      input.trim() && canSend
-                        ? "bg-indigo-500 text-white hover:bg-indigo-400"
-                        : "cursor-not-allowed bg-slate-700 text-muted-foreground"
-                    }`}
-                  >
-                    <Send size={17} aria-hidden="true" />
-                  </button>
-                )}
-              </div>
-            </div>
+              ) : null}
+            />
             {!connected && targetSessionId && phase !== "loading" && (
               <div className="text-center text-red-400 text-xs mt-2" role="alert" aria-live="polite">WebSocket 未连接，请检查后端服务</div>
             )}

@@ -5,6 +5,8 @@ export type {
 } from "./ConversationAsyncState";
 export { default as ConversationTimeline } from "./ConversationTimeline";
 export type { ConversationTimelineProps } from "./ConversationTimeline";
+export { default as ConversationComposer } from "./ConversationComposer";
+export type { ConversationComposerProps } from "./ConversationComposer";
 export { default as MarkdownContent } from "./MarkdownContent";
 export type { MarkdownContentProps } from "./MarkdownContent";
 export { default as MessageBubble } from "./MessageBubble";

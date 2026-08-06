@@ -4,6 +4,16 @@
 @tailwind components;
 @tailwind utilities;
 
+.conversation-composer-editor:empty::before {
+  color: hsl(var(--muted-foreground));
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.conversation-composer-editor:focus-visible {
+  box-shadow: none;
+}
+
 @layer base {
   :root {
     --background: 222.2 84% 4.9%;

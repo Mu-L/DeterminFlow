@@ -524,6 +524,22 @@ export async function fetchWorkspaceFile(sessionId: string, path: string) {
   );
 }
 
+export async function uploadWorkspaceAttachment(sessionId: string, file: File) {
+  return request<{
+    name: string;
+    relative_path: string;
+    absolute_path: string;
+    size: number;
+  }>(
+    `/workspace/${encodeURIComponent(sessionId)}/attachments?filename=${encodeURIComponent(file.name)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    },
+  );
+}
+
 // ============ Sections 配置 API ============
 
 export async function updateSection(name: string, updates: Partial<import("../types").PromptSectionData>) {

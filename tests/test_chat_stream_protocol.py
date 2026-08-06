@@ -294,10 +294,18 @@ def test_send_message_uses_registered_default_stream_callback():
     async def callback(event: dict):
         received.append(event)
 
-    async def invoke_graph(content, event_callback, max_rounds, source, source_name):
+    async def invoke_graph(
+        content,
+        event_callback,
+        max_rounds,
+        source,
+        source_name,
+        attachments,
+    ):
         assert content == "repair JSON"
         assert max_rounds == 1
         assert source == "workflow_json_retry"
+        assert attachments is None
         await event_callback({"type": "stream_start"})
         await event_callback({"type": "token", "content": "{}"})
         return "{}"
@@ -316,6 +324,57 @@ def test_send_message_uses_registered_default_stream_callback():
 
     assert asyncio.run(scenario()) == "{}"
     assert [event["type"] for event in received] == ["stream_start", "token"]
+
+
+def test_message_attachment_metadata_is_validated_against_absolute_path_content():
+    path = "/private/tmp/workspaces/session/attachments/report final.md"
+    assert ws_handlers._validate_message_attachments(
+        [{"name": "report final.md", "absolute_path": path}],
+        f"检查 {path}",
+    ) == [{"name": "report final.md", "absolute_path": path}]
+
+    invalid_cases = [
+        ([{"name": "report.md", "absolute_path": "relative/report.md"}], "relative/report.md"),
+        ([{"name": "report.md", "absolute_path": "/tmp/report.md"}], "正文没有该路径"),
+        ({"name": "report.md", "absolute_path": "/tmp/report.md"}, "/tmp/report.md"),
+    ]
+    for attachments, content in invalid_cases:
+        try:
+            ws_handlers._validate_message_attachments(attachments, content)
+        except ValueError:
+            continue
+        raise AssertionError("invalid attachment metadata should be rejected")
+
+
+def test_sent_attachment_metadata_is_ui_only_and_persisted_in_history():
+    async def scenario():
+        session = AgentSession(session_type="sub", agent_type="test")
+        session.compiled_graph = _EventGraph([])
+
+        async def no_save():
+            return None
+
+        async def no_compress(*_args, **_kwargs):
+            return None
+
+        session.async_save = no_save
+        session._check_and_compress_messages = no_compress
+        path = "/Users/me/Documents/report final.md"
+        await session.send_message(
+            f"检查 {path}",
+            max_rounds=1,
+            attachments=[{"name": "report final.md", "absolute_path": path}],
+        )
+        return session
+
+    session = asyncio.run(scenario())
+    assert session.record[0]["attachments"] == [
+        {
+            "name": "report final.md",
+            "absolute_path": "/Users/me/Documents/report final.md",
+        },
+    ]
+    assert "attachments" not in session.lc_messages[0].additional_kwargs
 
 
 def test_reused_tool_index_starts_a_new_snapshot_segment():

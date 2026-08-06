@@ -85,6 +85,11 @@ export interface CompressionEventData {
   compressed_count: number;
 }
 
+export interface MessageAttachment {
+  name: string;
+  absolute_path: string;
+}
+
 export interface Message {
   id?: string;             // 递增消息 ID（"msg_00001"）
   type?: string;           // 路由字段：user/assistant/tool/compression_divider/plan_progress 等
@@ -100,6 +105,7 @@ export interface Message {
   event?: CompressionEventData;  // 压缩事件（新格式，与 type="compression_divider" 搭配）
   strategy?: string;       // 压缩策略（"full" / "micro" / "reactive"，消息级别字段）
   injection_meta?: InjectionMeta[];  // 用户消息注入元信息
+  attachments?: MessageAttachment[]; // UI 附件元数据；正文仍保留发给 LLM 的绝对路径
   // Recursion Limit 相关字段
   tool_rounds?: number;              // recursion_limit_reached: 已执行工具轮数
   limit?: number;                    // recursion_limit_reached: 递归上限值

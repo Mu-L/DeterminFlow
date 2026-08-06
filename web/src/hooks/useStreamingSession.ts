@@ -9,7 +9,7 @@ import type {
   ConversationPhase,
 } from "../features/conversation/conversationTypes";
 import { abortSession } from "../lib/api";
-import type { Message, StreamingSegment } from "../types";
+import type { Message, MessageAttachment, StreamingSegment } from "../types";
 
 export type { StreamingSegment } from "../types";
 
@@ -26,7 +26,7 @@ export interface UseStreamingSessionReturn {
   isStreaming: boolean;
   connected: boolean;
   error: string | null;
-  sendMessage: (content: string) => boolean;
+  sendMessage: (content: string, attachments?: MessageAttachment[]) => boolean;
   retry: () => boolean;
   abortStream: () => Promise<void>;
 }

@@ -1027,6 +1027,8 @@ class AgentSession:
 
         source_name: str = "",
 
+        attachments: list[dict[str, str]] | None = None,
+
     ) -> str:
 
         """
@@ -1054,7 +1056,14 @@ class AgentSession:
         callback = event_callback or self._default_event_callback
         async with self._invocation_scope():
 
-            return await self._invoke_graph(content, callback, max_rounds, source, source_name)
+            return await self._invoke_graph(
+                content,
+                callback,
+                max_rounds,
+                source,
+                source_name,
+                attachments,
+            )
 
 
 
@@ -1099,6 +1108,16 @@ class AgentSession:
             if target_idx is None:
                 raise ValueError(f"未找到 ID 为 {message_id} 的用户消息")
 
+            original_attachments = self.record[target_idx].get("attachments")
+            retained_attachments = [
+                dict(attachment)
+                for attachment in original_attachments
+                if isinstance(attachment, dict)
+                and isinstance(attachment.get("name"), str)
+                and isinstance(attachment.get("absolute_path"), str)
+                and attachment["absolute_path"] in new_content
+            ] if isinstance(original_attachments, list) else []
+
             # ---- 2. 对齐 lc_messages：统计 record 中到目标为止的 user 消息数 ----
             user_count = sum(1 for m in self.record[:target_idx + 1] if m.get("type") == "user")
 
@@ -1131,7 +1150,12 @@ class AgentSession:
             await self.async_save()
 
             # ---- 4. 重新执行 graph（_invoke_graph 内部会追加新 HumanMessage + record 条目） ----
-            return await self._invoke_graph(new_content, callback, max_rounds=None)
+            return await self._invoke_graph(
+                new_content,
+                callback,
+                max_rounds=None,
+                attachments=retained_attachments,
+            )
 
     async def compress(self) -> dict:
         """
@@ -1223,6 +1247,8 @@ class AgentSession:
 
         source_name: str = "",
 
+        attachments: list[dict[str, str]] | None = None,
+
     ) -> str:
 
         """内部：执行一轮 graph invoke。"""
@@ -1300,6 +1326,10 @@ class AgentSession:
         if source != "human":
 
             add_extra["source"] = source
+
+        if attachments:
+
+            add_extra["attachments"] = deepcopy(attachments)
 
         # 序列化消息也附加注入元信息
         if injection_meta:

@@ -19,6 +19,45 @@ from src.core.utils import is_visible_to_frontend
 
 logger = logging.getLogger(__name__)
 
+_MAX_MESSAGE_ATTACHMENTS = 64
+_MAX_ATTACHMENT_NAME_LENGTH = 255
+_MAX_ATTACHMENT_PATH_LENGTH = 4096
+
+
+def _validate_message_attachments(raw_attachments, content: str) -> list[dict[str, str]]:
+    """校验 UI 附件元数据；正文中的绝对路径仍是 LLM 的唯一输入。"""
+    if raw_attachments is None:
+        return []
+    if not isinstance(raw_attachments, list):
+        raise ValueError("attachments 必须是数组")
+    if len(raw_attachments) > _MAX_MESSAGE_ATTACHMENTS:
+        raise ValueError(f"单条消息最多包含 {_MAX_MESSAGE_ATTACHMENTS} 个文件")
+
+    attachments: list[dict[str, str]] = []
+    for raw_attachment in raw_attachments:
+        if not isinstance(raw_attachment, dict):
+            raise ValueError("附件信息格式无效")
+        name = raw_attachment.get("name")
+        path = raw_attachment.get("absolute_path")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("附件名称无效")
+        if not isinstance(path, str) or not path:
+            raise ValueError("附件路径无效")
+        if len(name) > _MAX_ATTACHMENT_NAME_LENGTH:
+            raise ValueError("附件名称过长")
+        if len(path) > _MAX_ATTACHMENT_PATH_LENGTH:
+            raise ValueError("附件路径过长")
+        is_absolute = path.startswith("/") or (
+            len(path) >= 3
+            and path[0].isalpha()
+            and path[1] == ":"
+            and path[2] in ("/", "\\")
+        )
+        if not is_absolute or path not in content:
+            raise ValueError("附件绝对路径必须存在于消息正文中")
+        attachments.append({"name": name, "absolute_path": path})
+    return attachments
+
 
 # ============ 后台消息处理 ============
 
@@ -162,7 +201,12 @@ async def _execute_with_events(session, session_id: str, action_coro, action_lab
         await session.async_save()
 
 
-async def _process_session_message(session_mgr, session_id: str, content: str):
+async def _process_session_message(
+    session_mgr,
+    session_id: str,
+    content: str,
+    attachments: list[dict[str, str]] | None = None,
+):
     """后台任务：处理会话消息并通过 event_bus 推送所有事件。"""
     session, err = await _validate_session(session_mgr, session_id, "发送消息")
     if err:
@@ -171,7 +215,12 @@ async def _process_session_message(session_mgr, session_id: str, content: str):
     callback = _make_stream_callback(session_id, session)
     await _execute_with_events(
         session, session_id,
-        session.send_message(content=content, event_callback=callback, source="human"),
+        session.send_message(
+            content=content,
+            event_callback=callback,
+            source="human",
+            attachments=attachments,
+        ),
         action_label="处理消息",
     )
 
@@ -331,6 +380,18 @@ async def handle_chat_ws(ws: WebSocket, app_state):
                 content = raw_content.strip()
                 if not content:
                     continue
+                try:
+                    attachments = _validate_message_attachments(
+                        data.get("attachments"),
+                        content,
+                    )
+                except ValueError as exc:
+                    await _safe_send(ws, {
+                        "type": "error",
+                        "message": str(exc),
+                        "terminal": False,
+                    })
+                    continue
 
                 msg_session_id = requested_session_id or target_session_id
 
@@ -341,14 +402,24 @@ async def handle_chat_ws(ws: WebSocket, app_state):
                         await event_bus.subscribe_session(msg_session_id, ws)
                         subscribed_session_ids.add(msg_session_id)
                     await _spawn_and_track(
-                        _process_session_message(session_mgr, msg_session_id, content)
+                        _process_session_message(
+                            session_mgr,
+                            msg_session_id,
+                            content,
+                            attachments,
+                        )
                     )
                 else:
                     # 向默认主会话发消息（后台异步）
                     main = session_mgr.get_main_session()
                     if main:
                         await _spawn_and_track(
-                            _process_session_message(session_mgr, main.session_id, content)
+                            _process_session_message(
+                                session_mgr,
+                                main.session_id,
+                                content,
+                                attachments,
+                            )
                         )
 
             elif msg_type == "edit_message":

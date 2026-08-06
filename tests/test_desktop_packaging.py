@@ -93,6 +93,17 @@ def test_desktop_update_capability_only_trusts_the_bundled_loopback_ui() -> None
     ]
 
 
+def test_desktop_file_drop_capability_only_trusts_the_bundled_loopback_ui() -> None:
+    capability = json.loads(
+        (REPO_ROOT / "desktop" / "src-tauri" / "capabilities" / "desktop-file-drop.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert capability["windows"] == ["main"]
+    assert capability["remote"]["urls"] == ["http://127.0.0.1:*/*"]
+    assert capability["permissions"] == ["core:event:default"]
+
+
 def test_tauri_release_shell_uses_the_windows_gui_subsystem() -> None:
     main_source = (REPO_ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text(
         encoding="utf-8"
@@ -391,7 +402,7 @@ def test_desktop_versions_are_consistent() -> None:
         encoding="utf-8"
     )
 
-    assert tauri["version"] == "1.0.5"
+    assert tauri["version"] == "1.0.6"
     assert package["version"] == tauri["version"]
     assert f'version = "{tauri["version"]}"' in cargo
 

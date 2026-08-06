@@ -54,3 +54,57 @@ test("legacy content_filter_warning uses the content safety renderer", () => {
   assert.match(html, /请求被安全审查拦截/);
   assert.doesNotMatch(html, /未知消息类型/);
 });
+
+test("historical user attachments render as filename bubbles from metadata", () => {
+  const html = renderToStaticMarkup(createElement(MessageBubble, {
+    message: {
+      id: "user-file-1",
+      type: "user",
+      content: "检查 /Users/me/Documents/report final.md 的内容",
+      attachments: [
+        {
+          name: "report final.md",
+          absolute_path: "/Users/me/Documents/report final.md",
+        },
+      ],
+    },
+    readonly: true,
+  }));
+
+  assert.match(html, /data-message-attachment/);
+  assert.match(html, />report final\.md</);
+  assert.match(html, /title="\/Users\/me\/Documents\/report final\.md"/);
+  assert.doesNotMatch(html, />\/Users\/me\/Documents\/report final\.md</);
+});
+
+test("legacy workspace attachment lines render as bubbles without metadata", () => {
+  const path = "/private/tmp/workspaces/session/attachments/README.en (2).md";
+  const html = renderToStaticMarkup(createElement(MessageBubble, {
+    message: {
+      id: "legacy-file-1",
+      type: "user",
+      content: `${path}\n普通文本 /tmp/not-an-attachment.md`,
+    },
+    readonly: true,
+  }));
+
+  assert.match(html, /data-message-attachment/);
+  assert.match(html, />README\.en \(2\)\.md</);
+  assert.match(html, /普通文本 \/tmp\/not-an-attachment\.md/);
+});
+
+test("legacy inline workspace paths with simple filenames render as bubbles", () => {
+  const path = "/private/tmp/workspaces/session/attachments/README.en.md";
+  const html = renderToStaticMarkup(createElement(MessageBubble, {
+    message: {
+      id: "legacy-file-inline",
+      type: "user",
+      content: `${path} 测试`,
+    },
+    readonly: true,
+  }));
+
+  assert.match(html, /data-message-attachment/);
+  assert.match(html, />README\.en\.md</);
+  assert.match(html, /> 测试</);
+});

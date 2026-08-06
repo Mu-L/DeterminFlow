@@ -8,6 +8,7 @@ import ToolCallCard from "./ToolCallCard";
 import ContentSafetyWarningMsg from "./ContentSafetyWarningMsg";
 import ContentSafetyDiagnosticMsg from "./ContentSafetyDiagnosticMsg";
 import RecursionLimitMsg from "./RecursionLimitMsg";
+import { splitUserMessageAttachments } from "./conversation/messageAttachmentModel";
 
 // ============================================================
 // MessageRenderer — 全类型消息注册表 + 统一路由组件
@@ -46,6 +47,28 @@ function parseUserContent(content: string): { userContent: string; hasInjection:
 
   // 没有标记，返回原始内容
   return { userContent: content, hasInjection: false };
+}
+
+function UserMessageContent({ message, content }: { message: Message; content: string }) {
+  const parts = splitUserMessageAttachments(content, message.attachments);
+  return (
+    <p className="text-sm whitespace-pre-wrap">
+      {parts.map((part, index) => part.type === "text" ? (
+        <span key={`text-${index}`}>{part.value}</span>
+      ) : (
+        <span
+          key={`file-${index}-${part.absolutePath}`}
+          data-message-attachment=""
+          title={part.absolutePath}
+          aria-label={`文件 ${part.name}`}
+          className="mx-1 inline-flex max-w-[min(18rem,75vw)] items-center gap-1 rounded-full border border-indigo-400/35 bg-indigo-500/15 px-2 py-0.5 align-baseline text-xs leading-5 text-indigo-100"
+        >
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-300" aria-hidden="true" />
+          <span className="truncate">{part.name}</span>
+        </span>
+      ))}
+    </p>
+  );
 }
 
 const UserMsg: MsgComponent = ({ message, onEdit, editable, streaming, readonly }) => {
@@ -196,7 +219,7 @@ const UserMsg: MsgComponent = ({ message, onEdit, editable, streaming, readonly 
             </div>
           ) : (
             <div className="px-4 py-3 rounded-2xl rounded-br-md bg-indigo-500/20 border border-indigo-500/30 text-slate-100">
-              <p className="text-sm whitespace-pre-wrap">{userContent}</p>
+              <UserMessageContent message={message} content={userContent} />
             </div>
           )}
 

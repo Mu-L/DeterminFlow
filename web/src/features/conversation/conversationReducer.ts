@@ -448,7 +448,17 @@ export function conversationReducer(
         ...state,
         messages: normalizeMessages([
           ...state.messages.slice(0, targetIndex),
-          { type: "user", content: action.content },
+          {
+            type: "user",
+            content: action.content,
+            ...(state.messages[targetIndex].attachments?.length
+              ? {
+                  attachments: state.messages[targetIndex].attachments?.filter(
+                    (attachment) => action.content.includes(attachment.absolute_path),
+                  ),
+                }
+              : {}),
+          },
         ]),
       };
     }

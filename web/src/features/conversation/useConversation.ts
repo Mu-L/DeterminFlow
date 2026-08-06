@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer } from "react";
 
 import { useWebSocket } from "../../hooks/useWebSocket";
-import type { Message } from "../../types";
+import type { Message, MessageAttachment } from "../../types";
 import {
   conversationReducer,
   createConversationState,
@@ -18,7 +18,7 @@ export interface UseConversationOptions {
 
 export interface UseConversationResult extends ConversationState {
   /** Returns false without mutating local history when the socket is unavailable. */
-  sendMessage: (content: string) => boolean;
+  sendMessage: (content: string, attachments?: MessageAttachment[]) => boolean;
   sendCommand: (payload: { type: string; [key: string]: unknown }) => boolean;
   editMessageAndResend: (messageId: string, content: string) => boolean;
   resync: () => boolean;
@@ -98,7 +98,7 @@ export function useConversation({
   ]);
 
   const sendMessage = useCallback(
-    (content: string): boolean => {
+    (content: string, attachments?: MessageAttachment[]): boolean => {
       const normalizedContent = content.trim();
       if (
         !sessionId ||
@@ -111,12 +111,17 @@ export function useConversation({
       const sent = sendCommand({
         type: "message",
         content: normalizedContent,
+        ...(attachments?.length ? { attachments } : {}),
       });
       if (!sent) return false;
       dispatch({
         type: "append_optimistic_message",
         sessionId,
-        message: { type: "user", content: normalizedContent },
+        message: {
+          type: "user",
+          content: normalizedContent,
+          ...(attachments?.length ? { attachments } : {}),
+        },
       });
       return true;
     },
