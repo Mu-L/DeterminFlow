@@ -12,6 +12,7 @@ import src.workflow.manager as workflow_manager_module
 from src.agent.session import AgentSession
 from src.agent.session_manager import SessionManager
 from src.workflow.definition import WorkflowDef
+from src.workflow.engine import WorkflowEngine
 from src.workflow.manager import WorkflowManager
 from src.workflow.runtime_models import WorkflowTask
 
@@ -270,6 +271,113 @@ def test_terminal_task_is_saved_before_session_release(tmp_path, monkeypatch):
     )
 
     assert observations == ["completed"]
+
+
+@pytest.mark.parametrize("uses_pre_created_session", [False, True])
+def test_successful_task_is_not_relabelled_when_terminal_save_fails(
+    tmp_path,
+    monkeypatch,
+    uses_pre_created_session,
+):
+    workflows_dir = tmp_path / "workflows"
+    monkeypatch.setattr(workflow_manager_module, "WORKFLOWS_DIR", workflows_dir)
+    released: list[str] = []
+
+    class RecordingSessionManager:
+        sessions: dict = {}
+
+        async def release_workflow_task_sessions(self, _workflow_id: str, task_id: str):
+            released.append(task_id)
+            return {"matched": 1, "released": 1, "retained": 0}
+
+    manager = WorkflowManager(RecordingSessionManager())
+    task = WorkflowTask(
+        workflow_id="wf-script",
+        task_id="task-script",
+        status="running",
+    )
+
+    class CompletedEngine:
+        async def execute_task(self, _definition, current, *args, **kwargs):
+            current.status = "completed"
+            return current
+
+    manager._engine = CompletedEngine()
+
+    def fail_save(_task):
+        raise OSError("temporary file contention")
+
+    monkeypatch.setattr(manager, "_save_task", fail_save)
+    if uses_pre_created_session:
+        run = manager._run_task_with_session(
+            task.workflow_id,
+            task.task_id,
+            WorkflowDef(workflow_id=task.workflow_id),
+            task,
+            "workflow-main",
+        )
+    else:
+        run = manager._run_task_coroutine(
+            task.workflow_id,
+            task.task_id,
+            WorkflowDef(workflow_id=task.workflow_id),
+            task,
+            None,
+        )
+    asyncio.run(run)
+
+    assert task.status == "completed"
+    assert released == []
+
+
+def test_run_artifact_save_failures_do_not_relabel_successful_task(
+    tmp_path,
+    monkeypatch,
+):
+    class FailingWorkflowMain:
+        status = "running"
+
+        async def async_save(self):
+            raise OSError("session file busy")
+
+    session_manager = type(
+        "SessionManagerStub",
+        (),
+        {"sessions": {"workflow-main": FailingWorkflowMain()}},
+    )()
+    engine = WorkflowEngine(session_manager)
+    engine.set_workspace_manager(
+        type(
+            "WorkspaceManagerStub",
+            (),
+            {
+                "resolve_workflow_workspace": staticmethod(
+                    lambda _workflow_id, override=None: tmp_path
+                )
+            },
+        )()
+    )
+    run_record_attempts: list[str] = []
+
+    def fail_run_record(_workflow_id, record):
+        run_record_attempts.append(record.status)
+        raise OSError("run record file busy")
+
+    monkeypatch.setattr(engine, "_save_run_record", fail_run_record)
+    task = WorkflowTask(
+        workflow_id="wf-script",
+        task_id="task-script",
+        status="running",
+    )
+
+    result = asyncio.run(engine.execute_task(
+        WorkflowDef(workflow_id=task.workflow_id),
+        task,
+        pre_created_session_id="workflow-main",
+    ))
+
+    assert result.status == "completed"
+    assert run_record_attempts == ["completed"]
 
 
 def test_retry_waiting_task_keeps_runtime_sessions():

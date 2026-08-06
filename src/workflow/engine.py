@@ -152,10 +152,11 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
             logger.exception(f"工作流 {definition.workflow_id} 执行异常: {e}")
 
         state.completed_at = _now_iso()
-        if wf_main_id in self._session_manager.sessions:
-            self._session_manager.sessions[wf_main_id].status = "completed"
-            await self._session_manager.sessions[wf_main_id].async_save()
-        self._save_run_record(definition.workflow_id, run_record)
+        await self._finalize_run_artifacts(
+            definition.workflow_id,
+            wf_main_id,
+            run_record,
+        )
         return state
 
     async def execute_task(self, definition: WorkflowDef, task: WorkflowTask,
@@ -357,11 +358,48 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
             self._push_wf_task_update(definition.workflow_id, task)
 
         task.completed_at = None if task.status == "retry_waiting" else _now_iso()
-        if wf_main_id in self._session_manager.sessions:
-            self._session_manager.sessions[wf_main_id].status = "completed"
-            await self._session_manager.sessions[wf_main_id].async_save()
-        self._save_run_record(definition.workflow_id, run_record)
+        await self._finalize_run_artifacts(
+            definition.workflow_id,
+            wf_main_id,
+            run_record,
+        )
         return task
+
+    async def _finalize_run_artifacts(
+        self,
+        workflow_id: str,
+        workflow_main_id: str,
+        run_record: WorkflowRunRecord,
+    ) -> None:
+        """Best-effort persistence for artifacts outside the execution result.
+
+        Node/task status is the business execution result. A session or run-record
+        write failure must remain an infrastructure error instead of rewriting an
+        already successful execution to ``failed``.
+        """
+        workflow_main = self._session_manager.sessions.get(workflow_main_id)
+        if workflow_main is not None:
+            workflow_main.status = "completed"
+            try:
+                await workflow_main.async_save()
+            except Exception:
+                logger.exception(
+                    "Workflow Main Session 收尾持久化失败，保留实际执行终态: "
+                    "workflow=%s session=%s",
+                    workflow_id,
+                    workflow_main_id,
+                )
+
+        try:
+            self._save_run_record(workflow_id, run_record)
+        except Exception:
+            logger.exception(
+                "Workflow Run 记录持久化失败，保留实际执行终态: "
+                "workflow=%s run=%s status=%s",
+                workflow_id,
+                run_record.run_id,
+                run_record.status,
+            )
 
     def _do_save_task_state(
         self,

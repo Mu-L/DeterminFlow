@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -765,9 +766,6 @@ class WorkflowManager(
                 task,
                 from_node_id,
             )
-            self._save_task(result_task)
-            self._push_task_update(workflow_id, result_task)
-            await self._release_terminal_task_sessions(result_task)
         except asyncio.CancelledError:
             task.status = "stopped"
             task.completed_at = _now_iso()
@@ -782,10 +780,50 @@ class WorkflowManager(
             self._save_task(task)
             self._push_task_update(workflow_id, task)
             await self._release_terminal_task_sessions(task)
+        else:
+            await self._persist_execution_result(workflow_id, result_task)
         finally:
             self._running_tasks.pop(task_id, None)
             if result_task is not None and result_task.status == "retry_waiting":
                 self._schedule_retry_for_task(result_task)
+
+    async def _persist_execution_result(
+        self,
+        workflow_id: str,
+        task: WorkflowTask,
+    ) -> None:
+        """Persist and publish an execution result without changing its meaning."""
+        try:
+            self._save_task(task)
+        except Exception:
+            logger.exception(
+                "任务执行已结束但终态持久化失败，保留实际执行终态: "
+                "workflow=%s task=%s status=%s",
+                workflow_id,
+                task.task_id,
+                task.status,
+            )
+            try:
+                self._push_task_update(workflow_id, task)
+            except Exception:
+                logger.exception(
+                    "任务终态推送失败: workflow=%s task=%s status=%s",
+                    workflow_id,
+                    task.task_id,
+                    task.status,
+                )
+            return
+
+        try:
+            self._push_task_update(workflow_id, task)
+        except Exception:
+            logger.exception(
+                "任务终态推送失败: workflow=%s task=%s status=%s",
+                workflow_id,
+                task.task_id,
+                task.status,
+            )
+        await self._release_terminal_task_sessions(task)
 
     async def _release_terminal_task_sessions(self, task: WorkflowTask) -> None:
         if task.status not in {"completed", "failed", "stopped", "cancelled"}:
@@ -831,12 +869,18 @@ class WorkflowManager(
         task.updated_at = _now_iso()
         task_file = self._get_task_path(task.workflow_id, task.task_id)
         task_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_file = task_file.with_suffix(".tmp")
+        tmp_file = task_file.parent / (
+            f"{task_file.stem}.{uuid.uuid4().hex[:8]}.tmp"
+        )
         try:
             tmp_file.write_text(json.dumps(task.to_dict(), ensure_ascii=False, indent=2), encoding='utf-8')
             tmp_file.replace(task_file)
         except (IOError, OSError):
             logger.exception(f"任务状态持久化失败: {task_file}")
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise
 
     def _push_task_update(self, workflow_id: str, task: WorkflowTask) -> None:
@@ -1051,9 +1095,6 @@ class WorkflowManager(
             result_task = await self._engine.execute_task(
                 definition, task, pre_created_session_id=pre_created_session_id,
             )
-            self._save_task(result_task)
-            self._push_task_update(workflow_id, result_task)
-            await self._release_terminal_task_sessions(result_task)
         except asyncio.CancelledError:
             task.status = "stopped"; task.completed_at = _now_iso(); self._save_task(task)
             self._push_task_update(workflow_id, task)
@@ -1064,6 +1105,8 @@ class WorkflowManager(
             task.status = "failed"; task.completed_at = _now_iso(); self._save_task(task)
             self._push_task_update(workflow_id, task)
             await self._release_terminal_task_sessions(task)
+        else:
+            await self._persist_execution_result(workflow_id, result_task)
         finally:
             self._running_tasks.pop(task_id, None)
             if result_task is not None and result_task.status == "retry_waiting":
