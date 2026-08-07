@@ -28,6 +28,7 @@ from .failure_policy import (
     normalize_node_status,
     record_attempt,
 )
+from .task_persistence import write_task_state_file
 
 if TYPE_CHECKING:
     from src.agent.session_manager import SessionManager
@@ -413,17 +414,10 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
         每个线程写入自己的独占 .tmp 文件，再原子替换目标文件。
         """
         from src.config import WORKFLOWS_DIR
-        import uuid
         tasks_dir = WORKFLOWS_DIR / workflow_id / "tasks"
-        tasks_dir.mkdir(parents=True, exist_ok=True)
         task_file = tasks_dir / f"{task_id}.json"
-        tmp_file = tasks_dir / f"{task_id}.{uuid.uuid4().hex[:8]}.tmp"
         try:
-            tmp_file.write_text(
-                json.dumps(task_data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            tmp_file.replace(task_file)
+            write_task_state_file(task_file, task_data)
         except (IOError, OSError):
             logger.exception(f"任务状态持久化失败: {task_file}")
             raise

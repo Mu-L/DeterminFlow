@@ -16,7 +16,6 @@ import json
 import logging
 import re
 import shutil
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +29,7 @@ from .engine import WorkflowEngine
 from .execution_control import ExecutionControl
 from .main_task_creation import WorkflowMainTaskCreationMixin
 from .task_queries import TaskQueryMixin
+from .task_persistence import write_task_state_file
 from .task_recovery import WorkflowTaskRecoveryMixin
 from .workflow_compat import WorkflowCompatibilityMixin
 from src.core.workspace_manager import WorkspaceManager
@@ -868,19 +868,10 @@ class WorkflowManager(
         """持久化任务状态（原子写入，防崩溃损坏）。"""
         task.updated_at = _now_iso()
         task_file = self._get_task_path(task.workflow_id, task.task_id)
-        task_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_file = task_file.parent / (
-            f"{task_file.stem}.{uuid.uuid4().hex[:8]}.tmp"
-        )
         try:
-            tmp_file.write_text(json.dumps(task.to_dict(), ensure_ascii=False, indent=2), encoding='utf-8')
-            tmp_file.replace(task_file)
+            write_task_state_file(task_file, task.to_dict())
         except (IOError, OSError):
             logger.exception(f"任务状态持久化失败: {task_file}")
-            try:
-                tmp_file.unlink(missing_ok=True)
-            except OSError:
-                pass
             raise
 
     def _push_task_update(self, workflow_id: str, task: WorkflowTask) -> None:
