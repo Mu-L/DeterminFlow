@@ -1,6 +1,6 @@
 [package]
 name = "determinflow-desktop"
-version = "1.0.6"
+version = "1.0.7"
 description = "DeterminFlow Windows desktop shell"
 authors = ["DeterminFlow Contributors"]
 edition = "2021"
