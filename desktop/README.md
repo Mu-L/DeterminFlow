@@ -9,6 +9,7 @@
 | 桌面壳 | Tauri 2 + Windows WebView2 | 创建原生窗口、启动和关闭本地后端 |
 | 后端 | PyInstaller `onedir` | 冻结现有 Python/FastAPI 服务，不要求用户安装 Python |
 | 前端 | 现有 `web/dist` | 由本地 FastAPI 服务提供，入口和服务版一致 |
+| 桌面适配 | `ui/desktop-adapter.js` | 仅由 Tauri 注入，提供错误弹窗和 Provider Key 保存前连通性检查；服务版不加载 |
 | 安装包 | NSIS `currentUser` | 安装到当前用户目录，不申请管理员权限；向导使用正式品牌图 |
 | 更新 | Tauri Updater + GitHub/Gitee Releases | Gitee 优先，失败时回退 GitHub；用户确认后下载签名更新并重启 |
 | 构建 | GitHub Actions `windows-2025` | 在真实 x64 Windows Runner 上生成、安装、启动并卸载验证安装包 |
@@ -57,6 +58,7 @@ python desktop/scripts/build_backend.py
 python desktop/scripts/smoke_backend.py
 python desktop/scripts/verify_bundle.py
 (cd desktop && npm ci)
+(cd desktop && npm test)
 (cd desktop/src-tauri && cargo test)
 ```
 
