@@ -96,9 +96,8 @@ class AgentDefinition:
     model_params: dict | None = None
     """
     模型参数覆盖（可选）。
-    结构：{"thinking_enabled": bool, "reasoning_effort": "high"|"max",
-           "temperature": float, "top_p": float,
-           "stream_chunk_timeout": 正数秒值或 None}
+    这是跨 Provider 的宽松参数字典；当前 Provider Adapter 只领取并映射
+    自己声明支持的字段，其他字段原样保留但不会发往上游 API。
     未设置的字段从 models_config.json 的 default_params 继承。
     None 表示全部使用 defaults。
     """

@@ -429,6 +429,7 @@ class PluginManagement:
         if (
             active_manifest is not None
             and active_manifest.page is not None
+            and active_manifest.page.show_in_details
             and status.get("status") == "running"
         ):
             page_url = (

@@ -1,4 +1,7 @@
-import { Brain, Plus, Trash2, Users } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { AlertTriangle, Brain, Loader2, Plus, Trash2, Users } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import type { RoundtableSummary } from "../../types";
 
 export function InfoRow({ label, value }: { label: string; value: string }) {
   return (
@@ -36,20 +39,11 @@ export function StrategyBadge({ strategy }: { strategy: string }) {
   return <span className="text-xs px-2 py-0.5 rounded bg-slate-500/20 text-slate-400">轮询模式</span>;
 }
 
-interface RoundtableSummary {
-  session_id: string;
-  topic: string;
-  status: string;
-  seat_count: number;
-  created_at: string;
-  strategy: string;
-}
-
 interface EmptyStateProps {
   onShowCreate: () => void;
   roundtables: RoundtableSummary[];
   onSelect: (id: string) => void;
-  onDelete: (id: string) => void;
+  onDelete: (roundtable: RoundtableSummary) => void;
 }
 
 export function EmptyState({ onShowCreate, roundtables, onSelect, onDelete }: EmptyStateProps) {
@@ -102,7 +96,7 @@ export function EmptyState({ onShowCreate, roundtables, onSelect, onDelete }: Em
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onDelete(roundtable.session_id);
+                    onDelete(roundtable);
                   }}
                   aria-label={`删除会议: ${roundtable.topic}`}
                   className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
@@ -114,6 +108,104 @@ export function EmptyState({ onShowCreate, roundtables, onSelect, onDelete }: Em
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+interface DeleteRoundtableDialogProps {
+  roundtable: RoundtableSummary | null;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+export function DeleteRoundtableDialog({
+  roundtable,
+  deleting,
+  onCancel,
+  onConfirm,
+}: DeleteRoundtableDialogProps) {
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!roundtable) return;
+
+    cancelButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !deleting) onCancel();
+      if (event.key !== "Tab" || deleting) return;
+
+      const focusable = [cancelButtonRef.current, confirmButtonRef.current].filter(
+        (element): element is HTMLButtonElement => Boolean(element && !element.disabled),
+      );
+      if (focusable.length === 0) return;
+
+      const currentIndex = focusable.indexOf(document.activeElement as HTMLButtonElement);
+      const nextIndex = event.shiftKey
+        ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
+        : (currentIndex + 1) % focusable.length;
+      event.preventDefault();
+      focusable[nextIndex]?.focus();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [deleting, onCancel, roundtable]);
+
+  if (!roundtable) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !deleting) onCancel();
+      }}
+      role="presentation"
+    >
+      <section
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-roundtable-title"
+        aria-describedby="delete-roundtable-description"
+        className="flex w-full max-w-md flex-col gap-5 rounded-lg border border-border bg-background p-5 shadow-2xl"
+      >
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 shrink-0 text-destructive" aria-hidden="true" />
+          <div className="flex min-w-0 flex-col gap-2">
+            <h2 id="delete-roundtable-title" className="text-base font-semibold text-foreground">
+              删除这场会议？
+            </h2>
+            <p id="delete-roundtable-description" className="text-sm text-muted-foreground">
+              “{roundtable.topic}”的讨论记录和结论将永久删除，无法恢复。
+            </p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-3">
+          <Button
+            ref={cancelButtonRef}
+            type="button"
+            variant="outline"
+            onClick={onCancel}
+            disabled={deleting}
+          >
+            取消
+          </Button>
+          <Button
+            ref={confirmButtonRef}
+            type="button"
+            variant="destructive"
+            onClick={onConfirm}
+            disabled={deleting}
+          >
+            {deleting ? (
+              <Loader2 data-icon="inline-start" className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            ) : (
+              <Trash2 data-icon="inline-start" aria-hidden="true" />
+            )}
+            {deleting ? "正在删除" : "确认删除"}
+          </Button>
+        </div>
+      </section>
     </div>
   );
 }

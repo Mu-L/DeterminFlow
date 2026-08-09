@@ -7,7 +7,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from src.core.default_resources import provision_core_skills
-from src.environment import determinflow_env_is_set, get_determinflow_env
+from src.environment import get_determinflow_env
 
 load_dotenv()
 
@@ -103,6 +103,10 @@ SESSION_HISTORY_MAX_ENTRIES = max(
     0,
     _get_int_config("SESSION_HISTORY_MAX_ENTRIES", 1000),
 )
+DETACHED_SESSION_MAX_CONCURRENT_INVOCATIONS = max(
+    1,
+    _get_int_config("DETACHED_SESSION_MAX_CONCURRENT_INVOCATIONS", 32),
+)
 SESSIONS_DIR = DATA_DIR / "sessions"
 
 # 工作流编排
@@ -132,12 +136,7 @@ LANGGRAPH_RECURSION_LIMIT = _get_int_config("LANGGRAPH_RECURSION_LIMIT", 25)
 
 CODING_TOOLS_ENABLED = _get_bool_config("CODING_TOOLS_ENABLED", True)
 CODING_PATH_SANDBOX_ENABLED = _get_bool_config("CODING_PATH_SANDBOX_ENABLED", False)
-if os.getenv("CODING_WORKSPACE_BASE"):
-    CODING_WORKSPACE_BASE = os.environ["CODING_WORKSPACE_BASE"]
-elif determinflow_env_is_set("DATA_DIR"):
-    CODING_WORKSPACE_BASE = str(DATA_DIR / "workspaces")
-else:
-    CODING_WORKSPACE_BASE = _get_config_value("CODING_WORKSPACE_BASE", "data/workspaces")
+CODING_WORKSPACE_BASE = _get_config_value("CODING_WORKSPACE_BASE", "data/workspaces")
 CODING_CMD_MODE = _get_config_value("CODING_CMD_MODE", "whitelist")
 CODING_CMD_BLACKLIST = _get_config_value("CODING_CMD_BLACKLIST", "rm -rf /,format,mkfs,dd if=")
 CODING_CMD_WHITELIST = _get_config_value("CODING_CMD_WHITELIST", "npm,node,python,pip,git,ls,cat,echo,cd,mkdir,cp,mv")
@@ -177,6 +176,7 @@ CONFIG_ITEMS: list[dict[str, Any]] = [
     {"key": "SUB_AGENT_MAX_ROUNDS", "label": "子 Agent 最大轮次", "group": "agent", "type": "number", "min": 1, "max": 50},
     {"key": "SESSION_CACHE_MAX_ENTRIES", "label": "历史会话内存缓存数", "group": "agent", "type": "number", "min": 1, "max": 512},
     {"key": "SESSION_HISTORY_MAX_ENTRIES", "label": "Workflow 历史会话保留数", "group": "agent", "type": "number", "min": 0, "max": 100000},
+    {"key": "DETACHED_SESSION_MAX_CONCURRENT_INVOCATIONS", "label": "Detached 会话最大并发调用数", "group": "agent", "type": "number", "min": 1, "max": 1000},
     {"key": "AGENT_MESSAGE_HEADER", "label": "Agent 消息标头模板", "group": "agent", "type": "string"},
     # 圆桌
     {"key": "ROUNDTABLE_MAX_SEATS", "label": "最大席位数", "group": "roundtable", "type": "number", "min": 2, "max": 20},

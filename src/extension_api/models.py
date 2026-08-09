@@ -8,7 +8,6 @@ from typing import Any, Protocol, runtime_checkable
 
 from .workflow import WorkflowRuntime
 
-
 EXTENSION_API_VERSION = "1"
 
 
@@ -32,6 +31,15 @@ class ExtensionPage:
     label: str
     static_dir: str
     entrypoint: str = "index.html"
+    show_in_details: bool = True
+
+
+@dataclass(frozen=True)
+class ExtensionHeaderStatus:
+    """A same-origin status source rendered by the generic Core header slot."""
+
+    endpoint: str
+    refresh_endpoint: str = ""
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,7 @@ class ExtensionManifest:
     requirements: str = ""
     settings_schema: str = ""
     page: ExtensionPage | None = None
+    header_status: ExtensionHeaderStatus | None = None
     processes: tuple[ExtensionProcess, ...] = ()
 
 
@@ -65,6 +74,7 @@ class CoreRuntime:
     workflow_runtime: WorkflowRuntime
     tool_registry: Any
     event_publisher: Any
+    session_runtime: Any = None
     services: dict[str, Any] = field(default_factory=dict)
     resource_owner: str = ""
     resource_dependencies: tuple[str, ...] = ()

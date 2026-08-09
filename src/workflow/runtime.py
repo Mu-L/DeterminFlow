@@ -215,6 +215,7 @@ class WorkflowRuntimeFacade:
         workflow_id: str,
         *,
         parameter_values: dict[str, Any] | None = None,
+        node_model_overrides: dict[str, str] | None = None,
         disabled_node_ids: list[str] | None = None,
         workspace_override: str | None = None,
         scheme_id: str | None = None,
@@ -223,6 +224,7 @@ class WorkflowRuntimeFacade:
         return self._manager.create_task(
             workflow_id,
             parameter_values=parameter_values,
+            node_model_overrides=node_model_overrides,
             disabled_node_ids=disabled_node_ids,
             workspace_override=workspace_override,
             scheme_id=scheme_id,

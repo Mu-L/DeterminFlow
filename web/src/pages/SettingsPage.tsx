@@ -387,7 +387,7 @@ export default function SettingsPage() {
               <ModelProviderCard
                 key={providerId}
                 provider={{ id: providerId, ...provider, hyperparameter_values: provider.hyperparameter_values || {} }}
-                schema={schemas[providerId] || null}
+                schemas={schemas}
                 isDefault={providerId === defaultProvider}
                 onUpdate={async (id, updates) => {
                   await updateModelProvider(id, updates);

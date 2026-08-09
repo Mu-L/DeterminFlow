@@ -31,6 +31,12 @@ import {
   removeSeatFromRoundtable,
 } from "../lib/api";
 import type { CreateRoundtableRequest } from "../types";
+import { useToast } from "@/components/ui/use-toast";
+import {
+  getRoundtableErrorDescription,
+  ROUNDTABLE_ACTION_FEEDBACK,
+  type RoundtableAction,
+} from "../lib/roundtableFeedback";
 
 interface StreamingSeat {
   seatId: string;
@@ -81,6 +87,7 @@ const RT_EVENT_TYPES = new Set([
 ]);
 
 export function useRoundtable() {
+  const { toast } = useToast();
   const [urlRoundtableId, setUrlRoundtableId] = useUrlParam("roundtable_id");
   // 列表状态
   const [roundtables, setRoundtables] = useState<RoundtableSummary[]>([]);
@@ -99,6 +106,9 @@ export function useRoundtable() {
   const reloadDetailRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+
+  const [pendingAction, setPendingAction] = useState<RoundtableAction | null>(null);
+  const pendingActionRef = useRef<RoundtableAction | null>(null);
 
   // 讨论记录（实时更新）
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -258,7 +268,13 @@ export function useRoundtable() {
 
       case "rt_start_result": {
         if (!rtEvent.success) {
-          setDetailError(rtEvent.message || "圆桌启动失败，请重试");
+          const message = rtEvent.message || "圆桌启动失败，请重试";
+          setDetailError(message);
+          toast({
+            title: ROUNDTABLE_ACTION_FEEDBACK.start.failureTitle,
+            description: message,
+            variant: "destructive",
+          });
         }
         break;
       }
@@ -355,13 +371,31 @@ export function useRoundtable() {
         break;
       }
 
-      case "rt_inject_result":
+      case "rt_inject_result": {
+        const feedback = ROUNDTABLE_ACTION_FEEDBACK.inject;
+        toast({
+          title: rtEvent.success ? feedback.successTitle : feedback.failureTitle,
+          description: rtEvent.success
+            ? feedback.successDescription
+            : rtEvent.message || feedback.failureDescription,
+          variant: rtEvent.success ? "success" : "destructive",
+        });
+        break;
+      }
+
       case "rt_nominate_result": {
-        // 可选：显示操作反馈
+        const feedback = ROUNDTABLE_ACTION_FEEDBACK.nominate;
+        toast({
+          title: rtEvent.success ? feedback.successTitle : feedback.failureTitle,
+          description: rtEvent.success
+            ? feedback.successDescription
+            : rtEvent.message || feedback.failureDescription,
+          variant: rtEvent.success ? "success" : "destructive",
+        });
         break;
       }
     }
-  }, []);
+  }, [toast]);
 
   // 详情快照加载期间先缓冲实时事件，快照落地后按原顺序重放，避免漏 token。
   const handleMessage = useCallback((data: unknown) => {
@@ -400,6 +434,49 @@ export function useRoundtable() {
   const previousConnectedRef = useRef(false);
 
   // ============ REST API 操作 ============
+
+  const runAction = useCallback(async <T extends { success: boolean; message?: string }>(
+    action: RoundtableAction,
+    operation: () => Promise<T>,
+  ): Promise<T | null> => {
+    if (pendingActionRef.current) return null;
+
+    const feedback = ROUNDTABLE_ACTION_FEEDBACK[action];
+    pendingActionRef.current = action;
+    setPendingAction(action);
+
+    try {
+      const result = await operation();
+      if (!result.success) {
+        toast({
+          title: feedback.failureTitle,
+          description: result.message || feedback.failureDescription,
+          variant: "destructive",
+        });
+        return result;
+      }
+
+      toast({
+        title: feedback.successTitle,
+        description: feedback.successDescription,
+        variant: "success",
+      });
+      return result;
+    } catch (error) {
+      toast({
+        title: feedback.failureTitle,
+        description: getRoundtableErrorDescription(
+          error,
+          feedback.failureDescription,
+        ),
+        variant: "destructive",
+      });
+      return null;
+    } finally {
+      pendingActionRef.current = null;
+      setPendingAction(null);
+    }
+  }, [toast]);
 
   const refreshList = useCallback(async () => {
     try {
@@ -528,79 +605,96 @@ export function useRoundtable() {
   }, [setUrlRoundtableId]);
 
   const handleCreate = useCallback(async (data: CreateRoundtableRequest) => {
-    const result = await createRoundtable(data);
-    if (result.success) {
-      await refreshList();
-      await loadDetail(result.session.session_id);
-    }
-    return result;
-  }, [refreshList, loadDetail]);
+    return await runAction("create", async () => {
+      const result = await createRoundtable(data);
+      if (result.success) {
+        await Promise.all([
+          refreshList(),
+          loadDetail(result.session.session_id),
+        ]);
+      }
+      return result;
+    });
+  }, [refreshList, loadDetail, runAction]);
 
   const handleStart = useCallback(async (sessionId: string) => {
-    const result = await startRoundtable(sessionId);
-    if (result.success) {
-      setIsDiscussing(true);
-      setActiveSession((prev) =>
-        prev ? { ...prev, status: "discussing" } : null
-      );
-    }
-    return result;
-  }, []);
+    return await runAction("start", async () => {
+      const result = await startRoundtable(sessionId);
+      if (result.success) {
+        setIsDiscussing(true);
+        setActiveSession((prev) =>
+          prev ? { ...prev, status: "discussing" } : null
+        );
+      }
+      return result;
+    });
+  }, [runAction]);
 
   const handleStop = useCallback(async (sessionId: string) => {
-    const result = await stopRoundtable(sessionId);
-    if (result.success) {
-      setIsDiscussing(false);
-      setActiveSession((prev) =>
-        prev ? { ...prev, status: "ended" } : null
-      );
-    }
-    return result;
-  }, []);
+    return await runAction("stop", async () => {
+      const result = await stopRoundtable(sessionId);
+      if (result.success) {
+        setIsDiscussing(false);
+        setActiveSession((prev) =>
+          prev ? { ...prev, status: "ended" } : null
+        );
+      }
+      return result;
+    });
+  }, [runAction]);
 
   const handleDelete = useCallback(async (sessionId: string) => {
-    const result = await deleteRoundtable(sessionId);
-    if (result.success) {
-      if (activeSession?.session_id === sessionId) {
-        clearActive();
+    return await runAction("delete", async () => {
+      const result = await deleteRoundtable(sessionId);
+      if (result.success) {
+        if (activeSession?.session_id === sessionId) clearActive();
+        await refreshList();
       }
-      await refreshList();
-    }
-    return result;
-  }, [activeSession, clearActive, refreshList]);
+      return result;
+    });
+  }, [activeSession, clearActive, refreshList, runAction]);
 
   // Phase 3: 暂停/恢复
   const handlePause = useCallback(async (sessionId: string) => {
-    const result = await pauseRoundtable(sessionId);
-    if (result.success) {
-      setIsPaused(true);
-      setActiveSession((prev) =>
-        prev ? { ...prev, status: "paused" } : null
-      );
-    }
-    return result;
-  }, []);
+    return await runAction("pause", async () => {
+      const result = await pauseRoundtable(sessionId);
+      if (result.success) {
+        setIsPaused(true);
+        setActiveSession((prev) =>
+          prev ? { ...prev, status: "paused" } : null
+        );
+      }
+      return result;
+    });
+  }, [runAction]);
 
   const handleResume = useCallback(async (sessionId: string) => {
-    const result = await resumeRoundtable(sessionId);
-    if (result.success) {
-      setIsPaused(false);
-      setActiveSession((prev) =>
-        prev ? { ...prev, status: "discussing" } : null
-      );
-    }
-    return result;
-  }, []);
+    return await runAction("resume", async () => {
+      const result = await resumeRoundtable(sessionId);
+      if (result.success) {
+        setIsPaused(false);
+        setActiveSession((prev) =>
+          prev ? { ...prev, status: "discussing" } : null
+        );
+      }
+      return result;
+    });
+  }, [runAction]);
 
   // Phase 3: 用户插话
   const handleInject = useCallback(async (sessionId: string, content: string) => {
-    return await injectToRoundtable(sessionId, content);
-  }, []);
+    return await runAction("inject", () => injectToRoundtable(sessionId, content));
+  }, [runAction]);
 
   // Phase 3: 点名发言
   const handleNominate = useCallback(async (sessionId: string, targetSeatId?: string, targetName?: string, content?: string) => {
-    return await nominateSpeaker(sessionId, targetSeatId, targetName, content);
-  }, []);
+    return await runAction("nominate", () => nominateSpeaker(
+      sessionId,
+      targetSeatId,
+      targetName,
+      content,
+    ));
+  }, [runAction]);
 
   // Phase 3: 动态添加席位
   const handleAddSeat = useCallback(async (sessionId: string, seatConfig: {
@@ -609,17 +703,23 @@ export function useRoundtable() {
     temperature?: number;
     is_moderator?: boolean;
   }) => {
-    const result = await addSeatToRoundtable(sessionId, seatConfig);
+    const result = await runAction(
+      "addSeat",
+      () => addSeatToRoundtable(sessionId, seatConfig),
+    );
     // seat 添加通过 WS 事件同步
     return result;
-  }, []);
+  }, [runAction]);
 
   // Phase 3: 动态移除席位
   const handleRemoveSeat = useCallback(async (sessionId: string, seatId: string) => {
-    const result = await removeSeatFromRoundtable(sessionId, seatId);
+    const result = await runAction(
+      "removeSeat",
+      () => removeSeatFromRoundtable(sessionId, seatId),
+    );
     // seat 移除通过 WS 事件同步
     return result;
-  }, []);
+  }, [runAction]);
 
   // 初始加载
   useEffect(() => {
@@ -690,5 +790,8 @@ export function useRoundtable() {
 
     // 连接状态
     connected,
+
+    // 操作反馈
+    pendingAction,
   };
 }

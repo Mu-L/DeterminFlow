@@ -20,6 +20,13 @@ function isWorkflowMain(session: Session): boolean {
   return session.type === "main" && (session.task || "").startsWith("Workflow:");
 }
 
+export function canDeleteMainSession(
+  session: Session,
+  activeMainSessionId: string | null,
+): boolean {
+  return session.session_id !== activeMainSessionId;
+}
+
 const AGENT_TYPE_LABELS: Record<string, string> = {
   main: "通用助手",
   coder: "编码助手",
@@ -255,7 +262,7 @@ export default function SessionsPanel({
 
         {groups.map(({ main, subs }) => {
           const isViewing = viewingSessionId === main.session_id;
-          const canDelete = main.session_id !== mainSessionId && main.status !== "running";
+          const canDelete = canDeleteMainSession(main, mainSessionId);
           const canKill = false; // main sessions not killable via this button
           const isCollapsed = collapsedMains.has(main.session_id);
 

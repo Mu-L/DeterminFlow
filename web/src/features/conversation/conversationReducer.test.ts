@@ -137,6 +137,20 @@ test("REST hydration settles loading while preserving later snapshot authority",
   assert.equal(state.revision, 4);
 });
 
+test("REST hydration restores a persisted terminal error without WebSocket", () => {
+  const state = conversationReducer(createConversationState("failed-session"), {
+    type: "replace_messages",
+    sessionId: "failed-session",
+    status: "error",
+    error: "公益模型额度已用完，请稍后再试",
+    messages: [{ type: "assistant", content: "权威历史" }],
+  });
+
+  assert.equal(state.phase, "error");
+  assert.equal(state.error, "公益模型额度已用完，请稍后再试");
+  assert.equal(state.messages[0].content, "权威历史");
+});
+
 test("an unavailable-session snapshot keeps its explicit error", () => {
   let state = createConversationState("missing-session");
   state = dispatchWire(state, {
@@ -150,6 +164,43 @@ test("an unavailable-session snapshot keeps its explicit error", () => {
   });
   assert.equal(state.phase, "error");
   assert.equal(state.error, "未找到会话 missing-session");
+});
+
+test("a terminal snapshot restores its persisted display error", () => {
+  const state = dispatchWire(
+    createConversationState("failed-session"),
+    {
+      type: "snapshot",
+      session_id: "failed-session",
+      status: "error",
+      revision: 7,
+      active_stream: null,
+      messages: [{ id: "msg_00001", type: "assistant", content: "Earlier reply" }],
+      last_error: {
+        code: "quota_exhausted",
+        message: "公益模型额度已用完，请稍后再试",
+        occurred_at: "2026-08-09T12:00:00+00:00",
+      },
+    },
+  );
+
+  assert.equal(state.phase, "error");
+  assert.equal(state.error, "公益模型额度已用完，请稍后再试");
+  assert.equal(state.messages.length, 1);
+});
+
+test("a legacy terminal snapshot without details uses generic copy", () => {
+  const state = dispatchWire(createConversationState("failed-session"), {
+    type: "snapshot",
+    session_id: "failed-session",
+    status: "error",
+    revision: 1,
+    active_stream: null,
+    messages: [],
+  });
+
+  assert.equal(state.phase, "error");
+  assert.equal(state.error, "会话运行失败，请稍后再试");
 });
 
 test("optimistic edit truncates later messages only after the command was accepted", () => {

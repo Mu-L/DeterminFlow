@@ -30,6 +30,10 @@ from .execution_control import ExecutionControl
 from .main_task_creation import WorkflowMainTaskCreationMixin
 from .task_queries import TaskQueryMixin
 from .task_persistence import write_task_state_file
+from .task_overrides import (
+    TaskOverrideValidationError,
+    apply_node_model_overrides,
+)
 from .task_recovery import WorkflowTaskRecoveryMixin
 from .workflow_compat import WorkflowCompatibilityMixin
 from src.core.workspace_manager import WorkspaceManager
@@ -459,6 +463,7 @@ class WorkflowManager(
 
     def create_task(self, workflow_id: str, from_node_id: str | None = None,
                     parameter_values: dict[str, str] | None = None,
+                    node_model_overrides: dict[str, str] | None = None,
                     disabled_node_ids: list[str] | None = None,
                     workspace_override: str | None = None,
                     scheme_id: str | None = None,
@@ -495,11 +500,22 @@ class WorkflowManager(
         default_name = f"{definition.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         def_dict = definition.to_dict()  # 只序列化一次，后续复用
         try:
+            apply_node_model_overrides(
+                def_dict,
+                node_model_overrides,
+            )
             self._freeze_snapshot_definition(
                 workflow_id,
                 def_dict,
                 parameter_values,
             )
+        except TaskOverrideValidationError as exc:
+            logger.info(
+                "Workflow Task 模型覆盖校验失败: workflow=%s code=%s",
+                workflow_id,
+                exc.code,
+            )
+            return exc.to_result()
         except Exception:
             logger.exception(
                 "冻结 Workflow Task 运行身份失败: workflow=%s",
@@ -746,6 +762,91 @@ class WorkflowManager(
 
             logger.info(f"任务已停止: {task_id} (工作流: {workflow_id})")
             return {"success": True, "message": "任务已停止", "task_id": task_id}
+
+    async def delete_tasks_for_main_session(self, main_session_id: str) -> dict:
+        """删除一个 Main 会话所属的全部 Workflow Task。
+
+        会话树删除必须先停止 Task，避免执行协程在会话文件删除后继续写回
+        Workflow Agent 状态。这里不依赖 Workflow 当前是否启用：已持久化的
+        Task 仍属于被删除 Main 的历史，必须一并清理。
+        """
+        tasks = self.list_all_tasks(
+            main_session_id=main_session_id,
+            page_size=100_000,
+        )["tasks"]
+        deleted_task_ids: list[str] = []
+        deleted_tasks: list[dict[str, str]] = []
+
+        for task in tasks:
+            workflow_id = str(task["workflow_id"])
+            task_id = str(task["task_id"])
+            result = await self._delete_task_for_main_session(
+                workflow_id,
+                task_id,
+            )
+            if not result["success"]:
+                return {
+                    "success": False,
+                    "message": result["message"],
+                    "deleted_task_ids": deleted_task_ids,
+                    "deleted_tasks": deleted_tasks,
+                }
+            deleted_task_ids.append(task_id)
+            deleted_tasks.append({"workflow_id": workflow_id, "task_id": task_id})
+
+        return {
+            "success": True,
+            "message": f"已删除 {len(deleted_task_ids)} 个关联工作流任务",
+            "deleted_task_ids": deleted_task_ids,
+            "deleted_tasks": deleted_tasks,
+        }
+
+    async def _delete_task_for_main_session(
+        self,
+        workflow_id: str,
+        task_id: str,
+    ) -> dict:
+        """在 Main 会话级联删除期间停止并移除单个 Task 文件。"""
+        async with self._task_control_lock(task_id):
+            self._cancel_retry_timer(task_id)
+            runner = self._running_tasks.get(task_id)
+            if runner is not None and not runner.done():
+                runner.cancel()
+                try:
+                    await runner
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception(
+                        "停止关联 Workflow Task 失败: workflow=%s task=%s",
+                        workflow_id,
+                        task_id,
+                    )
+                    return {
+                        "success": False,
+                        "message": f"停止关联工作流任务失败: {task_id}",
+                    }
+            self._running_tasks.pop(task_id, None)
+
+            try:
+                self._get_task_path(workflow_id, task_id).unlink(missing_ok=True)
+            except OSError:
+                logger.exception(
+                    "删除关联 Workflow Task 失败: workflow=%s task=%s",
+                    workflow_id,
+                    task_id,
+                )
+                return {
+                    "success": False,
+                    "message": f"删除关联工作流任务失败: {task_id}",
+                }
+
+        logger.info(
+            "关联 Workflow Task 已删除: workflow=%s task=%s",
+            workflow_id,
+            task_id,
+        )
+        return {"success": True, "task_id": task_id}
 
     # ============================================================
     # 内部方法

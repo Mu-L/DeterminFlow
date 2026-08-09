@@ -23,7 +23,9 @@ datas = [
 if bundled_plugins.is_dir():
     datas.append((str(bundled_plugins), "bundled-plugins"))
 for distribution in (
+    "anthropic",
     "fastapi",
+    "langchain-anthropic",
     "langchain-core",
     "langchain-openai",
     "langgraph",
@@ -34,6 +36,8 @@ for distribution in (
     datas += copy_metadata(distribution)
 
 hiddenimports = []
+hiddenimports += collect_submodules("anthropic")
+hiddenimports += collect_submodules("langchain_anthropic")
 hiddenimports += collect_submodules("langchain_core")
 hiddenimports += collect_submodules(
     "langchain_openai",

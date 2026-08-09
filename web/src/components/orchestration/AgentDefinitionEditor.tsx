@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, Plus, Trash2, Bot, Wrench, Eye, Save, Layers, AlertCircle, CheckSquare, Square, FileText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { AgentDefinitionData, ToolInfo, ToolGroup, SkillGroup, RuleGroup } from "../../types";
-import { updateAgentVisibility, getAllModels, getModelProviders } from "../../lib/api";
+import { AgentDefinitionData, ModelParamFieldSchema, ToolInfo, ToolGroup, SkillGroup, RuleGroup } from "../../types";
+import { updateAgentVisibility, getAllModels } from "../../lib/api";
 import { toolGroupLabel, toolGroupColor } from "../../lib/utils-helpers";
 import { useExtensions } from "@/extensions/context-value";
+import ModelParamsEditor from "./ModelParamsEditor";
 
 interface Props {
   agents: AgentDefinitionData[];
@@ -17,7 +18,7 @@ interface Props {
   ruleGroups: RuleGroup[];
   availableTemplates?: string[];
   onSave?: (agentType: string, updates: Partial<AgentDefinitionData>) => Promise<{ success: boolean }>;
-  defaultModelParams?: { thinking_enabled: boolean; reasoning_effort: string; temperature: number; top_p: number; presence_penalty: number; thinking_budget: number | null; response_format: { type: "text" | "json_object" } | null } | null;
+  defaultModelParams?: Record<string, unknown> | null;
 }
 
 /** Local collapsible section for tool whitelist/blacklist */
@@ -57,8 +58,14 @@ export default function AgentDefinitionEditor({
 }: Props) {
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
-  const [availableModels, setAvailableModels] = useState<{ provider_id: string; model_name: string; display_name: string; value: string; category: string }[]>([]);
-  const [providerReasoningEfforts, setProviderReasoningEfforts] = useState<Record<string, string[]>>({});
+  const [availableModels, setAvailableModels] = useState<{
+    provider_id: string;
+    model_name: string;
+    display_name: string;
+    value: string;
+    category: string;
+    model_params: Record<string, ModelParamFieldSchema>;
+  }[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const extensions = useExtensions();
 
@@ -81,17 +88,8 @@ export default function AgentDefinitionEditor({
   useEffect(() => {
     const loadModels = async () => {
       try {
-        const [modelsData, providersData] = await Promise.all([
-          getAllModels(),
-          getModelProviders(),
-        ]);
+        const modelsData = await getAllModels();
         setAvailableModels(modelsData.models || []);
-        setProviderReasoningEfforts(Object.fromEntries(
-          Object.entries(providersData.providers).map(([providerId, provider]) => [
-            providerId,
-            provider.capabilities?.reasoning_efforts || [],
-          ]),
-        ));
       } catch (e) {
         console.error("Failed to load models:", e);
       }
@@ -152,15 +150,7 @@ export default function AgentDefinitionEditor({
         visible_skill_group_ids: null,
         visible_rule_group_ids: null,
         extension_options: null,
-        model_params: defaultModelParams ? {
-          thinking_enabled: defaultModelParams.thinking_enabled,
-          reasoning_effort: defaultModelParams.reasoning_effort,
-          temperature: defaultModelParams.temperature,
-          top_p: defaultModelParams.top_p,
-          presence_penalty: defaultModelParams.presence_penalty,
-          thinking_budget: defaultModelParams.thinking_budget,
-          response_format: defaultModelParams.response_format,
-        } : null,
+        model_params: defaultModelParams ? { ...defaultModelParams } : null,
       },
     ]);
     setExpandedAgent(id);
@@ -169,21 +159,6 @@ export default function AgentDefinitionEditor({
   const removeAgent = (agentType: string) => {
     onAgentsChange(agents.filter((a) => a.agent_type !== agentType));
     if (selectedAgentType === agentType) onSelectAgent(null);
-  };
-
-  // 根据 Agent 当前选择的模型推导 category（ds/gpt/qwen/mimo 等）
-  const getAgentModelCategory = (modelValue: string | null | undefined): string => {
-    if (!modelValue) return "ds"; // 未选模型时，默认按 ds 行为（向后兼容）
-    const model = availableModels.find((m) => m.value === modelValue);
-    return model?.category || "ds";
-  };
-
-  const effortLabels: Record<string, string> = {
-    low: "低",
-    medium: "中",
-    high: "高",
-    max: "极高",
-    xhigh: "极高",
   };
 
   const handleSaveAll = async (agentType: string) => {
@@ -391,285 +366,16 @@ export default function AgentDefinitionEditor({
                       || availableModels[0]?.value
                       || null;
                     const effectiveModel = agent.model || inheritedMainModel;
-                    const category = getAgentModelCategory(effectiveModel);
-                    const isGPT = category === "gpt";
-                    const isQwen = category === "qwen";
-                    const selectedProviderId = effectiveModel?.split(":", 1)[0] || "";
-                    const effortOptions = (providerReasoningEfforts[selectedProviderId] || []).map((effort) => ({
-                      value: effort,
-                      label: effortLabels[effort] || effort,
-                    }));
-                    const showThinkingToggle = !isGPT; // GPT 始终推理，无需开关
-                    const thinkingActive = isGPT || (agent.model_params?.thinking_enabled ?? false);
-
+                    const selectedModel = availableModels.find(
+                      (item) => item.value === effectiveModel,
+                    );
                     return (
-                      <div className="border-t border-border/30 pt-3">
-                        <div className="mb-2">
-                          <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1">
-                            <Bot size={12} className="text-indigo-500" aria-hidden="true" />
-                            模型参数
-                          </h4>
-                        </div>
-                        <p className="text-xs text-muted-foreground/70 mb-2">
-                          {isGPT
-                            ? "GPT 模型始终启用推理。reasoning_effort 控制推理深度。"
-                            : "覆盖此 Agent 的 temperature / top_p / presence_penalty / thinking_budget / reasoning_effort。未设置的字段使用 models_config.json 中的全局默认值。"}
-                        </p>
-
-                        {/* Thinking 开关（GPT 不显示） */}
-                        {showThinkingToggle && (
-                          <div className="flex items-center justify-between mb-3">
-                            <div>
-                              <label id={`thinking-label-${agent.agent_type}`} className="text-xs text-slate-300">思考模式 (thinking)</label>
-                              <p className="text-xs text-muted-foreground/60">
-                                {isQwen ? "开启后使用 enable_thinking 启用思考" : "开启后 temperature / top_p 将被 API 忽略"}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={agent.model_params?.thinking_enabled ?? false}
-                              aria-labelledby={`thinking-label-${agent.agent_type}`}
-                              onClick={() => {
-                                const current = agent.model_params || {};
-                                updateAgent(agent.agent_type, {
-                                  model_params: { ...current, thinking_enabled: !current.thinking_enabled },
-                                });
-                              }}
-                              className={`relative w-10 h-5 rounded-full transition-all duration-300 border cursor-pointer ${
-                                (agent.model_params?.thinking_enabled ?? false)
-                                  ? "bg-amber-500/30 border-amber-500/50"
-                                  : "bg-slate-800 border-slate-600"
-                              }`}
-                            >
-                              <span
-                                className={`absolute top-0.5 w-4 h-4 rounded-full transition-all duration-300 ${
-                                  (agent.model_params?.thinking_enabled ?? false)
-                                    ? "left-5 bg-amber-500"
-                                    : "left-0.5 bg-slate-500"
-                                }`}
-                              />
-                            </button>
-                          </div>
-                        )}
-
-                        {/* Reasoning Effort */}
-                        {thinkingActive && effortOptions.length > 0 && (
-                          <div className="mb-3">
-                            <label htmlFor={`effort-${agent.agent_type}`} className="text-xs text-muted-foreground mb-1 block">
-                              思考力度 (reasoning_effort)
-                              {isGPT && <span className="text-indigo-400/70 ml-1">[GPT 始终推理]</span>}
-                            </label>
-                            <select
-                              id={`effort-${agent.agent_type}`}
-                              value={agent.model_params?.reasoning_effort || effortOptions[0]?.value || "high"}
-                              onChange={(e) => {
-                                const current = agent.model_params || {};
-                                updateAgent(agent.agent_type, {
-                                  model_params: { ...current, reasoning_effort: e.target.value },
-                                });
-                              }}
-                              className="w-full bg-slate-800/60 border border-border/50 rounded-md px-2 py-1.5 text-xs text-slate-300 outline-none focus:border-indigo-500/50 cursor-pointer"
-                            >
-                              {effortOptions.map((opt) => (
-                                <option key={opt.value} value={opt.value}>{opt.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-
-                        {/* Temperature */}
-                        <div className="mb-3">
-                          <div className="flex items-center justify-between mb-1">
-                            <label className={`text-xs ${(thinkingActive && !isGPT) ? "text-muted-foreground/50" : "text-muted-foreground"}`}>
-                              温度 (temperature)
-                              {(thinkingActive && !isGPT) && (
-                                <span className="text-amber-500/70 ml-1">[thinking 开启时忽略]</span>
-                              )}
-                            </label>
-                            <span className="text-xs text-muted-foreground">
-                              {agent.model_params?.temperature ?? "默认"}
-                            </span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={2}
-                            step={0.1}
-                            value={agent.model_params?.temperature ?? 0.7}
-                            disabled={thinkingActive && !isGPT}
-                            aria-valuemin={0}
-                            aria-valuemax={2}
-                            aria-valuenow={agent.model_params?.temperature ?? 0.7}
-                            aria-label={`温度: ${agent.model_params?.temperature ?? "默认"}`}
-                            onChange={(e) => {
-                              const current = agent.model_params || {};
-                              updateAgent(agent.agent_type, {
-                                model_params: { ...current, temperature: parseFloat(e.target.value) },
-                              });
-                            }}
-                            className={`w-full h-1.5 rounded-full appearance-none bg-slate-800 outline-none
-                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5
-                              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500 [&::-webkit-slider-thumb]:cursor-pointer
-                              ${(thinkingActive && !isGPT) ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}`}
-                          />
-                          <div className="flex justify-between mt-0.5">
-                            <span className="text-xs text-muted-foreground/40">0</span>
-                            <span className="text-xs text-muted-foreground/40">2</span>
-                          </div>
-                        </div>
-
-                        {/* Top P */}
-                        <div>
-                          <div className="flex items-center justify-between mb-1">
-                            <label className={`text-xs ${(thinkingActive && !isGPT) ? "text-muted-foreground/50" : "text-muted-foreground"}`}>
-                              Top P
-                              {(thinkingActive && !isGPT) && (
-                                <span className="text-amber-500/70 ml-1">[thinking 开启时忽略]</span>
-                              )}
-                            </label>
-                            <span className="text-xs text-muted-foreground">
-                              {agent.model_params?.top_p ?? "默认"}
-                            </span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1}
-                            step={0.05}
-                            value={agent.model_params?.top_p ?? 1.0}
-                            disabled={thinkingActive && !isGPT}
-                            aria-valuemin={0}
-                            aria-valuemax={1}
-                            aria-valuenow={agent.model_params?.top_p ?? 1.0}
-                            aria-label={`Top P: ${agent.model_params?.top_p ?? "默认"}`}
-                            onChange={(e) => {
-                              const current = agent.model_params || {};
-                              updateAgent(agent.agent_type, {
-                                model_params: { ...current, top_p: parseFloat(e.target.value) },
-                              });
-                            }}
-                            className={`w-full h-1.5 rounded-full appearance-none bg-slate-800 outline-none
-                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5
-                              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500 [&::-webkit-slider-thumb]:cursor-pointer
-                              ${(thinkingActive && !isGPT) ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}`}
-                          />
-                          <div className="flex justify-between mt-0.5">
-                            <span className="text-xs text-muted-foreground/40">0</span>
-                            <span className="text-xs text-muted-foreground/40">1</span>
-                          </div>
-                        </div>
-
-                        {/* Presence Penalty */}
-                        <div className="mb-3 mt-3 pt-3 border-t border-border/20">
-                          <div className="flex items-center justify-between mb-1">
-                            <label className="text-xs text-muted-foreground">存在惩罚 (presence_penalty)</label>
-                            <span className="text-xs text-muted-foreground">
-                              {agent.model_params?.presence_penalty ?? "默认"}
-                            </span>
-                          </div>
-                          <input
-                            type="range"
-                            min={-2}
-                            max={2}
-                            step={0.1}
-                            value={agent.model_params?.presence_penalty ?? 0.0}
-                            aria-valuemin={-2}
-                            aria-valuemax={2}
-                            aria-valuenow={agent.model_params?.presence_penalty ?? 0.0}
-                            aria-label={`存在惩罚: ${agent.model_params?.presence_penalty ?? "默认"}`}
-                            onChange={(e) => {
-                              const current = agent.model_params || {};
-                              updateAgent(agent.agent_type, {
-                                model_params: { ...current, presence_penalty: parseFloat(e.target.value) },
-                              });
-                            }}
-                            className="w-full h-1.5 rounded-full appearance-none bg-slate-800 outline-none cursor-pointer
-                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5
-                              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500 [&::-webkit-slider-thumb]:cursor-pointer"
-                          />
-                          <div className="flex justify-between mt-0.5">
-                            <span className="text-xs text-muted-foreground/40">-2.0</span>
-                            <span className="text-xs text-muted-foreground/40">2.0</span>
-                          </div>
-                          <p className="text-xs text-muted-foreground/50 mt-0.5">
-                            正值减少重复，负值增加重复。创意写作建议调高
-                          </p>
-                        </div>
-
-                        {/* Thinking Budget（仅 Qwen thinking 开启时显示） */}
-                        {isQwen && (agent.model_params?.thinking_enabled ?? false) && (
-                          <div className="mb-3">
-                            <label htmlFor={`budget-${agent.agent_type}`} className="text-xs text-muted-foreground mb-1 block">
-                              思考 Token 上限 (thinking_budget)
-                            </label>
-                            <input
-                              id={`budget-${agent.agent_type}`}
-                              type="number"
-                              min={1}
-                              max={131072}
-                              step={100}
-                              placeholder="不限制"
-                              value={agent.model_params?.thinking_budget ?? ""}
-                              onChange={(e) => {
-                                const current = agent.model_params || {};
-                                const val = e.target.value ? parseInt(e.target.value, 10) : null;
-                                updateAgent(agent.agent_type, {
-                                  model_params: { ...current, thinking_budget: val },
-                                });
-                              }}
-                              className="w-full bg-slate-800/60 border border-border/50 rounded-md px-2 py-1.5 text-xs text-slate-300 outline-none focus:border-indigo-500/50"
-                            />
-                            <p className="text-xs text-muted-foreground/50 mt-0.5">
-                              限制思考过程的最大 Token 数（仅 Qwen 类模型生效），留空则不限制
-                            </p>
-                          </div>
-                        )}
-
-                        {/* Response Format (JSON Mode) */}
-                        <div className="mt-3 pt-3 border-t border-border/20">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <label className="text-xs text-slate-300">JSON 输出模式 (response_format)</label>
-                              <p className="text-xs text-muted-foreground/60">
-                                强制模型输出合法 JSON（开启后将禁用工具调用）
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={!!agent.model_params?.response_format}
-                              onClick={() => {
-                                const current = agent.model_params || {};
-                                const nextFormat = current.response_format
-                                  ? null
-                                  : { type: "json_object" as const };
-                                updateAgent(agent.agent_type, {
-                                  model_params: { ...current, response_format: nextFormat },
-                                });
-                              }}
-                              className={`relative w-10 h-5 rounded-full transition-all duration-300 border cursor-pointer ${
-                                agent.model_params?.response_format
-                                  ? "bg-emerald-500/30 border-emerald-500/50"
-                                  : "bg-slate-800 border-slate-600"
-                              }`}
-                            >
-                              <span
-                                className={`absolute top-0.5 w-4 h-4 rounded-full transition-all duration-300 ${
-                                  agent.model_params?.response_format
-                                    ? "left-5 bg-emerald-500"
-                                    : "left-0.5 bg-slate-500"
-                                }`}
-                              />
-                            </button>
-                          </div>
-                          {agent.model_params?.response_format && (
-                            <p className="text-xs text-amber-500/70 mt-1">
-                              已开启 JSON 模式：模型将只输出合法 JSON。请确保 prompt 中明确要求模型输出 JSON 格式。
-                            </p>
-                          )}
-                        </div>
-                      </div>
+                      <ModelParamsEditor
+                        agentType={agent.agent_type}
+                        fields={selectedModel?.model_params || {}}
+                        modelParams={agent.model_params}
+                        onChange={(modelParams) => updateAgent(agent.agent_type, { model_params: modelParams })}
+                      />
                     );
                   })()}
 

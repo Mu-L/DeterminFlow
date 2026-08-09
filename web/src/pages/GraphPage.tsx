@@ -182,7 +182,9 @@ export default function GraphPage() {
         <span className="text-xs text-muted-foreground" aria-live="polite">
           {viewMode === "sessions"
             ? `${sessions.length} 个会话 · 点击节点查看详情`
-            : "Main Agent + Sub Agent 图结构"}
+            : graphStructure
+              ? `${graphStructure.nodes.length} 个节点 · ${graphStructure.edges.length} 条连线`
+              : "正在加载图结构"}
         </span>
       </div>
 
@@ -222,10 +224,7 @@ export default function GraphPage() {
           /* LangGraph Structure View */
           <div id="panel-langgraph" role="tabpanel" aria-label="LangGraph 结构面板" className="flex-1">
             {graphStructure ? (
-              <LangGraphView
-                mainGraph={graphStructure.main_graph}
-                subGraph={graphStructure.sub_graph}
-              />
+              <LangGraphView graph={graphStructure} />
             ) : (
               <div
                 className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground"

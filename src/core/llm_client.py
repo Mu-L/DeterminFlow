@@ -1,22 +1,23 @@
-"""
-LLM 配置工厂 - 创建 ChatOpenAI 实例供 LangGraph 图使用
-"""
+"""LLM 配置工厂 - 根据 Provider Adapter 创建对应的聊天模型客户端。"""
 import asyncio
 import logging
-import math
 from typing import Any, Literal
 
+from anthropic import BadRequestError as AnthropicBadRequestError
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables.config import ensure_config, merge_configs
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models import base as openai_base
-from openai import BadRequestError
+from openai import BadRequestError as OpenAIBadRequestError
 
 import os
 import warnings
 
 logger = logging.getLogger(__name__)
+PROVIDER_BAD_REQUEST_ERRORS = (OpenAIBadRequestError, AnthropicBadRequestError)
 
 
 class ModelCredentialNotConfiguredError(ValueError):
@@ -160,6 +161,7 @@ def _resolve_provider_config(
 def _merge_params(
     model_manager: Any,
     provider_id: str,
+    model_name: str,
     provider_config: dict,
     model_params: dict | None,
     kwargs: dict,
@@ -168,9 +170,7 @@ def _merge_params(
 
     合并优先级: agent model_params > defaults；provider hyperparams 作为 fallback。
 
-    参数分类由 ModelManager 的 PROVIDER_CATEGORIES 注册表驱动：
-    - chat_openai_params: 直接作为 ChatOpenAI kwargs（temperature / top_p / presence_penalty）
-    - build_extra_body:   non-OpenAI 标准参数放入 extra_body（thinking / enable_thinking 等）
+    具体字段选择、校验和 API 参数映射由 Provider Adapter 完成。
     """
     # 合并模型参数：agent model_params > defaults
     defaults = model_manager.get_default_params()
@@ -184,53 +184,15 @@ def _merge_params(
             }
         )
 
-    # 从 category 配置获取应作为 ChatOpenAI kwargs 的参数列表
-    cat_config = model_manager.get_category_params_config(provider_id)
-    if cat_config:
-        for param_name in cat_config.get("chat_openai_params", []):
-            if param_name in merged_params:
-                kwargs.setdefault(param_name, merged_params[param_name])
-
-    # 构建 extra_body（thinking / enable_thinking / thinking_budget 等）
-    extra_body = model_manager.build_extra_body(provider_id, merged_params)
-
-    # 合并 provider 超参数作为 fallback（agent model_params 已通过 setdefault 优先）
-    hyperparams = provider_config.get("hyperparameter_values", {})
-    if "max_completion_tokens" in hyperparams:
-        kwargs.setdefault("max_tokens", hyperparams["max_completion_tokens"])
-    if "frequency_penalty" in hyperparams:
-        kwargs.setdefault("frequency_penalty", hyperparams["frequency_penalty"])
-    if "presence_penalty" in hyperparams:
-        kwargs.setdefault("presence_penalty", hyperparams["presence_penalty"])
-
-    # 传递 response_format（如 {"type": "json_object"}），通过 model_kwargs 透传给 ChatOpenAI
-    if merged_params.get("response_format"):
-        model_kwargs = kwargs.setdefault("model_kwargs", {})
-        model_kwargs.setdefault("response_format", merged_params["response_format"])
-
-    # Reasoning-heavy models may legitimately pause between parsed stream
-    # chunks. Keep the timeout explicit in the Agent definition so the
-    # effective runtime/provenance snapshot records the actual value.
-    if "stream_chunk_timeout" in merged_params:
-        timeout = merged_params["stream_chunk_timeout"]
-        if timeout is not None:
-            if isinstance(timeout, bool):
-                raise ValueError(
-                    "stream_chunk_timeout must be a finite positive number"
-                )
-            try:
-                timeout = float(timeout)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "stream_chunk_timeout must be a finite positive number"
-                ) from exc
-            if not math.isfinite(timeout) or timeout <= 0:
-                raise ValueError(
-                    "stream_chunk_timeout must be a finite positive number"
-                )
-        kwargs.setdefault("stream_chunk_timeout", timeout)
-
-    kwargs["extra_body"] = extra_body
+    request = model_manager.build_provider_request(
+        provider_id, merged_params, provider_config, model_name=model_name
+    )
+    for name, value in request.get("client_kwargs", {}).items():
+        kwargs.setdefault(name, value)
+    if request.get("extra_body"):
+        kwargs.setdefault("extra_body", {}).update(request["extra_body"])
+    if request.get("model_kwargs"):
+        kwargs.setdefault("model_kwargs", {}).update(request["model_kwargs"])
     return merged_params
 
 
@@ -269,7 +231,7 @@ def _resolve_model_override(model_override: str | None, model_manager) -> str:
     )
 
 
-def _wrap_llm_with_retry(llm: ChatOpenAI, retry_config: dict) -> ChatOpenAI:
+def _wrap_llm_with_retry(llm: BaseChatModel, retry_config: dict) -> BaseChatModel:
     """
     为 ChatOpenAI 实例的 ainvoke 和 astream 方法注入自动重试机制。
 
@@ -350,7 +312,7 @@ def _wrap_llm_with_retry(llm: ChatOpenAI, retry_config: dict) -> ChatOpenAI:
                     *tracked_args,
                     **tracked_kwargs,
                 )
-            except BadRequestError as error:
+            except PROVIDER_BAD_REQUEST_ERRORS as error:
                 # 400 错误是永久性错误（输入格式非法），重试无意义，直接抛出
                 _mark_failed_provider_usage(
                     error,
@@ -410,7 +372,7 @@ def _wrap_llm_with_retry(llm: ChatOpenAI, retry_config: dict) -> ChatOpenAI:
                     yielded_chunk = True
                     yield chunk
                 return  # 流正常完成
-            except BadRequestError:
+            except PROVIDER_BAD_REQUEST_ERRORS:
                 # 400 错误是永久性错误（输入格式非法），重试无意义，直接抛出
                 logger.error(f"LLM astream BadRequestError (400)，不重试")
                 raise
@@ -497,10 +459,11 @@ def create_llm(
     model: str | None = None,
     streaming: bool = True,
     model_params: dict | None = None,
+    provider_retries_enabled: bool = True,
     **kwargs,
-) -> ChatOpenAI:
+) -> BaseChatModel:
     """
-    创建 ChatOpenAI 实例。
+    根据 Provider 声明创建 OpenAI-compatible 或 Anthropic 聊天模型实例。
 
     Args:
         model_override: 模型覆盖，格式 "provider_id:model_name"（新格式）或纯模型名（旧格式）
@@ -508,10 +471,11 @@ def create_llm(
         streaming: 是否支持流式输出，默认 True
         model_params: 模型参数字典，包含 thinking_enabled / reasoning_effort / temperature / top_p
                      未设置时从 models_config.json 的 default_params 继承
-        **kwargs: 传递给 ChatOpenAI 的额外参数
+        provider_retries_enabled: 是否启用 SDK 与 Core Provider 传输重试；探针等一次性调用应关闭
+        **kwargs: 传递给 Provider 客户端的额外参数
 
     Returns:
-        配置好的 ChatOpenAI 实例
+        配置好的聊天模型实例
     """
     from src.core.model_manager import get_model_manager
 
@@ -520,11 +484,29 @@ def create_llm(
     # 第一阶段：解析为标准 "provider_id:model_name" 格式（无递归）
     resolved = _resolve_model_override(model_override, model_manager)
 
-    # 第二阶段：构造 ChatOpenAI 实例
+    # 第二阶段：由 Provider Adapter 构造对应协议的客户端
     provider_id, model_name, api_key, base_url, provider_config = _resolve_provider_config(
         resolved, model_manager
     )
-    merged_params = _merge_params(model_manager, provider_id, provider_config, model_params, kwargs)
+    if not provider_retries_enabled:
+        # LangChain clients have their own SDK retry policy in addition to the
+        # Core wrapper below. One-shot callers must disable both layers.
+        kwargs["max_retries"] = 0
+    try:
+        api_format = model_manager.get_provider_api_format(provider_id, model_name)
+        client_base_url = model_manager.get_provider_client_base_url(
+            provider_id, base_url, model_name
+        )
+    except ValueError as exc:
+        raise ModelConfigurationNotAvailableError(str(exc)) from exc
+    merged_params = _merge_params(
+        model_manager,
+        provider_id,
+        model_name,
+        provider_config,
+        model_params,
+        kwargs,
+    )
 
     logger.info(
         f"使用 ModelManager 配置: provider={provider_id}, model={model_name}, "
@@ -532,24 +514,36 @@ def create_llm(
         f"temperature={merged_params.get('temperature')}"
     )
 
-    # 流式输出时，请求 API 返回 token usage（OpenAI/DeepSeek 兼容）
-    if streaming:
+    # OpenAI-compatible 流式输出需显式请求 token usage。
+    if streaming and api_format == "openai":
         model_kwargs = kwargs.get("model_kwargs", {})
         if "stream_options" not in model_kwargs:
             model_kwargs["stream_options"] = {"include_usage": True}
             kwargs["model_kwargs"] = model_kwargs
 
-    llm = ChatOpenAI(
-        model=model_name,
-        api_key=api_key,
-        base_url=base_url,
-        streaming=streaming,
-        **kwargs,
-    )
+    if api_format == "anthropic":
+        llm: BaseChatModel = ChatAnthropic(
+            model=model_name,
+            api_key=api_key,
+            base_url=client_base_url,
+            streaming=streaming,
+            stream_usage=True,
+            **kwargs,
+        )
+    else:
+        if api_format == "openai_responses":
+            kwargs["use_responses_api"] = True
+        llm = ChatOpenAI(
+            model=model_name,
+            api_key=api_key,
+            base_url=client_base_url,
+            streaming=streaming,
+            **kwargs,
+        )
 
-    # 注入重试机制
-    retry_config = model_manager.get_retry_config()
-    _wrap_llm_with_retry(llm, retry_config)
+    if provider_retries_enabled:
+        retry_config = model_manager.get_retry_config()
+        _wrap_llm_with_retry(llm, retry_config)
 
     logger.info(
         f"LLM 实例已创建: model={model_name}, temperature={kwargs.get('temperature', 'default')}, "
@@ -564,7 +558,7 @@ def create_startup_llm(
     streaming: bool = True,
     model_params: dict | None = None,
     **kwargs,
-) -> ChatOpenAI | DeferredChatModel:
+) -> BaseChatModel | DeferredChatModel:
     """Create the startup model, deferring only missing-credential failures."""
     options = {
         "model_override": model_override,

@@ -4,7 +4,7 @@ description: >-
   创建、编辑、校验、运行或排查 DeterminFlow 工作流时必须先加载此技能；也适用于任务填参、节点审批、变量传递、网关、执行方案、子流程与工作区覆盖。涉及 Agent 定义、Prompt 模板或 Script Library 的专项设计时，继续加载对应 Core Skill。
 metadata:
   display_name: workflow-guide
-  version: 3.2.0
+  version: 3.3.0
   author: system
   category: workflow
   priority: 50
@@ -62,6 +62,21 @@ Main 所有权与逐节点审批是两个独立契约。`create_and_attach_task`
 `main_takeover` 默认 `false`：Main 可以持续跟踪任务，但 Agent 节点完成后正常自动流转。
 只有显式设为 `true` 时，每个 Agent 节点的产出才进入 Main 审批；工作流中显式定义的
 Approval 节点不受该参数影响。
+
+HTTP 创建 Task 时可用 `node_model_overrides` 为指定 Agent 节点选择 Core 已配置的
+Provider 与预定义模型：
+
+```json
+{
+  "node_model_overrides": {
+    "writer": "provider_id:model_name"
+  }
+}
+```
+
+节点 ID 必须存在且 `node_type=agent`，模型引用必须出现在 Core 当前模型列表中。选择结果会
+写入 Task 的定义快照和运行身份守卫，因此重试与恢复继续使用同一模型；Workflow 模板不会
+被修改。该接口不接收 API Key、Base URL、Provider 类型、模型参数或回退模型。
 
 `get_task_status` 和 `get_task_result` 支持事件驱动等待：
 

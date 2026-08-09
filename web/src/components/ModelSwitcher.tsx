@@ -31,24 +31,28 @@ function SelectionRow({
   label,
   value,
   active,
+  expandLabel = false,
   onClick,
 }: {
   label: string;
   value?: string;
   active: boolean;
+  expandLabel?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-colors ${
+      className={`flex min-h-9 items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-colors ${
+        expandLabel ? "min-w-full w-max" : "w-full"
+      } ${
         active
           ? "bg-indigo-500/15 text-indigo-100"
           : "text-slate-300 hover:bg-slate-700/70 hover:text-slate-100"
       }`}
     >
-      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className={`min-w-0 flex-1 ${expandLabel ? "whitespace-nowrap" : "truncate"}`}>{label}</span>
       {value ? <span className="max-w-24 truncate text-[11px] text-slate-500">{value}</span> : null}
       {active ? <Check size={14} className="shrink-0 text-indigo-400" /> : null}
     </button>
@@ -149,6 +153,7 @@ export default function ModelSwitcher({
           label={provider.name}
           value={`${provider.models.length} 个模型`}
           active={providerId === selectedProviderId}
+          expandLabel
           onClick={() => {
             const firstModel = provider.models[0];
             if (!firstModel) return;
@@ -245,7 +250,9 @@ export default function ModelSwitcher({
           </div>
 
           {hasModels ? (
-            <div className="max-h-64 w-48 overflow-y-auto rounded-xl border border-slate-600/80 bg-slate-800 p-1.5 shadow-2xl shadow-slate-950/50">
+            <div className={`max-h-64 overflow-y-auto rounded-xl border border-slate-600/80 bg-slate-800 p-1.5 shadow-2xl shadow-slate-950/50 ${
+              activeMenu === "provider" ? "min-w-48 w-max max-w-72" : "w-48"
+            }`}>
               {loading ? (
                 <div className="flex min-h-20 items-center justify-center gap-2 text-sm text-slate-500">
                   <Loader2 size={15} className="animate-spin motion-reduce:animate-none" />

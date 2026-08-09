@@ -8,9 +8,9 @@ import logging
 import warnings
 from typing import Literal
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
-from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
@@ -69,7 +69,7 @@ def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
 # 节点函数工厂
 # ============================================================
 
-def _make_llm_node(llm: ChatOpenAI, tools: list[BaseTool]):
+def _make_llm_node(llm: BaseChatModel, tools: list[BaseTool]):
     """创建 LLM 节点函数。
 
     注意：流式 token 推送不再在此处通过 event_bus 硬编码，
@@ -159,7 +159,7 @@ def _make_llm_node(llm: ChatOpenAI, tools: list[BaseTool]):
 # ============================================================
 
 def build_graph(
-    llm: ChatOpenAI,
+    llm: BaseChatModel,
     tools: list[BaseTool],
     max_rounds: int = 10,
 ) -> StateGraph:
@@ -224,7 +224,7 @@ def build_graph(
 # ============================================================
 
 def build_main_graph(
-    llm: ChatOpenAI,
+    llm: BaseChatModel,
     tools: list[BaseTool],
     max_rounds: int = 5,
 ) -> StateGraph:
@@ -238,7 +238,7 @@ def build_main_graph(
 
 
 def build_sub_graph(
-    llm: ChatOpenAI,
+    llm: BaseChatModel,
     tools: list[BaseTool],
     max_rounds: int = 10,
 ) -> StateGraph:

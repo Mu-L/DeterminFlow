@@ -1,7 +1,48 @@
 """
 公共工具函数模块
 """
+from typing import Any
+
 from langchain_core.messages import BaseMessage, SystemMessage, AIMessage, ToolMessage
+
+
+def message_content_text(content: Any) -> str:
+    """Extract user-visible text from string or provider content blocks."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content) if content else ""
+
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") in {
+            "text",
+            "text_delta",
+        }:
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def message_content_reasoning(content: Any) -> str:
+    """Extract displayable reasoning while leaving signatures in raw blocks."""
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") not in {
+            "thinking",
+            "thinking_delta",
+            "reasoning",
+        }:
+            continue
+        value = block.get("thinking", block.get("reasoning", block.get("text")))
+        if isinstance(value, str):
+            parts.append(value)
+    return "".join(parts)
 
 
 def estimate_tokens(text: str) -> int:

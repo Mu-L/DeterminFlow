@@ -5,6 +5,7 @@ import {
   ChevronUp,
   Eye,
   EyeOff,
+  LockKeyhole,
   RefreshCw,
   Save,
   Trash2,
@@ -17,13 +18,14 @@ export type { ModelProvider, ProviderSchema } from "../types";
 
 interface Props {
   provider: ModelProvider;
-  schema: ProviderSchema | null;
+  schemas: Record<string, ProviderSchema>;
   isDefault: boolean;
   onUpdate: (providerId: string, updates: Partial<ModelProvider>) => Promise<void>;
   onDelete: (providerId: string) => Promise<void>;
   onPrioritize: (providerId: string) => Promise<void>;
   onDiscoverModels: (input: {
     provider_id: string;
+    provider_type?: string;
     base_url?: string;
     api_key?: string;
   }) => Promise<string[]>;
@@ -31,7 +33,7 @@ interface Props {
 
 export default function ModelProviderCard({
   provider,
-  schema,
+  schemas,
   isDefault,
   onUpdate,
   onDelete,
@@ -46,6 +48,8 @@ export default function ModelProviderCard({
   const [saving, setSaving] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const schema = schemas[localProvider.provider_type] || null;
+  const isManaged = localProvider.is_managed === true;
 
   useEffect(() => {
     setLocalProvider(provider);
@@ -58,6 +62,7 @@ export default function ModelProviderCard({
     try {
       const models = await onDiscoverModels({
         provider_id: provider.id,
+        provider_type: localProvider.provider_type,
         base_url: localProvider.base_url,
         api_key: localProvider.api_key,
       });
@@ -81,6 +86,7 @@ export default function ModelProviderCard({
     setSaving(true);
     try {
       await onUpdate(provider.id, {
+        provider_type: localProvider.provider_type,
         name: localProvider.name,
         base_url: localProvider.base_url,
         api_key: localProvider.api_key,
@@ -106,6 +112,22 @@ export default function ModelProviderCard({
     setEdited(true);
   };
 
+  const updateProviderType = (providerType: string) => {
+    const allowedHyperparams = new Set(
+      Object.keys(schemas[providerType]?.hyperparams || {}),
+    );
+    setLocalProvider({
+      ...localProvider,
+      provider_type: providerType,
+      hyperparameter_values: Object.fromEntries(
+        Object.entries(localProvider.hyperparameter_values).filter(([key]) => (
+          allowedHyperparams.has(key)
+        )),
+      ),
+    });
+    setEdited(true);
+  };
+
   return (
     <article className={`rounded-xl border bg-slate-900/50 p-4 ${isDefault ? "border-indigo-500/50" : "border-slate-700"}`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -120,12 +142,22 @@ export default function ModelProviderCard({
             {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
           </button>
           <div className="min-w-0">
-            <h4 className="truncate text-base font-semibold text-slate-100">{localProvider.name}</h4>
-            <p className="mt-0.5 text-xs text-slate-500">{localProvider.models.length} 个模型</p>
+            <div className="flex min-w-0 items-center gap-2">
+              <h4 className="truncate text-base font-semibold text-slate-100">{localProvider.name}</h4>
+              {isManaged && (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-indigo-400/25 bg-indigo-500/10 px-2 py-0.5 text-[11px] font-medium text-indigo-300">
+                  <LockKeyhole size={11} aria-hidden="true" />
+                  插件托管
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {schema?.display_name || localProvider.provider_type} · {localProvider.models.length} 个模型
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {!isDefault && (
+          {!isManaged && !isDefault && (
             <button
               type="button"
               onClick={() => onPrioritize(provider.id)}
@@ -135,28 +167,65 @@ export default function ModelProviderCard({
               设为首位
             </button>
           )}
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={!edited || saving}
-            aria-label="保存供应商配置"
-            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-green-400 hover:bg-green-500/10 disabled:cursor-not-allowed disabled:text-slate-600"
-          >
-            {saving ? <RefreshCw size={16} className="animate-spin motion-reduce:animate-none" /> : <Save size={16} />}
-          </button>
-          <button
-            type="button"
-            onClick={() => onDelete(provider.id)}
-            aria-label="删除供应商"
-            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-400"
-          >
-            <Trash2 size={16} />
-          </button>
+          {!isManaged && (
+            <>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={!edited || saving}
+                aria-label="保存供应商配置"
+                className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-green-400 hover:bg-green-500/10 disabled:cursor-not-allowed disabled:text-slate-600"
+              >
+                {saving ? <RefreshCw size={16} className="animate-spin motion-reduce:animate-none" /> : <Save size={16} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => onDelete(provider.id)}
+                aria-label="删除供应商"
+                className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-400"
+              >
+                <Trash2 size={16} />
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      {expanded && (
+      {expanded && isManaged && (
+        <div className="mt-4 border-t border-slate-700/70 pt-4">
+          <h5 className="text-sm font-medium text-slate-200">可用模型</h5>
+          <div className="mt-2 flex min-h-12 flex-wrap items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/40 p-2">
+            {localProvider.models.length > 0 ? localProvider.models.map((model) => (
+              <span
+                key={model}
+                className="max-w-full truncate rounded-lg border border-slate-600/80 bg-slate-700/70 px-2.5 py-2 font-mono text-xs text-slate-200"
+              >
+                {model}
+              </span>
+            )) : (
+              <span className="px-2 text-sm text-slate-500">暂无可用模型</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {expanded && !isManaged && (
         <div className="mt-4 space-y-4 border-t border-slate-700/70 pt-4">
+          <label className="block text-sm text-slate-300">
+            供应商类型
+            <select
+              value={localProvider.provider_type}
+              onChange={(event) => updateProviderType(event.target.value)}
+              className="mt-1 min-h-11 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 text-sm text-slate-200 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+            >
+              {Object.entries(schemas).map(([providerType, providerSchema]) => (
+                <option key={providerType} value={providerType}>
+                  {providerSchema.display_name}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <div>
             <label htmlFor={`provider-${provider.id}-api-key`} className="mb-1 block text-sm text-slate-300">API Key</label>
             <div className="relative">

@@ -5,10 +5,7 @@ import { fetchSystemStatus, fetchTools, fetchGraphStructure } from "../lib/api";
 export function useSystemStatus() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [tools, setTools] = useState<ToolInfo[]>([]);
-  const [graphStructure, setGraphStructure] = useState<{
-    main_graph: GraphStructure;
-    sub_graph: GraphStructure;
-  } | null>(null);
+  const [graphStructure, setGraphStructure] = useState<GraphStructure | null>(null);
   const [loading, setLoading] = useState(false);
 
   const loadStatus = useCallback(async () => {

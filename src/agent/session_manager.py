@@ -371,14 +371,13 @@ class SessionManager(SessionLifecycleMixin):
         if model_id not in model_manager.get_all_models():
             return {"success": False, "message": f"模型未配置: {model_id}"}
 
-        provider_id = model_id.split(":", 1)[0]
-        supported_efforts = model_manager.get_provider_capabilities(
-            provider_id
-        )["reasoning_efforts"]
+        supported_efforts = model_manager.get_model_capabilities(model_id)[
+            "reasoning_efforts"
+        ]
         if reasoning_effort is not None and reasoning_effort not in supported_efforts:
             return {
                 "success": False,
-                "message": f"供应商 {provider_id} 不支持推理强度 {reasoning_effort}",
+                "message": f"模型 {model_id} 不支持推理强度 {reasoning_effort}",
             }
 
         async with session._invoke_lock:

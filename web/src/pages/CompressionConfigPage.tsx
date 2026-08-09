@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Save, RefreshCw, Sliders, Zap, FileText, RotateCcw, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
+import { Save, RefreshCw, Sliders, RotateCcw, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { useToast } from "@/components/ui/use-toast";
@@ -63,6 +63,58 @@ const defaultConfig: CompressionConfig = {
     logsDir: "./logs/compression",
   },
 };
+
+function CompressionField({
+  id,
+  label,
+  description,
+  children,
+}: {
+  id: string;
+  label: ReactNode;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start sm:gap-4">
+      <div className="flex min-w-0 flex-col gap-1 pt-1 sm:w-48 sm:flex-none">
+        <Label htmlFor={id} className="cursor-pointer text-sm font-medium text-slate-300">
+          {label}
+        </Label>
+        {description ? (
+          <p className="text-xs leading-5 text-slate-500">{description}</p>
+        ) : null}
+      </div>
+      <div className="min-w-0 flex-1 sm:max-w-md">{children}</div>
+    </div>
+  );
+}
+
+function CompressionGroup({
+  id,
+  title,
+  description,
+  children,
+}: {
+  id: string;
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-labelledby={id} className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <h4 id={id} className="text-sm font-semibold text-slate-200">
+          {title}
+        </h4>
+        {description ? (
+          <p className="text-xs text-slate-500">{description}</p>
+        ) : null}
+      </div>
+      <div className="flex flex-col gap-4">{children}</div>
+    </section>
+  );
+}
 
 function CompressionConfigEditor() {
   const [config, setConfig] = useState<CompressionConfig>(defaultConfig);
@@ -228,345 +280,244 @@ function CompressionConfigEditor() {
   }
 
   return (
-    <div aria-label="压缩配置编辑器">
-      <div className="space-y-4">
-        {/* 错误提示 */}
-        {error && (
-          <div className="flex items-center gap-3 p-4 border border-red-500/20 bg-red-500/5 rounded-lg" role="alert" aria-live="polite">
-            <AlertTriangle size={16} className="text-red-500 shrink-0" aria-hidden="true" />
-            <span className="text-sm flex-1">{error}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              onClick={loadConfig}
-              aria-label="重试加载配置"
-              className="cursor-pointer min-h-[44px]"
-            >
-              <RefreshCw size={14} className="mr-1" aria-hidden="true" />
-              重试
-            </Button>
-          </div>
-        )}
-
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={resetConfig} type="button" aria-label="重置为默认配置" className="cursor-pointer min-h-[44px]">
-            <RotateCcw size={16} className="mr-2" aria-hidden="true" />
-            重置默认
-          </Button>
-          <Button onClick={saveConfig} disabled={saving} type="button" aria-label="保存压缩配置" className="cursor-pointer min-h-[44px]">
-            {saving ? (
-              <RefreshCw size={16} className="mr-2 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-            ) : (
-              <Save size={16} className="mr-2" aria-hidden="true" />
-            )}
-            保存配置
+    <div aria-label="压缩配置编辑器" className="flex flex-col gap-5">
+      {error && (
+        <div className="flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-4" role="alert" aria-live="polite">
+          <AlertTriangle size={16} className="shrink-0 text-red-500" aria-hidden="true" />
+          <span className="flex-1 text-sm">{error}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={loadConfig}
+            aria-label="重试加载配置"
+            className="min-h-11 cursor-pointer"
+          >
+            <RefreshCw data-icon="inline-start" aria-hidden="true" />
+            重试
           </Button>
         </div>
+      )}
 
-        {/* 通用配置 */}
-        <Card aria-label="通用配置">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Zap className="text-amber-500" aria-hidden="true" />
-              通用配置
-            </CardTitle>
-            <CardDescription>
-              压缩系统的基础设置
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="compression-enabled">启用压缩</Label>
-                <p className="text-sm text-muted-foreground">
-                  开启或关闭上下文压缩功能
-                </p>
-              </div>
-              <Switch
-                id="compression-enabled"
-                checked={config.general.enabled}
-                onCheckedChange={(checked) => updateGeneralConfig('enabled', checked)}
-                aria-label="启用或禁用压缩功能"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="compactionThreshold">压缩触发阈值 ({(config.general.compactionThreshold * 100).toFixed(0)}%)</Label>
-              <p className="text-sm text-muted-foreground">
-                当上下文占用率超过此阈值时触发FullCompact压缩
-              </p>
-              <Slider
-                id="compactionThreshold"
-                value={[config.general.compactionThreshold * 100]}
-                onValueChange={([value]) => updateGeneralConfig('compactionThreshold', value / 100)}
-                max={95}
-                min={50}
-                step={5}
-                className="w-full"
-                aria-label="压缩触发阈值"
-              />
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>50%</span>
-                <span>95%</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* MicroCompact配置 */}
-        <Card aria-label="MicroCompact配置">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="text-green-500" aria-hidden="true" />
-              MicroCompact配置
-            </CardTitle>
-            <CardDescription>
-              工具结果微压缩策略参数
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="maxToolResults">工具结果数量阈值</Label>
-                <Input
-                  id="maxToolResults"
-                  type="number"
-                  value={config.micro_compact.maxToolResults}
-                  onChange={(e) => updateMicroConfig('maxToolResults', parseInt(e.target.value) || 0)}
-                  min={5}
-                  max={50}
-                  className="min-h-[44px]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  历史中累计的工具结果个数阈值
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="keepRecentToolResults">保留最近工具结果数</Label>
-                <Input
-                  id="keepRecentToolResults"
-                  type="number"
-                  value={config.micro_compact.keepRecentToolResults}
-                  onChange={(e) => updateMicroConfig('keepRecentToolResults', parseInt(e.target.value) || 0)}
-                  min={1}
-                  max={20}
-                  className="min-h-[44px]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  保留最近的N个工具结果原文
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="toolResultTokenRatio">工具结果Token占比阈值 ({(config.micro_compact.toolResultTokenRatio * 100).toFixed(0)}%)</Label>
-              <Slider
-                id="toolResultTokenRatio"
-                value={[config.micro_compact.toolResultTokenRatio * 100]}
-                onValueChange={([value]) => updateMicroConfig('toolResultTokenRatio', value / 100)}
-                max={80}
-                min={10}
-                step={5}
-                className="w-full"
-                aria-label="工具结果Token占比阈值"
-              />
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>10%</span>
-                <span>80%</span>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="placeholder">占位符文本</Label>
-              <Input
-                id="placeholder"
-                value={config.micro_compact.placeholder}
-                onChange={(e) => updateMicroConfig('placeholder', e.target.value)}
-                placeholder="[Content compacted]"
-                className="min-h-[44px]"
-              />
-              <p className="text-xs text-muted-foreground">
-                替换压缩后工具结果的占位符文本
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* FullCompact配置 */}
-        <Card aria-label="FullCompact配置">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="text-purple-500" aria-hidden="true" />
-              FullCompact配置
-            </CardTitle>
-            <CardDescription>
-              全量摘要压缩策略参数
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="keepRecentTokens">保留最近Token数</Label>
-                <Input
-                  id="keepRecentTokens"
-                  type="number"
-                  value={config.full_compact.keepRecentTokens}
-                  onChange={(e) => updateFullConfig('keepRecentTokens', parseInt(e.target.value) || 0)}
-                  min={10000}
-                  max={200000}
-                  step={1000}
-                  className="min-h-[44px]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  保留最近的Token数不被压缩
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="summaryTokenBudget">摘要生成最大Token数</Label>
-                <Input
-                  id="summaryTokenBudget"
-                  type="number"
-                  value={config.full_compact.summaryTokenBudget}
-                  onChange={(e) => updateFullConfig('summaryTokenBudget', parseInt(e.target.value) || 0)}
-                  min={1000}
-                  max={100000}
-                  step={500}
-                  className="min-h-[44px]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  摘要生成的max_tokens参数
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="fullCompactMaxRetryCount">最大重试次数</Label>
-              <Input
-                id="fullCompactMaxRetryCount"
-                type="number"
-                value={config.full_compact.maxRetryCount}
-                onChange={(e) => updateFullConfig('maxRetryCount', parseInt(e.target.value))}
-                min={0}
-                max={5}
-                className="min-h-[44px]"
-              />
-              <p className="text-xs text-muted-foreground">
-                摘要生成失败时的最大重试次数
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* ReactiveCompact配置 */}
-        <Card aria-label="ReactiveCompact配置">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="text-red-500" aria-hidden="true" />
-              ReactiveCompact配置
-            </CardTitle>
-            <CardDescription>
-              渐进式丢弃压缩策略参数
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <Label htmlFor="reactiveCompactMaxRetryCount">最大重试次数</Label>
-              <Input
-                id="reactiveCompactMaxRetryCount"
-                type="number"
-                value={config.reactive_compact.maxRetryCount}
-                onChange={(e) => updateReactiveConfig('maxRetryCount', parseInt(e.target.value))}
-                min={1}
-                max={10}
-                className="min-h-[44px]"
-              />
-              <p className="text-xs text-muted-foreground">
-                渐进丢弃最大重试次数
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* 后处理配置 */}
-        <Card aria-label="后处理配置">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="text-cyan-500" aria-hidden="true" />
-              后处理配置
-            </CardTitle>
-            <CardDescription>
-              压缩后处理参数
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="maxFilesToRead">最多重读文件数</Label>
-                <Input
-                  id="maxFilesToRead"
-                  type="number"
-                  value={config.post_compact.maxFilesToRead}
-                  onChange={(e) => updatePostConfig('maxFilesToRead', parseInt(e.target.value) || 0)}
-                  min={0}
-                  max={10}
-                  className="min-h-[44px]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  压缩后最多重读的文件数
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="maxTokensPerFile">每文件重读Token上限</Label>
-                <Input
-                  id="maxTokensPerFile"
-                  type="number"
-                  value={config.post_compact.maxTokensPerFile}
-                  onChange={(e) => updatePostConfig('maxTokensPerFile', parseInt(e.target.value) || 0)}
-                  min={1000}
-                  max={20000}
-                  step={1000}
-                  className="min-h-[44px]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  每个文件重读的Token上限
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* 日志配置 */}
-        <Card aria-label="日志配置">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="text-teal-500" aria-hidden="true" />
-              日志配置
-            </CardTitle>
-            <CardDescription>
-              压缩日志存储配置
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <Label htmlFor="logsDir">日志目录</Label>
-              <Input
-                id="logsDir"
-                value={config.transcript.logsDir}
-                onChange={(e) => updateTranscriptConfig('logsDir', e.target.value)}
-                placeholder="./logs/compression"
-                className="min-h-[44px]"
-              />
-              <p className="text-xs text-muted-foreground">
-                JSONL日志文件存储目录
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={resetConfig}
+          type="button"
+          aria-label="重置为默认配置"
+          className="min-h-11 cursor-pointer"
+        >
+          <RotateCcw data-icon="inline-start" aria-hidden="true" />
+          重置默认
+        </Button>
+        <Button
+          size="sm"
+          onClick={saveConfig}
+          disabled={saving}
+          type="button"
+          aria-label="保存压缩配置"
+          className="min-h-11 cursor-pointer"
+        >
+          {saving ? (
+            <RefreshCw data-icon="inline-start" className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          ) : (
+            <Save data-icon="inline-start" aria-hidden="true" />
+          )}
+          {saving ? "保存中..." : "保存配置"}
+        </Button>
       </div>
+
+      <CompressionGroup id="compression-general-heading" title="通用">
+        <CompressionField id="compression-enabled" label="启用压缩">
+          <Switch
+            id="compression-enabled"
+            checked={config.general.enabled}
+            onCheckedChange={(checked) => updateGeneralConfig('enabled', checked)}
+            aria-label="启用或禁用压缩功能"
+          />
+        </CompressionField>
+        <CompressionField
+          id="compactionThreshold"
+          label={`压缩触发阈值 (${(config.general.compactionThreshold * 100).toFixed(0)}%)`}
+          description="上下文占用率达到该值时触发 FullCompact"
+        >
+          <div className="flex flex-col gap-2 pt-2">
+            <Slider
+              id="compactionThreshold"
+              value={[config.general.compactionThreshold * 100]}
+              onValueChange={([value]) => updateGeneralConfig('compactionThreshold', value / 100)}
+              max={95}
+              min={50}
+              step={5}
+              aria-label="压缩触发阈值"
+            />
+            <div className="flex justify-between text-xs text-slate-500">
+              <span>50%</span>
+              <span>95%</span>
+            </div>
+          </div>
+        </CompressionField>
+      </CompressionGroup>
+
+      <Separator />
+
+      <CompressionGroup id="compression-micro-heading" title="MicroCompact" description="工具结果微压缩">
+        <CompressionField
+          id="maxToolResults"
+          label="工具结果数量阈值"
+          description="达到该数量后触发工具结果压缩"
+        >
+          <Input
+            id="maxToolResults"
+            type="number"
+            value={config.micro_compact.maxToolResults}
+            onChange={(e) => updateMicroConfig('maxToolResults', parseInt(e.target.value) || 0)}
+            min={5}
+            max={50}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+        <CompressionField id="keepRecentToolResults" label="保留最近工具结果数">
+          <Input
+            id="keepRecentToolResults"
+            type="number"
+            value={config.micro_compact.keepRecentToolResults}
+            onChange={(e) => updateMicroConfig('keepRecentToolResults', parseInt(e.target.value) || 0)}
+            min={1}
+            max={20}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+        <CompressionField
+          id="toolResultTokenRatio"
+          label={`工具结果 Token 占比 (${(config.micro_compact.toolResultTokenRatio * 100).toFixed(0)}%)`}
+          description="工具结果占上下文的比例达到该值时触发压缩"
+        >
+          <div className="flex flex-col gap-2 pt-2">
+            <Slider
+              id="toolResultTokenRatio"
+              value={[config.micro_compact.toolResultTokenRatio * 100]}
+              onValueChange={([value]) => updateMicroConfig('toolResultTokenRatio', value / 100)}
+              max={80}
+              min={10}
+              step={5}
+              aria-label="工具结果 Token 占比阈值"
+            />
+            <div className="flex justify-between text-xs text-slate-500">
+              <span>10%</span>
+              <span>80%</span>
+            </div>
+          </div>
+        </CompressionField>
+        <CompressionField id="placeholder" label="占位符文本" description="替换压缩后的工具结果原文">
+          <Input
+            id="placeholder"
+            value={config.micro_compact.placeholder}
+            onChange={(e) => updateMicroConfig('placeholder', e.target.value)}
+            placeholder="[Content compacted]"
+            className="min-h-11 font-mono"
+          />
+        </CompressionField>
+      </CompressionGroup>
+
+      <Separator />
+
+      <CompressionGroup id="compression-full-heading" title="FullCompact" description="全量摘要压缩">
+        <CompressionField id="keepRecentTokens" label="保留最近 Token 数">
+          <Input
+            id="keepRecentTokens"
+            type="number"
+            value={config.full_compact.keepRecentTokens}
+            onChange={(e) => updateFullConfig('keepRecentTokens', parseInt(e.target.value) || 0)}
+            min={10000}
+            max={200000}
+            step={1000}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+        <CompressionField id="summaryTokenBudget" label="摘要生成最大 Token 数">
+          <Input
+            id="summaryTokenBudget"
+            type="number"
+            value={config.full_compact.summaryTokenBudget}
+            onChange={(e) => updateFullConfig('summaryTokenBudget', parseInt(e.target.value) || 0)}
+            min={1000}
+            max={100000}
+            step={500}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+        <CompressionField id="fullCompactMaxRetryCount" label="最大重试次数">
+          <Input
+            id="fullCompactMaxRetryCount"
+            type="number"
+            value={config.full_compact.maxRetryCount}
+            onChange={(e) => updateFullConfig('maxRetryCount', parseInt(e.target.value))}
+            min={0}
+            max={5}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+      </CompressionGroup>
+
+      <Separator />
+
+      <CompressionGroup id="compression-reactive-heading" title="ReactiveCompact" description="渐进式丢弃压缩">
+        <CompressionField id="reactiveCompactMaxRetryCount" label="最大重试次数">
+          <Input
+            id="reactiveCompactMaxRetryCount"
+            type="number"
+            value={config.reactive_compact.maxRetryCount}
+            onChange={(e) => updateReactiveConfig('maxRetryCount', parseInt(e.target.value))}
+            min={1}
+            max={10}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+      </CompressionGroup>
+
+      <Separator />
+
+      <CompressionGroup id="compression-post-heading" title="后处理">
+        <CompressionField id="maxFilesToRead" label="最多重读文件数">
+          <Input
+            id="maxFilesToRead"
+            type="number"
+            value={config.post_compact.maxFilesToRead}
+            onChange={(e) => updatePostConfig('maxFilesToRead', parseInt(e.target.value) || 0)}
+            min={0}
+            max={10}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+        <CompressionField id="maxTokensPerFile" label="每文件重读 Token 上限">
+          <Input
+            id="maxTokensPerFile"
+            type="number"
+            value={config.post_compact.maxTokensPerFile}
+            onChange={(e) => updatePostConfig('maxTokensPerFile', parseInt(e.target.value) || 0)}
+            min={1000}
+            max={20000}
+            step={1000}
+            className="min-h-11 w-32 text-center font-mono"
+          />
+        </CompressionField>
+      </CompressionGroup>
+
+      <Separator />
+
+      <CompressionGroup id="compression-logs-heading" title="日志">
+        <CompressionField id="logsDir" label="日志目录">
+          <Input
+            id="logsDir"
+            value={config.transcript.logsDir}
+            onChange={(e) => updateTranscriptConfig('logsDir', e.target.value)}
+            placeholder="./logs/compression"
+            className="min-h-11 font-mono"
+          />
+        </CompressionField>
+      </CompressionGroup>
 
       {/* 重置确认对话框 */}
       {showResetDialog && (
@@ -629,13 +580,13 @@ export default function CompressionConfigSection() {
   };
 
   return (
-    <section aria-label="压缩配置" className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/80">
+    <section aria-label="压缩配置" className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-800/80 transition-colors duration-300 hover:border-slate-600/50">
       <button
         type="button"
         onClick={toggleExpanded}
         aria-expanded={expanded}
         aria-controls="compression-config-content"
-        className="flex w-full items-center justify-between px-5 py-4 transition-colors hover:bg-white/[0.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30"
+        className="flex w-full cursor-pointer items-center justify-between px-5 py-4 transition-colors duration-200 hover:bg-white/[0.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/30"
       >
         <div className="flex items-center gap-3">
           <Sliders size={18} className="text-orange-400" aria-hidden="true" />
@@ -644,7 +595,7 @@ export default function CompressionConfigSection() {
         {expanded ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
       </button>
       {hasOpened && (
-        <div id="compression-config-content" hidden={!expanded} className="border-t border-slate-700/50 px-5 py-5">
+        <div id="compression-config-content" hidden={!expanded} className="px-5 pb-5">
           <CompressionConfigEditor />
         </div>
       )}

@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   mergeUniqueModels,
+  nextProviderId,
+  sanitizeProviderId,
   shouldShowModelSwitcher,
 } from "./model-options";
 
@@ -21,6 +23,15 @@ test("model names are trimmed and empty values are ignored", () => {
     mergeUniqueModels([], ["  model-a  ", "", "model-a"]),
     ["model-a"],
   );
+});
+
+test("provider IDs are normalized and remain unique per configured instance", () => {
+  assert.equal(sanitizeProviderId(" DeepSeek 主账号 "), "deepseek");
+  assert.equal(
+    nextProviderId("deepseek", ["deepseek", "deepseek-2"]),
+    "deepseek-3",
+  );
+  assert.equal(nextProviderId("anthropic", ["deepseek"]), "anthropic");
 });
 
 test("model switcher is limited to interactive Main sessions", () => {

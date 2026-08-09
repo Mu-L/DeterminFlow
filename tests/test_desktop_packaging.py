@@ -29,6 +29,20 @@ from desktop.scripts.verify_bundle import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_desktop_backend_bundles_anthropic_provider() -> None:
+    requirements = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    spec = (
+        REPO_ROOT / "desktop" / "pyinstaller" / "determinflow-backend.spec"
+    ).read_text(encoding="utf-8")
+
+    assert "anthropic==0.121.0" in requirements
+    assert "langchain-anthropic==1.4.1" in requirements
+    assert '    "anthropic",' in spec
+    assert '    "langchain-anthropic",' in spec
+    assert 'collect_submodules("anthropic")' in spec
+    assert 'collect_submodules("langchain_anthropic")' in spec
+
+
 def test_tauri_bundle_is_a_per_user_nsis_installer() -> None:
     config = json.loads(
         (REPO_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(

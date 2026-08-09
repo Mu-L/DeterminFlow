@@ -33,6 +33,7 @@ class WorkflowRunRequest(BaseModel):
 class TaskCreateRequest(BaseModel):
     from_node_id: str | None = Field(default=None)
     parameter_values: dict[str, str] | None = Field(default=None)
+    node_model_overrides: dict[str, str] | None = Field(default=None)
     disabled_node_ids: list[str] | None = Field(default=None)
     scheme_id: str | None = Field(default=None)
     selected_node_ids: list[str] | None = Field(default=None)

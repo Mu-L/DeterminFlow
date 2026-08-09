@@ -84,6 +84,9 @@ def _build_session_snapshot(session, *, bus=event_bus) -> dict:
     token_usage = getattr(session, "token_usage", None)
     if token_usage:
         snapshot["token_usage"] = token_usage
+    last_error = getattr(session, "last_error", None)
+    if snapshot["status"] == "error" and isinstance(last_error, dict):
+        snapshot["last_error"] = dict(last_error)
     return snapshot
 
 
@@ -186,9 +189,10 @@ async def _execute_with_events(session, session_id: str, action_coro, action_lab
         terminal_already_emitted = session.status == "error"
         session.status = "error"
         if not terminal_already_emitted:
+            error_message = session._record_terminal_error(e)
             await event_bus.emit_chat({
                 "type": "error",
-                "message": str(e),
+                "message": error_message,
                 "session_id": session_id,
                 "terminal": True,
                 "messages": [

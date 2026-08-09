@@ -34,4 +34,8 @@ export interface ExtensionStatus {
   dependencies: string[];
   capabilities: string[];
   frontend: string;
+  header_status: {
+    endpoint: string;
+    refresh_endpoint: string;
+  } | null;
 }

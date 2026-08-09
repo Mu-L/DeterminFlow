@@ -22,7 +22,10 @@ export interface UseConversationResult extends ConversationState {
   sendCommand: (payload: { type: string; [key: string]: unknown }) => boolean;
   editMessageAndResend: (messageId: string, content: string) => boolean;
   resync: () => boolean;
-  replaceMessages: (messages: Message[]) => void;
+  replaceMessages: (
+    messages: Message[],
+    state?: { status?: string | null; error?: string | null },
+  ) => void;
   clearError: () => void;
 }
 
@@ -160,9 +163,18 @@ export function useConversation({
   );
 
   const replaceMessages = useCallback(
-    (messages: Message[]) => {
+    (
+      messages: Message[],
+      restoredState?: { status?: string | null; error?: string | null },
+    ) => {
       if (!sessionId) return;
-      dispatch({ type: "replace_messages", sessionId, messages });
+      dispatch({
+        type: "replace_messages",
+        sessionId,
+        messages,
+        status: restoredState?.status,
+        error: restoredState?.error,
+      });
     },
     [sessionId],
   );

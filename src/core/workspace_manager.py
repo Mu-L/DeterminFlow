@@ -18,6 +18,31 @@ import src.config as config
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_WORKSPACE_RELATIVE_PATH = Path("data") / "workspaces"
+
+
+def resolve_workspace_base_path(base_dir: str | Path | None = None) -> Path:
+    """Resolve the configured Workspace root to a writable absolute path."""
+    configured = config.CODING_WORKSPACE_BASE if base_dir is None else base_dir
+    raw_path = str(configured).strip()
+    if not raw_path:
+        return (config.DATA_DIR / "workspaces").resolve()
+
+    candidate = Path(raw_path).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+
+    if candidate == _DEFAULT_WORKSPACE_RELATIVE_PATH:
+        return (config.DATA_DIR / "workspaces").resolve()
+
+    desktop_mode = os.getenv("DETERMINFLOW_DESKTOP", "").strip().lower()
+    anchor = (
+        config.DATA_DIR.parent
+        if desktop_mode in {"1", "true", "yes", "on"}
+        else config.BASE_DIR
+    )
+    return (anchor / candidate).resolve()
+
 
 def resolve_workflow_workspace_path(
     workflow_id: str,
@@ -27,11 +52,7 @@ def resolve_workflow_workspace_path(
 ) -> Path:
     """Purely resolve a Workflow workspace path without creating it."""
     safe_workflow_id = WorkspaceManager._sanitize_id(workflow_id)
-    workspace_root = (
-        Path(base_dir).expanduser().resolve()
-        if base_dir is not None
-        else (config.BASE_DIR / config.CODING_WORKSPACE_BASE).resolve()
-    )
+    workspace_root = resolve_workspace_base_path(base_dir)
     default_path = workspace_root / safe_workflow_id
 
     override_path = override.strip() if override else ""
@@ -82,16 +103,21 @@ class WorkspaceManager:
         Args:
             base_dir: Workspace 存储根目录，默认从配置读取
         """
-        if base_dir:
-            self.base_dir = Path(base_dir)
-        else:
-            self.base_dir = config.BASE_DIR / config.CODING_WORKSPACE_BASE
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-
         # Session → workspace 路径映射（chat 场景）
         self._workspaces: dict[str, Path] = {}
 
+        self.base_dir = resolve_workspace_base_path(base_dir)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+
         logger.info(f"WorkspaceManager 初始化完成，base_dir={self.base_dir}")
+
+    def set_base_dir(self, base_dir: str | Path | None = None) -> Path:
+        """Update the default root used for workspaces created from now on."""
+        resolved = resolve_workspace_base_path(base_dir)
+        resolved.mkdir(parents=True, exist_ok=True)
+        self.base_dir = resolved
+        logger.info("WorkspaceManager base_dir 已更新: %s", resolved)
+        return resolved
 
     # ============================================================
     # 安全工具

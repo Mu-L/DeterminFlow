@@ -23,28 +23,56 @@ export interface SessionDetail extends Session {
   model_params?: Record<string, unknown>;
   workspace_path?: string;
   token_usage?: TokenUsage;
+  last_error?: {
+    code: string;
+    message: string;
+    occurred_at: string;
+  };
 }
 
 export interface ModelProvider {
   id: string;
   name: string;
+  provider_type: string;
   category?: string;
   base_url: string;
   api_key: string;
   models: string[];
   maxContextTokens?: number;
-  models_config?: Record<string, { maxContextTokens?: number }>;
+  models_config?: Record<string, {
+    maxContextTokens?: number;
+    provider_type?: string;
+  }>;
   hyperparameter_values: Record<string, unknown>;
+  managed_by?: string;
+  error_messages?: Record<string, string>;
+  is_managed?: boolean;
   capabilities?: {
+    provider_type: string;
     reasoning_efforts: string[];
+    model_params: Record<string, ModelParamFieldSchema>;
   };
 }
 
+export interface ModelParamFieldSchema {
+  type: "boolean" | "select" | "number" | "range" | "json_mode";
+  label: string;
+  default: unknown;
+  options?: string[];
+  option_labels?: Record<string, string>;
+  min?: number;
+  max?: number;
+  step?: number;
+  nullable?: boolean;
+}
+
 export interface ProviderSchema {
+  provider_type: string;
   display_name: string;
   default_base_url: string;
-  category: string;
+  api_format: "openai" | "openai_responses" | "anthropic";
   reasoning_efforts: string[];
+  model_params: Record<string, ModelParamFieldSchema>;
   hyperparams: Record<string, {
     type: "boolean" | "select" | "number";
     default: unknown;
@@ -337,15 +365,7 @@ export interface AgentDefinitionData {
   visible_skill_group_ids?: string[] | null;
   visible_rule_group_ids?: string[] | null;
   extension_options?: Record<string, Record<string, unknown>> | null;
-  model_params?: {
-    thinking_enabled?: boolean;
-    reasoning_effort?: string;
-    temperature?: number;
-    top_p?: number;
-    presence_penalty?: number;
-    thinking_budget?: number | null;
-    response_format?: { type: "text" | "json_object" } | null;
-  } | null;
+  model_params?: Record<string, unknown> | null;
 }
 
 export type OrchestrationSubTab = "prompts" | "agents" | "tools" | "user-injection";
@@ -523,31 +543,6 @@ export interface PresetPhrase {
   id: string;
   label: string;
   content: string;
-}
-
-export interface ModelProvider {
-  id: string;
-  name: string;
-  api_key: string;
-  base_url: string;
-  models: string[];
-  default_model: string;
-  hyperparameters: Record<string, unknown>;
-  is_default: boolean;
-}
-
-export interface ProviderSchema {
-  provider_id: string;
-  provider_name: string;
-  hyperparameters: {
-    name: string;
-    type: string;
-    description: string;
-    default: unknown;
-    min?: number;
-    max?: number;
-    options?: unknown[];
-  }[];
 }
 
 // ============ 工作流编排类型 ============

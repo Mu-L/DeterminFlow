@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from src.core.model_manager import DEFAULT_MAX_CONTEXT_TOKENS, ModelManager
 
 
@@ -22,6 +24,8 @@ def test_example_model_config_uses_one_api_key_field() -> None:
         "https://api.deepseek.com/v1"
     )
     assert document["providers"]["deepseek"]["maxContextTokens"] == 128000
+    assert document["providers"]["deepseek"]["provider_type"] == "deepseek"
+    assert "category" not in document["providers"]["deepseek"]
     assert all(
         "api_key_env" not in provider
         for provider in document["providers"].values()
@@ -110,6 +114,51 @@ def test_provider_base_url_is_normalized_when_added(tmp_path: Path) -> None:
     assert manager.get_all_providers()["custom"]["base_url"] == (
         "https://custom.example/api"
     )
+
+
+def test_managed_provider_owner_is_validated_and_persisted(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+    manager = ModelManager(str(config_path))
+
+    manager.add_provider(
+        "managed",
+        {
+            "base_url": "https://relay.example.test/v1",
+            "models": ["public-model"],
+            "managed_by": "public-api",
+        },
+    )
+
+    assert manager.get_all_providers()["managed"]["managed_by"] == "public-api"
+    with pytest.raises(ValueError, match="Invalid managed_by"):
+        manager.update_provider("managed", {"managed_by": "invalid owner"})
+
+
+def test_provider_error_messages_are_validated_and_persisted(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+    manager = ModelManager(str(config_path))
+
+    manager.add_provider(
+        "managed",
+        {
+            "models": ["public-model"],
+            "error_messages": {
+                "quota_exhausted": "  公益模型额度已用完，请稍后再试  ",
+            },
+        },
+    )
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["providers"]["managed"]["error_messages"] == {
+        "quota_exhausted": "公益模型额度已用完，请稍后再试",
+    }
+    with pytest.raises(ValueError, match="Unsupported provider error message code"):
+        manager.update_provider(
+            "managed",
+            {"error_messages": {"unsupported": "message"}},
+        )
 
 
 def test_empty_provider_base_url_is_supported(tmp_path: Path) -> None:
@@ -248,6 +297,60 @@ def test_legacy_api_key_env_is_migrated_to_the_api_key_expression(
     assert "api_key_env" not in persisted["providers"]["demo"]
 
 
+def test_legacy_provider_category_is_migrated_without_changing_instance_id(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "primary-ds": {
+                    "category": "ds",
+                    "base_url": "https://models.example.test/v1",
+                    "models": ["model-a"],
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    manager = ModelManager(str(config_path))
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert manager.get_provider_type("primary-ds") == "deepseek"
+    assert persisted["providers"]["primary-ds"]["provider_type"] == "deepseek"
+    assert persisted["providers"]["primary-ds"]["category"] == "ds"
+
+
+def test_custom_openai_provider_gets_an_explicit_compatible_type(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "relay-main": {
+                    "api_format": "openai",
+                    "base_url": "https://relay.example.test/v1",
+                    "models": ["model-a"],
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    manager = ModelManager(str(config_path))
+
+    assert manager.get_provider_type("relay-main") == "openai_compatible"
+    assert set(manager.get_provider_capabilities("relay-main")["model_params"]) == {
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "response_format",
+        "stream_chunk_timeout",
+    }
+
+
 def test_missing_config_uses_the_default_expression_instead_of_env_migration(
     tmp_path: Path,
     monkeypatch,
@@ -346,10 +449,19 @@ def test_provider_priority_controls_dynamic_main_default(tmp_path: Path) -> None
     assert manager.get_default_model() == "second:model-b"
 
 
-def test_provider_templates_expose_reasoning_capabilities(tmp_path: Path) -> None:
+def test_provider_templates_expose_model_parameter_capabilities(tmp_path: Path) -> None:
     config_path = tmp_path / "models_config.json"
     config_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
     manager = ModelManager(str(config_path))
+
+    assert set(manager.get_all_schemas()) == {
+        "openai_compatible",
+        "deepseek",
+        "mimo",
+        "qwen",
+        "openai",
+        "anthropic",
+    }
 
     assert manager.get_provider_schema("openai")["default_base_url"] == (
         "https://api.openai.com/v1"
@@ -357,11 +469,173 @@ def test_provider_templates_expose_reasoning_capabilities(tmp_path: Path) -> Non
     assert manager.get_provider_schema("deepseek")["default_base_url"] == (
         "https://api.deepseek.com/v1"
     )
-    assert manager.get_provider_capabilities("deepseek") == {
-        "reasoning_efforts": ["low", "medium", "high", "max"],
+    deepseek = manager.get_provider_capabilities("deepseek")
+    assert deepseek["reasoning_efforts"] == ["low", "medium", "high", "max"]
+    assert set(deepseek["model_params"]) == {
+        "thinking_enabled",
+        "reasoning_effort",
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "response_format",
+        "stream_chunk_timeout",
     }
-    assert manager.get_provider_capabilities("alibaba") == {
-        "reasoning_efforts": [],
+
+    alibaba = manager.get_provider_capabilities("alibaba")
+    assert alibaba["reasoning_efforts"] == []
+    assert "thinking_budget" in alibaba["model_params"]
+    assert "reasoning_effort" not in alibaba["model_params"]
+
+    anthropic = manager.get_provider_capabilities("anthropic")
+    assert manager.get_provider_schema("anthropic")["api_format"] == "anthropic"
+    assert anthropic["reasoning_efforts"] == [
+        "low", "medium", "high", "xhigh", "max"
+    ]
+    assert set(anthropic["model_params"]) == {
+        "thinking_enabled",
+        "reasoning_effort",
+        "thinking_budget",
+    }
+    assert manager.get_provider_client_base_url(
+        "anthropic", "https://api.anthropic.com/v1"
+    ) == "https://api.anthropic.com"
+
+
+def test_multiple_provider_ids_can_share_one_provider_type(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+    manager = ModelManager(str(config_path))
+
+    manager.add_provider(
+        "deepseek-main",
+        {"provider_type": "deepseek", "base_url": "https://one.test/v1"},
+    )
+    manager.add_provider(
+        "deepseek-backup",
+        {"provider_type": "ds", "base_url": "https://two.test/v1"},
+    )
+
+    assert manager.get_provider_type("deepseek-main") == "deepseek"
+    assert manager.get_provider_type("deepseek-backup") == "deepseek"
+    assert manager.get_all_providers()["deepseek-backup"]["provider_type"] == (
+        "deepseek"
+    )
+
+
+def test_one_provider_resolves_model_specific_types_and_capabilities(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "determinflow-public": {
+                    "name": "DeterminFlow 公益模型",
+                    "provider_type": "openai_compatible",
+                    "base_url": "https://relay.example.test/v1",
+                    "models": ["deepseek-v4-flash", "qwen3.8-max"],
+                    "models_config": {
+                        "deepseek-v4-flash": {
+                            "provider_type": "deepseek",
+                        },
+                        "qwen3.8-max": {
+                            "provider_type": "anthropic",
+                        },
+                    },
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    manager = ModelManager(str(config_path))
+
+    assert manager.get_model_provider_type(
+        "determinflow-public", "deepseek-v4-flash"
+    ) == "deepseek"
+    assert manager.get_provider_client_base_url(
+        "determinflow-public",
+        "https://relay.example.test/v1",
+        "deepseek-v4-flash",
+    ) == "https://relay.example.test/v1"
+    assert "thinking_enabled" in manager.get_model_capabilities(
+        "determinflow-public:deepseek-v4-flash"
+    )["model_params"]
+    assert manager.get_provider_client_base_url(
+        "determinflow-public",
+        "https://relay.example.test/v1",
+        "qwen3.8-max",
+    ) == "https://relay.example.test"
+
+
+def test_unknown_model_provider_type_fails_closed(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "determinflow-public": {
+                    "provider_type": "openai_compatible",
+                    "base_url": "https://relay.example.test/v1",
+                    "models": ["unsafe-model"],
+                    "models_config": {
+                        "unsafe-model": {
+                            "provider_type": "unknown"
+                        }
+                    },
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    manager = ModelManager(str(config_path))
+
+    with pytest.raises(ValueError, match="Unsupported provider_type"):
+        manager.get_model_provider_type("determinflow-public", "unsafe-model")
+
+
+def test_unknown_provider_type_is_rejected_on_add_and_update(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({"providers": {"demo": {"models": []}}}),
+        encoding="utf-8",
+    )
+    manager = ModelManager(str(config_path))
+
+    with pytest.raises(ValueError, match="Unsupported provider_type"):
+        manager.add_provider("invalid", {"provider_type": "unknown"})
+    with pytest.raises(ValueError, match="Unsupported provider_type"):
+        manager.update_provider("demo", {"provider_type": "unknown"})
+
+
+def test_active_provider_type_filters_stale_provider_hyperparameters(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "claude-main": {
+                    "provider_type": "anthropic",
+                    "hyperparameter_values": {
+                        "max_completion_tokens": 8192,
+                        "frequency_penalty": 1.5,
+                    },
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    manager = ModelManager(str(config_path))
+
+    request = manager.build_provider_request(
+        "claude-main",
+        {"thinking_enabled": False},
+    )
+
+    assert request["client_kwargs"] == {
+        "max_tokens": 8192,
+        "thinking": {"type": "disabled"},
     }
 
 

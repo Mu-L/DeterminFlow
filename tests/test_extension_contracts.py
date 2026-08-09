@@ -116,10 +116,17 @@ def test_workflow_runtime_facade_exposes_execution_operations():
         "definition_version": 1,
         "inline_scripts": [],
     }
-    assert runtime.create_task("wf-demo", parameter_values={"topic": "demo"}) == {
+    assert runtime.create_task(
+        "wf-demo",
+        parameter_values={"topic": "demo"},
+        node_model_overrides={"writer": "demo:model"},
+    ) == {
         "task_id": "task-1"
     }
     assert manager.created == ("wf-demo", {"parameter_values": {"topic": "demo"},
+                                           "node_model_overrides": {
+                                               "writer": "demo:model",
+                                           },
                                            "disabled_node_ids": None,
                                            "workspace_override": None,
                                            "scheme_id": None,

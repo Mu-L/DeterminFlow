@@ -163,6 +163,42 @@ test("detects updates only from the installed plugin repository", () => {
   assert.equal(getPluginCatalogUpdate(installed, []), null);
 });
 
+test("does not present an older catalog revision as an update", () => {
+  const installed = plugin({
+    desired_version: "1.2.0",
+    source: {
+      ...plugin().source,
+      url: "https://example.invalid/plugins.git",
+      resolved_commit: "installed-commit",
+    },
+  });
+  const catalogEntry = {
+    id: "demo-plugin",
+    name: "Demo Plugin",
+    version: "1.1.9",
+    description: "",
+    source_id: "official-demo",
+    source_name: "Official",
+    source: "https://example.invalid/plugins.git",
+    source_kind: "official" as const,
+    ref: "main",
+    resolved_commit: "older-commit",
+    subdirectory: "plugins/demo-plugin",
+  };
+
+  assert.equal(
+    getPluginCatalogUpdate(installed, [catalogEntry])?.available,
+    false,
+  );
+  assert.equal(
+    getPluginCatalogUpdate(installed, [{
+      ...catalogEntry,
+      version: "1.2.0",
+    }])?.available,
+    true,
+  );
+});
+
 
 test("accepts the supported nested settings schema subset", () => {
   const result = parsePluginSettingsSchema({

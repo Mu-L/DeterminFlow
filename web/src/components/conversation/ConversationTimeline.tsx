@@ -58,6 +58,7 @@ export default function ConversationTimeline({
     [messages, streamingSegments],
   );
   const contentVersion = useMemo(() => getTimelineContentVersion(entries), [entries]);
+  const visibleError = error ? errorMessage(error) : null;
   const viewportRef = useRef<HTMLDivElement>(null);
   const { scrollToBottom, resetAutoFollow } = useAutoFollowOutput(viewportRef, {
     threshold: followThreshold,
@@ -65,14 +66,14 @@ export default function ConversationTimeline({
 
   useEffect(() => {
     scrollToBottom();
-  }, [contentVersion, isStreaming, scrollToBottom]);
+  }, [contentVersion, isStreaming, scrollToBottom, visibleError]);
 
   useEffect(() => {
     resetAutoFollow();
   }, [conversationId, resetAutoFollow]);
 
-  const isInitialLoading = loading && entries.length === 0;
-  const isInitialError = !!error && entries.length === 0;
+  const isInitialError = !!visibleError && entries.length === 0;
+  const isInitialLoading = loading && !isInitialError && entries.length === 0;
   const isEmpty = !loading && !error && entries.length === 0;
 
   return (
@@ -80,7 +81,11 @@ export default function ConversationTimeline({
       <div ref={viewportRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {isInitialLoading && <ConversationAsyncState kind="loading" />}
         {isInitialError && (
-          <ConversationAsyncState kind="error" message={errorMessage(error)} onRetry={onRetry} />
+          <ConversationAsyncState
+            kind="error"
+            message={visibleError || undefined}
+            onRetry={loading ? onRetry : undefined}
+          />
         )}
         {isEmpty && (emptyState || <ConversationAsyncState kind="empty" />)}
 
@@ -92,14 +97,6 @@ export default function ConversationTimeline({
             aria-live="polite"
             aria-relevant="additions text"
           >
-            {error && (
-              <ConversationAsyncState
-                kind="error"
-                message={errorMessage(error)}
-                onRetry={onRetry}
-                className="min-h-0 rounded-lg border border-red-500/15 bg-red-500/5 py-4"
-              />
-            )}
             {entries.map((entry) => {
               if (entry.kind === "reasoning") {
                 return (
@@ -130,6 +127,13 @@ export default function ConversationTimeline({
                 <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 正在生成
               </div>
+            )}
+            {visibleError && (
+              <ConversationAsyncState
+                kind="error"
+                message={visibleError}
+                className="min-h-0 rounded-lg border border-red-500/15 bg-red-500/5 py-4"
+              />
             )}
           </div>
         )}

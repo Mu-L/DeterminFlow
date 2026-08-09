@@ -5,11 +5,13 @@ import { ToastProvider } from "@/components/ui/toast-provider";
 import { CORE_TAB_IDS, isCoreTabId, type CoreTabId } from "@/core-tabs";
 import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
 import { useGlobalEvents } from "./hooks/useGlobalEvents";
-import { useUrlParam } from "./hooks/useUrlParam";
+import { patchSearchParams, useUrlParam } from "./hooks/useUrlParam";
 import { useExtensions } from "./extensions/context-value";
+import { ExtensionHeaderStatusSlot } from "./extensions/ExtensionHeaderStatusSlot";
 import { DesktopUpdateProvider } from "./desktop-updater/context";
 import { DesktopUpdateNotice } from "./desktop-updater/DesktopUpdateNotice";
 import { useNavigationSettings } from "./hooks/useNavigationSettings";
+import FirstRunOnboarding from "./components/onboarding/FirstRunOnboarding";
 
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
@@ -125,63 +127,75 @@ function App() {
     setRequestedTab(value === "chat" ? null : value);
   };
 
+  const handleManageExtension = (extensionId: string) => {
+    const nextSearch = patchSearchParams(window.location.search, {
+      tab: "extensions",
+      plugin: extensionId,
+    });
+    window.history.pushState(window.history.state, "", `${window.location.pathname}${nextSearch}${window.location.hash}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
+
   return (
     <DesktopUpdateProvider>
       <ToastProvider>
-        <div className="min-h-screen bg-slate-900 flex flex-col">
-      {/* Top Navigation Bar */}
-      <header className="fixed top-0 left-0 right-0 z-50 h-14 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50">
-        <div className="h-full flex items-center gap-3 px-4">
-          {/* Brand */}
-          <div className="flex shrink-0 items-center gap-3">
-            <img
-              src={BRAND_MARK_DARK}
-              alt={PRODUCT_NAME}
-              className="h-8 w-8 shrink-0"
-            />
-            <h1
-              className="hidden text-lg font-semibold tracking-tight text-slate-100 2xl:block"
-              aria-hidden="true"
-            >
-              {PRODUCT_NAME}
-            </h1>
-          </div>
-
-          {/* Tabs */}
-          <Tabs className="min-w-0 flex-1" value={activeTab} onValueChange={handleTabChange}>
-            <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <TabsList className="w-max justify-start bg-slate-800/80 border border-slate-700/50" role="tablist" aria-label="主导航">
-                {tabs.map((tab) => {
-                  const Icon = tab.icon;
-                  return (
-                  <TabsTrigger
-                    key={tab.value}
-                    value={tab.value}
-                    className={`gap-2 ${tab.activeClass}`}
-                    role="tab"
-                    aria-selected={activeTab === tab.value}
+        <FirstRunOnboarding>
+          <div className="flex h-dvh flex-col overflow-hidden bg-slate-900">
+            {/* Top Navigation Bar */}
+            <header className="fixed top-0 left-0 right-0 z-50 h-14 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50">
+              <div className="h-full flex items-center gap-3 px-4">
+                {/* Brand */}
+                <div className="flex shrink-0 items-center gap-3">
+                  <img
+                    src={BRAND_MARK_DARK}
+                    alt={PRODUCT_NAME}
+                    className="h-8 w-8 shrink-0"
+                  />
+                  <h1
+                    className="hidden text-lg font-semibold tracking-tight text-slate-100 2xl:block"
+                    aria-hidden="true"
                   >
-                    <Icon size={16} aria-hidden="true" />
-                    <span>{tab.label}</span>
-                  </TabsTrigger>
-                  );
-                })}
-              </TabsList>
-            </div>
-          </Tabs>
+                    {PRODUCT_NAME}
+                  </h1>
+                </div>
 
-          <GlobalConnectionStatus />
-        </div>
-      </header>
+                {/* Tabs */}
+                <Tabs className="min-w-0 flex-1" value={activeTab} onValueChange={handleTabChange}>
+                  <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    <TabsList className="w-max justify-start bg-slate-800/80 border border-slate-700/50" role="tablist" aria-label="主导航">
+                      {tabs.map((tab) => {
+                        const Icon = tab.icon;
+                        return (
+                          <TabsTrigger
+                            key={tab.value}
+                            value={tab.value}
+                            className={`gap-2 ${tab.activeClass}`}
+                            role="tab"
+                            aria-selected={activeTab === tab.value}
+                          >
+                            <Icon size={16} aria-hidden="true" />
+                            <span>{tab.label}</span>
+                          </TabsTrigger>
+                        );
+                      })}
+                    </TabsList>
+                  </div>
+                </Tabs>
 
-      {/* Main Content */}
-      <main className="flex-1 pt-14" role="main" aria-label="主内容区域">
-        <Suspense fallback={<PageLoadingFallback />}>
-          {CorePage ? <CorePage /> : ExtensionPage ? <ExtensionPage /> : null}
-        </Suspense>
-      </main>
-          <DesktopUpdateNotice onOpenSettings={() => handleTabChange("settings")} />
-        </div>
+                <ExtensionHeaderStatusSlot onManage={handleManageExtension} />
+                <GlobalConnectionStatus />
+              </div>
+            </header>
+
+            {/* Main Content */}
+            <main className="min-h-0 flex-1 overflow-y-auto overscroll-none pt-14" role="main" aria-label="主内容区域">
+              <Suspense fallback={<PageLoadingFallback />}>
+                {CorePage ? <CorePage /> : ExtensionPage ? <ExtensionPage /> : null}
+              </Suspense>
+            </main>
+            <DesktopUpdateNotice onOpenSettings={() => handleTabChange("settings")} />
+          </div>
+        </FirstRunOnboarding>
       </ToastProvider>
     </DesktopUpdateProvider>
   );

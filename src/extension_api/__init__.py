@@ -2,6 +2,7 @@
 
 from .models import (
     CoreRuntime,
+    ExtensionHeaderStatus,
     ExtensionManifest,
     ExtensionPage,
     ExtensionProcess,
@@ -15,6 +16,7 @@ from .workflow import WorkflowRuntime
 __all__ = [
     "CoreRuntime",
     "ExtensionManifest",
+    "ExtensionHeaderStatus",
     "ExtensionPage",
     "ExtensionProcess",
     "ExtensionRegistrar",

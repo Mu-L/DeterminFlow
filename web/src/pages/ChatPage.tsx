@@ -233,7 +233,10 @@ export default function ChatPage() {
       .then((detail) => {
         if (requestId !== detailRequestRef.current) return;
         setViewingSession(detail);
-        replaceMessages(detail.messages || []);
+        replaceMessages(detail.messages || [], {
+          status: detail.status,
+          error: detail.last_error?.message,
+        });
       })
       .catch((error: unknown) => {
         if (requestId !== detailRequestRef.current) return;
@@ -316,14 +319,18 @@ export default function ChatPage() {
   // 删除会话
   const handleDeleteSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const session = sessions.find((item) => item.session_id === sessionId);
+    const isMainSession = session?.type === "main";
     setConfirmDialog({
       open: true,
-      title: "删除会话",
-      message: `确定要删除会话 ${sessionId} 吗？此操作不可恢复。`,
+      title: isMainSession ? "删除主会话" : "删除会话",
+      message: isMainSession
+        ? "确定删除此主会话吗？其全部子会话、关联工作流任务和 Agent 记录都会被永久删除。"
+        : `确定要删除会话 ${sessionId} 吗？此操作不可恢复。`,
       onConfirm: async () => {
         try {
-          await deleteSession(sessionId);
-          if (viewingSessionId === sessionId) {
+          const result = await deleteSession(sessionId);
+          if (result.deleted_session_ids?.includes(targetSessionId || "")) {
             setViewingSessionId(null);
             setViewingSession(null);
           }
@@ -333,7 +340,7 @@ export default function ChatPage() {
         }
       },
     });
-  }, [viewingSessionId, setViewingSessionId, loadSessions]);
+  }, [sessions, targetSessionId, setViewingSessionId, loadSessions]);
 
   // 终止会话
   const handleKillSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {

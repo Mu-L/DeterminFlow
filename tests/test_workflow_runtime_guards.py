@@ -24,6 +24,10 @@ from src.workflow.nodes.agent import AgentNode
 from src.workflow.nodes.base import NodeContext
 from src.workflow.nodes.script import ScriptNode
 from src.workflow.runtime_guards import RUNTIME_GUARD_KEY, RUNTIME_GUARD_SCHEMA
+from src.workflow.task_overrides import (
+    TaskOverrideValidationError,
+    apply_node_model_overrides,
+)
 from src.workflow.script_library import (
     ScriptLibraryCatalog,
     ScriptLibraryConflictError,
@@ -52,7 +56,12 @@ class _MutableModelManager:
             "provider_id": provider_id,
             "base_url": f"https://{self.provider_revision}.example.test",
             "api_key": "private-test-value",  # pragma: allowlist secret
+            "models": ["candidate-model"],
+            "provider_type": "openai",
         }
+
+    def get_model_provider_type(self, provider_id, model_name):
+        return "openai"
 
     def get_default_params(self):
         return {"reasoning_effort": "high", "max_completion_tokens": 32000}
@@ -72,6 +81,133 @@ def _write_workflow(workflows_dir, definition: WorkflowDef) -> None:
         json.dumps(definition.to_dict(), ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def test_task_node_model_override_is_snapshot_only_and_guarded(
+    tmp_path,
+    monkeypatch,
+):
+    workflows_dir = tmp_path / "workflows"
+    workflow_id = "wf-runtime-task-model-override"
+    agent_definition = AgentDefinition(
+        agent_type="test.writer",
+        description="per-task model override test",
+        prompt_template="test-writer",
+        tools=[],
+        model="openai:default-model",
+    )
+    monkeypatch.setattr(
+        "src.agent.definition.get_agent_definition",
+        lambda agent_type: (
+            agent_definition if agent_type == agent_definition.agent_type else None
+        ),
+    )
+    monkeypatch.setattr(
+        "src.core.model_manager.get_model_manager",
+        lambda: _MutableModelManager(),
+    )
+    monkeypatch.setattr(workflow_manager_module, "WORKFLOWS_DIR", workflows_dir)
+
+    node = WorkflowNode(
+        id="writer",
+        node_type="agent",
+        agent_type=agent_definition.agent_type,
+        first_message="write",
+    )
+    definition = WorkflowDef(workflow_id=workflow_id, nodes=[node])
+    _write_workflow(workflows_dir, definition)
+    session_manager = SessionManager()
+    session_manager.set_builders(PromptBuilder(_MutablePromptManager()), object())
+    manager = WorkflowManager(session_manager)
+
+    created = manager.create_task(
+        workflow_id,
+        node_model_overrides={"writer": "openai:candidate-model"},
+    )
+
+    assert created is not None
+    live = manager.get_workflow(workflow_id)["definition"]
+    assert "model_override" not in live["nodes"][0]
+    task = manager._load_task(workflow_id, created["task_id"])
+    frozen_node = WorkflowDef.from_dict(task.snapshot_definition).get_node("writer")
+    assert frozen_node.model_override == "openai:candidate-model"
+    assert "private-test-value" not in json.dumps(task.snapshot_definition)
+    guard = frozen_node.node_params[RUNTIME_GUARD_KEY]
+    assert guard["model_override"] == "openai:candidate-model"
+    assert len(guard["effective_agent_definition_sha256"]) == 64
+
+    rejected = manager.create_task(
+        workflow_id,
+        node_model_overrides={"writer": "openai:missing-model"},
+    )
+    assert rejected == {
+        "success": False,
+        "error": "workflow_model_not_found",
+        "message": "Provider openai 未配置模型 missing-model",
+    }
+    tasks_dir = workflows_dir / workflow_id / "tasks"
+    assert len(list(tasks_dir.glob("*.json"))) == 1
+
+
+class _ConfiguredModelManager:
+    def get_provider(self, provider_id):
+        if provider_id != "provider-a":
+            return None
+        return {
+            "models": ["model-a"],
+            "provider_type": "openai_compatible",
+        }
+
+    def get_model_provider_type(self, provider_id, model_name):
+        return "openai_compatible"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_code"),
+    [
+        ({"missing": "provider-a:model-a"},
+         "workflow_node_model_override_unknown_node"),
+        ({"persist": "provider-a:model-a"},
+         "workflow_node_model_override_not_agent"),
+        ({"writer": "invalid"},
+         "workflow_model_reference_invalid"),
+        ({"writer": "missing:model-a"},
+         "workflow_model_provider_not_found"),
+        ({"writer": "provider-a:model-x"},
+         "workflow_model_not_found"),
+    ],
+)
+def test_task_node_model_override_rejects_invalid_targets_and_models(
+    overrides,
+    error_code,
+) -> None:
+    definition = {
+        "nodes": [
+            {"id": "writer", "node_type": "agent"},
+            {"id": "persist", "node_type": "script"},
+        ]
+    }
+
+    with pytest.raises(TaskOverrideValidationError) as captured:
+        apply_node_model_overrides(
+            definition,
+            overrides,
+            model_manager=_ConfiguredModelManager(),
+        )
+
+    assert captured.value.code == error_code
+
+
+def test_task_node_model_override_accepts_configured_provider_model() -> None:
+    definition = {"nodes": [{"id": "writer", "node_type": "agent"}]}
+
+    apply_node_model_overrides(
+        definition,
+        {"writer": "provider-a:model-a"},
+        model_manager=_ConfiguredModelManager(),
+    )
+
+    assert definition["nodes"][0]["model_override"] == "provider-a:model-a"
 
 
 def test_task_freezes_actual_inline_script_and_script_node_rejects_drift(

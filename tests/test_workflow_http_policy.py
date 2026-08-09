@@ -11,9 +11,11 @@ from pydantic import ValidationError
 import src.config as config
 from src.web.workflow_routes import (
     PreStartRequest,
+    TaskCreateRequest,
     WorkflowCreateRequest,
     WorkflowUpdateRequest,
     _ensure_http_mutation_allowed,
+    create_task as create_task_route,
     create_workflow as create_workflow_route,
     pre_start_workflow,
     stop_task,
@@ -103,6 +105,74 @@ def test_pre_start_forwards_explicit_main_takeover():
         "main_takeover": True,
     })]
     assert PreStartRequest().main_takeover is False
+
+
+def test_create_task_forwards_predefined_node_model_overrides():
+    class TaskManager(FakeManager):
+        def __init__(self):
+            super().__init__("public")
+            self.calls = []
+
+        def create_task(self, workflow_id: str, **kwargs):
+            self.calls.append((workflow_id, kwargs))
+            return {"task_id": "task-1"}
+
+    manager = TaskManager()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(workflow_manager=manager),
+        ),
+    )
+
+    result = asyncio.run(create_task_route(
+        "wf-user",
+        request,
+        TaskCreateRequest(
+            node_model_overrides={"writer": "provider-a:model-a"},
+        ),
+    ))
+
+    assert result == {"task_id": "task-1"}
+    assert manager.calls == [("wf-user", {
+        "from_node_id": None,
+        "parameter_values": None,
+        "node_model_overrides": {"writer": "provider-a:model-a"},
+        "disabled_node_ids": None,
+        "scheme_id": None,
+        "selected_node_ids": None,
+        "workspace_override": None,
+    })]
+
+
+def test_create_task_maps_model_override_validation_to_http_422():
+    class TaskManager(FakeManager):
+        def create_task(self, workflow_id: str, **kwargs):
+            return {
+                "success": False,
+                "error": "workflow_model_not_found",
+                "message": "Provider provider-a 未配置模型 model-x",
+            }
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(workflow_manager=TaskManager("public")),
+        ),
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        asyncio.run(create_task_route(
+            "wf-user",
+            request,
+            TaskCreateRequest(
+                node_model_overrides={"writer": "provider-a:model-x"},
+            ),
+        ))
+
+    assert captured.value.status_code == 422
+    assert captured.value.detail == {
+        "code": "workflow_model_not_found",
+        "message": "Provider provider-a 未配置模型 model-x",
+    }
 
 
 def test_unknown_http_execution_policy_fails_closed():

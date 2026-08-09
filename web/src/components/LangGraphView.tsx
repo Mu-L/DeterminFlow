@@ -11,8 +11,7 @@ import "reactflow/dist/style.css";
 import { GraphStructure } from "../types";
 
 interface LangGraphViewProps {
-  mainGraph: GraphStructure;
-  subGraph: GraphStructure;
+  graph: GraphStructure;
 }
 
 // ============ Custom Nodes ============
@@ -42,7 +41,7 @@ function ToolNodeComponent({ data }: NodeProps) {
       <Handle type="target" position={Position.Top} className="opacity-0" />
       <div className="text-xs font-bold text-amber-400">{data.label}</div>
       <div className="text-xs text-muted-foreground mt-0.5">{data.description}</div>
-      <Handle type="source" position={Position.Bottom} className="opacity-0" />
+      <Handle type="source" position={Position.Right} className="opacity-0" />
     </div>
   );
 }
@@ -85,7 +84,7 @@ const nodeTypes = {
 
 // ============ Graph Builder ============
 
-function buildFlowElements(graph: GraphStructure, offsetX: number = 0) {
+function buildFlowElements(graph: GraphStructure) {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
@@ -93,7 +92,7 @@ function buildFlowElements(graph: GraphStructure, offsetX: number = 0) {
   nodes.push({
     id: `${graph.name}__start__`,
     type: "startEnd",
-    position: { x: offsetX + 120, y: 20 },
+    position: { x: 250, y: 20 },
     data: { label: "START" },
   });
 
@@ -101,19 +100,19 @@ function buildFlowElements(graph: GraphStructure, offsetX: number = 0) {
   nodes.push({
     id: `${graph.name}__end__`,
     type: "startEnd",
-    position: { x: offsetX + 120, y: 340 },
+    position: { x: 470, y: 270 },
     data: { label: "END" },
   });
 
   // Position nodes
   const positions: Record<string, { x: number; y: number }> = {
-    llm: { x: offsetX + 100, y: 80 },
-    tools: { x: offsetX + 100, y: 180 },
-    check_status: { x: offsetX + 250, y: 230 },
+    llm: { x: 180, y: 100 },
+    tools: { x: 20, y: 270 },
+    check_status: { x: 340, y: 270 },
   };
 
   graph.nodes.forEach((node) => {
-    const pos = positions[node.id] || { x: offsetX + 100, y: 150 };
+    const pos = positions[node.id] || { x: 180, y: 180 };
     const typeMap: Record<string, string> = { llm: "llmNode", tool: "toolNode", check: "checkNode" };
 
     nodes.push({
@@ -132,19 +131,32 @@ function buildFlowElements(graph: GraphStructure, offsetX: number = 0) {
     const targetId = edge.target === "__end__"
       ? `${graph.name}__end__`
       : `${graph.name}_${edge.target}`;
+    const label = edge.source === "__start__"
+      ? ""
+      : edge.source === "llm" && edge.target === "tools"
+        ? "调用工具"
+        : edge.source === "llm" && edge.target === "__end__"
+          ? "直接结束"
+          : edge.source === "tools" && edge.target === "llm"
+            ? "继续推理"
+            : edge.label?.slice(0, 20) || "";
 
     edges.push({
       id: `${graph.name}_edge_${i}`,
       source: sourceId,
       target: targetId,
-      label: edge.label?.slice(0, 20) || "",
+      label,
+      type: "smoothstep",
       animated: edge.conditional,
       style: {
         stroke: edge.conditional ? "rgb(245 158 11)" : "rgb(99 102 241)", // amber-500 : indigo-500
         strokeWidth: 1.5,
       },
       className: edge.conditional ? "motion-reduce:!transition-none motion-reduce:!animate-none" : undefined,
-      labelStyle: { fontSize: 12, fill: "rgb(148 163 184)" }, // slate-400
+      labelStyle: { fontSize: 11, fill: "rgb(148 163 184)" }, // slate-400
+      labelBgStyle: { fill: "rgb(15 23 42)", fillOpacity: 0.92 },
+      labelBgPadding: [6, 4],
+      labelBgBorderRadius: 4,
     });
   });
 
@@ -153,15 +165,10 @@ function buildFlowElements(graph: GraphStructure, offsetX: number = 0) {
 
 // ============ Main Component ============
 
-export default function LangGraphView({ mainGraph, subGraph }: LangGraphViewProps) {
+export default function LangGraphView({ graph }: LangGraphViewProps) {
   const { nodes, edges } = useMemo(() => {
-    const main = buildFlowElements(mainGraph, 0);
-    const sub = buildFlowElements(subGraph, 350);
-    return {
-      nodes: [...main.nodes, ...sub.nodes],
-      edges: [...main.edges, ...sub.edges],
-    };
-  }, [mainGraph, subGraph]);
+    return buildFlowElements(graph);
+  }, [graph]);
 
   return (
     <div
@@ -169,27 +176,14 @@ export default function LangGraphView({ mainGraph, subGraph }: LangGraphViewProp
       role="application"
       aria-label="LangGraph 结构可视化图"
     >
-      {/* Labels */}
-      <span className="sr-only">此图包含 Main Agent 和 Sub Agent 两个图结构</span>
-      <div
-        className="absolute top-2 left-4 z-10 text-xs font-medium text-indigo-400 bg-slate-800 border border-slate-700 rounded px-2 py-1"
-        aria-hidden="true"
-      >
-        Main Agent Graph
-      </div>
-      <div
-        className="absolute top-2 left-4 z-10 text-xs font-medium text-cyan-400 bg-slate-800 border border-slate-700 rounded px-2 py-1"
-        style={{ transform: "translateX(350px)" }}
-        aria-hidden="true"
-      >
-        Sub Agent Graph
-      </div>
+      <span className="sr-only">{graph.name}，包含 {nodes.length} 个节点和 {edges.length} 条连线</span>
 
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
+        fitViewOptions={{ padding: 0.25 }}
         className="bg-slate-900"
         nodesDraggable={false}
       >

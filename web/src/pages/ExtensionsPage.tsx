@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { useExtensionActivationErrors } from "@/extensions/context-value";
+import { useUrlParam } from "@/hooks/useUrlParam";
 import type {
   InstallPluginRequest,
   PluginCatalogResponse,
@@ -84,6 +85,7 @@ export default function ExtensionsPage() {
   const [error, setError] = useState("");
   const [catalogError, setCatalogError] = useState("");
   const operationInFlight = useRef(false);
+  const [requestedPlugin, setRequestedPlugin] = useUrlParam("plugin");
 
   const load = useCallback(async (initial = false) => {
     if (initial) setLoading(true);
@@ -131,6 +133,20 @@ export default function ExtensionsPage() {
     void load(true);
     void loadCatalog();
   }, [load, loadCatalog]);
+
+  useEffect(() => {
+    if (
+      loading
+      || !requestedPlugin
+      || !data.plugins.some((plugin) => plugin.id === requestedPlugin)
+    ) {
+      return;
+    }
+    setTab("installed");
+    setSelectedId(requestedPlugin);
+    setDrawer("details");
+    setRequestedPlugin(null, { replace: true });
+  }, [data.plugins, loading, requestedPlugin, setRequestedPlugin]);
 
   const selectedPlugin = useMemo(
     () => data.plugins.find((plugin) => plugin.id === selectedId) ?? null,

@@ -64,7 +64,7 @@ export function useOrchestration() {
   const [ruleGroups, setRuleGroups] = useState<RuleGroup[]>([]);
   const [activeTab, setActiveTab] = useState<OrchestrationSubTab>("prompts");
   const [selectedAgentType, setSelectedAgentType] = useState<string | null>(null);
-  const [defaultModelParams, setDefaultModelParams] = useState<{ thinking_enabled: boolean; reasoning_effort: string; temperature: number; top_p: number; presence_penalty: number; thinking_budget: number | null; response_format: { type: "text" | "json_object" } | null } | null>(null);
+  const [defaultModelParams, setDefaultModelParams] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadData = useCallback(async () => {
@@ -112,13 +112,8 @@ export function useOrchestration() {
         (a) => {
           // 合并 model_params: agent 配置 > models_config default_params
           const mergedModelParams: AgentDefinitionData["model_params"] = {
-            thinking_enabled: a.model_params?.thinking_enabled ?? defaultParams.thinking_enabled,
-            reasoning_effort: a.model_params?.reasoning_effort ?? defaultParams.reasoning_effort,
-            temperature: a.model_params?.temperature ?? defaultParams.temperature,
-            top_p: a.model_params?.top_p ?? defaultParams.top_p,
-            presence_penalty: a.model_params?.presence_penalty ?? defaultParams.presence_penalty,
-            thinking_budget: a.model_params?.thinking_budget ?? defaultParams.thinking_budget,
-            response_format: (a.model_params?.response_format ?? defaultParams.response_format ?? null) as { type: "text" | "json_object" } | null,
+            ...defaultParams,
+            ...(a.model_params || {}),
           };
           return {
             agent_type: a.agent_type,

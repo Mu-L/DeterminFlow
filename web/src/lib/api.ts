@@ -90,7 +90,12 @@ export async function sendToSession(sessionId: string, message: string) {
 }
 
 export async function deleteSession(sessionId: string) {
-  return request<{ success: boolean; message: string }>(`/sessions/${sessionId}`, {
+  return request<{
+    success: boolean;
+    message: string;
+    deleted_session_ids?: string[];
+    deleted_task_ids?: string[];
+  }>(`/sessions/${sessionId}`, {
     method: "DELETE",
   });
 }
@@ -123,7 +128,8 @@ export async function fetchTools() {
 }
 
 export async function fetchGraphStructure() {
-  return request<{ main_graph: import("../types").GraphStructure; sub_graph: import("../types").GraphStructure }>("/graph/structure");
+  const data = await request<{ graph: import("../types").GraphStructure }>("/graph/structure");
+  return data.graph;
 }
 
 export async function fetchRecentEvents(limit: number = 50) {
@@ -776,12 +782,13 @@ export async function deleteModelProvider(providerId: string) {
 
 export async function addModelProvider(provider: {
   provider_id: string;
+  provider_type: string;
   name: string;
   base_url: string;
   api_key?: string;
   models?: string[];
   maxContextTokens?: number;
-  models_config?: Record<string, { maxContextTokens?: number }>;
+  models_config?: import("../types").ModelProvider["models_config"];
   hyperparameter_values?: Record<string, unknown>;
 }) {
   return request<{ success: boolean; message: string }>("/model-providers", {
@@ -792,6 +799,7 @@ export async function addModelProvider(provider: {
 
 export async function discoverProviderModels(input: {
   provider_id: string;
+  provider_type?: string;
   base_url?: string;
   api_key?: string;
 }) {
@@ -817,13 +825,23 @@ export async function setDefaultModel(providerId: string, modelName: string) {
 
 export async function getAllModels() {
   return request<{
-    models: { value: string; label: string; display_name: string; provider_id: string; model_name: string; category: string }[];
+    models: {
+      value: string;
+      label: string;
+      display_name: string;
+      provider_id: string;
+      model_name: string;
+      provider_type: string;
+      model_params: Record<string, import("../types").ModelParamFieldSchema>;
+      reasoning_efforts: string[];
+      category: string;
+    }[];
   }>("/models/all");
 }
 
 export async function fetchDefaultModelParams() {
   return request<{
-    default_params: { thinking_enabled: boolean; reasoning_effort: string; temperature: number; top_p: number; presence_penalty: number; thinking_budget: number | null; response_format: { type: "text" | "json_object" } | null };
+    default_params: Record<string, unknown>;
   }>("/model-params/defaults");
 }
 

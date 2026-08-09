@@ -180,6 +180,11 @@ DeterminFlow 解决流程怎么执行，Plugin 则把它和运行所需的能力
 它覆盖建书、角色、故事规划、卷纲与近纲、正文生产、章节后验和润色，并带有配套 API、
 SSE Job、PostgreSQL 迁移和断点恢复。Plugin 是你打包交付一套完整 AI 业务引擎的最佳选择。
 
+同仓库还提供可选的
+[`public-api`](https://github.com/alikon-art/DeterminFlow-Plugins/tree/main/plugins/public-api)
+公益模型 Plugin。Windows 桌面版可在首次引导或 Plugin 页面安装；未安装或未启用时，
+Core 不加载公益模型服务逻辑。
+
 > [!NOTE]
 > Plugin 使用现有 Core Node 组合 Workflow。需要新节点类型时，可以 Fork Core 并扩展
 > 通用 Node 抽象。

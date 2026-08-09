@@ -15,6 +15,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Iterable
 
+from src.environment import get_determinflow_env
 from src.extension_api.models import (
     EXTENSION_API_VERSION,
     CoreRuntime,
@@ -23,15 +24,19 @@ from src.extension_api.models import (
     PromptContextRequest,
     PromptContribution,
 )
-from src.extension_api.registrar import ExtensionContributions, ExtensionRegistrar, OwnedPath
-from src.environment import get_determinflow_env
+from src.extension_api.registrar import (
+    ExtensionContributions,
+    ExtensionRegistrar,
+    OwnedPath,
+)
 from src.plugin_system import (
     PluginStore,
     ProcessManager,
     install_applied_plugin_requirements,
 )
-from .manifest import SUPPORTED_RESOURCE_TYPES, parse_extension_manifest
+
 from .lifecycle import load_extension_lifecycle, run_extension_lifecycle
+from .manifest import SUPPORTED_RESOURCE_TYPES, parse_extension_manifest
 from .plugin_config import (
     PluginConfigStore,
     load_settings_schema,
@@ -906,6 +911,11 @@ class ExtensionManager:
         return replace(
             runtime,
             tool_registry=ExtensionToolRegistry(runtime.tool_registry, owner),
+            session_runtime=(
+                runtime.session_runtime.for_owner(owner)
+                if runtime.session_runtime is not None
+                else None
+            ),
             services=services,
             resource_owner=owner, resource_dependencies=manifest.dependencies,
             resource_resolver=self.resource_resolver,
@@ -993,6 +1003,14 @@ class ExtensionManager:
                 "capabilities": list(manifest.capabilities),
                 "resource_prefix": manifest.resource_prefix,
                 "frontend": manifest.frontend,
+                "header_status": (
+                    {
+                        "endpoint": manifest.header_status.endpoint,
+                        "refresh_endpoint": manifest.header_status.refresh_endpoint,
+                    }
+                    if getattr(manifest, "header_status", None) is not None
+                    else None
+                ),
                 "processes": processes,
             })
         return result

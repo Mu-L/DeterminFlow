@@ -23,7 +23,7 @@ import httpx
 
 from fastapi import APIRouter, Request, HTTPException, Body
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 
@@ -337,6 +337,10 @@ async def get_session_detail(session_id: str, request: Request):
     if session.token_usage:
         result["token_usage"] = session.token_usage
 
+    last_error = getattr(session, "last_error", None)
+    if last_error:
+        result["last_error"] = last_error
+
     return result
 
 
@@ -449,7 +453,7 @@ async def send_to_session(session_id: str, body: SendMessageRequest, request: Re
 
 async def delete_session(session_id: str, request: Request):
 
-    """删除会话（仅允许删除已完成/出错的非主会话，以及历史加载的旧主会话）"""
+    """删除会话；删除历史 Main 时级联清理其会话树与 Workflow Task。"""
 
     sm = _get_session_manager(request)
 
@@ -1038,9 +1042,35 @@ async def update_config_api(body: UpdateConfigRequest, request: Request):
 
     from src.config import update_config
 
+    workspace_base = None
+    if "CODING_WORKSPACE_BASE" in body.updates:
+        from src.core.workspace_manager import resolve_workspace_base_path
+
+        try:
+            workspace_base = resolve_workspace_base_path(
+                str(body.updates["CODING_WORKSPACE_BASE"])
+            )
+            workspace_base.mkdir(parents=True, exist_ok=True)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Workspace 存储根目录不可用: {exc}",
+            ) from exc
+
 
 
     result = update_config(body.updates, persist=body.persist)
+
+    if workspace_base is not None:
+        managers = [getattr(request.app.state, "workspace_manager", None)]
+        workflow_manager = getattr(request.app.state, "workflow_manager", None)
+        managers.append(getattr(workflow_manager, "_ws_manager", None))
+        refreshed: set[int] = set()
+        for manager in managers:
+            if manager is None or id(manager) in refreshed:
+                continue
+            manager.set_base_dir(workspace_base)
+            refreshed.add(id(manager))
 
 
 
@@ -2233,16 +2263,23 @@ async def reload_agent_definitions(request: Request):
 
 class UpdateModelProviderRequest(BaseModel):
     name: str | None = None
+    provider_type: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     models: list[str] | None = None
     maxContextTokens: int | None = None
     models_config: dict[str, Any] | None = None
     hyperparameter_values: dict[str, Any] | None = None
+    error_messages: dict[str, str] | None = None
+    managed_by: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
 
 
 class AddModelProviderRequest(BaseModel):
-    provider_id: str
+    provider_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    provider_type: str | None = None
     name: str
     base_url: str
     api_key: str = ""
@@ -2250,16 +2287,51 @@ class AddModelProviderRequest(BaseModel):
     maxContextTokens: int = 128000
     models_config: dict[str, Any] = Field(default_factory=dict)
     hyperparameter_values: dict[str, Any] = Field(default_factory=dict)
+    error_messages: dict[str, str] | None = None
+    managed_by: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
 
 
 class DiscoverProviderModelsRequest(BaseModel):
     provider_id: str
+    provider_type: str | None = None
     base_url: str | None = None
     api_key: str | None = None
 
 
+class ProbeProviderModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    model: str = Field(min_length=3, max_length=512)
+
+
+_PROVIDER_OWNER_HEADER = "x-determinflow-provider-owner"
+
+
+def _active_provider_owner(request: Request, provider: dict[str, Any]) -> str | None:
+    owner = str(provider.get("managed_by") or "").strip()
+    extension_manager = getattr(request.app.state, "extension_manager", None)
+    if not owner or extension_manager is None:
+        return None
+    try:
+        return owner if extension_manager.is_enabled(owner) else None
+    except (AttributeError, KeyError, TypeError):
+        return None
+
+
+def _require_provider_write_access(
+    request: Request,
+    provider: dict[str, Any],
+) -> None:
+    owner = _active_provider_owner(request, provider)
+    if owner and request.headers.get(_PROVIDER_OWNER_HEADER) != owner:
+        raise HTTPException(status_code=403, detail="该供应商由已启用的插件管理")
+
+
 @router.get("/model-providers")
-async def get_model_providers():
+async def get_model_providers(request: Request):
     """获取所有模型供应商配置（api_key 脱敏）"""
     from src.core.model_manager import get_model_manager
 
@@ -2273,6 +2345,7 @@ async def get_model_providers():
         resolved = model_manager.get_provider(pid) or {}
         masked["api_key"] = "***" if resolved.get("api_key") else ""
         masked["capabilities"] = model_manager.get_provider_capabilities(pid)
+        masked["is_managed"] = _active_provider_owner(request, pconfig) is not None
         masked_providers[pid] = masked
 
     default_model = model_manager.get_default_model()
@@ -2286,14 +2359,34 @@ async def get_model_providers():
 
 
 @router.put("/model-providers/{provider_id}")
-async def update_model_provider(provider_id: str, body: UpdateModelProviderRequest):
+async def update_model_provider(
+    provider_id: str,
+    body: UpdateModelProviderRequest,
+    request: Request,
+):
     """更新模型供应商配置"""
     from src.core.model_manager import get_model_manager
 
     model_manager = get_model_manager()
+    configured = model_manager.get_provider(provider_id)
+    if configured is None:
+        raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
+    _require_provider_write_access(request, configured)
 
     try:
         updates = body.model_dump(exclude_unset=True)
+        requested_owner = updates.get("managed_by")
+        if requested_owner and (
+            request.headers.get(_PROVIDER_OWNER_HEADER) != requested_owner
+            or _active_provider_owner(
+                request,
+                {"managed_by": requested_owner},
+            ) is None
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="只有已启用的所属插件可以接管供应商",
+            )
         # 脱敏值或空输入表示保持现有配置；新值会替换环境变量引用或旧 Key。
         if updates.get("api_key") in {"", "***"}:
             del updates["api_key"]
@@ -2301,18 +2394,30 @@ async def update_model_provider(provider_id: str, body: UpdateModelProviderReque
         model_manager.update_provider(provider_id, updates)
         return {"success": True, "message": f"供应商 {provider_id} 已更新"}
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/model-providers")
-async def add_model_provider(body: AddModelProviderRequest):
+async def add_model_provider(body: AddModelProviderRequest, request: Request):
     """添加新模型供应商"""
     from src.core.model_manager import get_model_manager
 
     model_manager = get_model_manager()
+    if (
+        body.managed_by
+        and (
+            request.headers.get(_PROVIDER_OWNER_HEADER) != body.managed_by
+            or _active_provider_owner(
+                request,
+                {"managed_by": body.managed_by},
+            ) is None
+        )
+    ):
+        raise HTTPException(status_code=403, detail="只有所属插件可以创建托管供应商")
 
     try:
         provider_config = {
+            "provider_type": body.provider_type,
             "name": body.name,
             "base_url": body.base_url,
             "api_key": body.api_key,
@@ -2320,7 +2425,10 @@ async def add_model_provider(body: AddModelProviderRequest):
             "maxContextTokens": body.maxContextTokens,
             "models_config": body.models_config,
             "hyperparameter_values": body.hyperparameter_values,
+            **({"managed_by": body.managed_by} if body.managed_by else {}),
         }
+        if body.error_messages is not None:
+            provider_config["error_messages"] = body.error_messages
         model_manager.add_provider(body.provider_id, provider_config)
         return {"success": True, "message": f"供应商 {body.provider_id} 已添加"}
     except ValueError as e:
@@ -2329,12 +2437,19 @@ async def add_model_provider(body: AddModelProviderRequest):
 
 @router.post("/model-providers/models/discover")
 async def discover_provider_models(body: DiscoverProviderModelsRequest):
-    """从 OpenAI-compatible /models 端点动态拉取模型列表。"""
+    """按 Provider 声明的 API 格式从 /models 拉取模型列表。"""
     from src.core.model_manager import get_model_manager
 
     model_manager = get_model_manager()
     configured = model_manager.get_provider(body.provider_id) or {}
-    schema = model_manager.get_provider_schema(body.provider_id) or {}
+    try:
+        provider_type = model_manager.resolve_provider_type(
+            body.provider_id,
+            body.provider_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    schema = model_manager.get_provider_schema(provider_type) or {}
     base_url = (
         body.base_url
         or configured.get("base_url")
@@ -2351,7 +2466,14 @@ async def discover_provider_models(body: DiscoverProviderModelsRequest):
         if submitted_key in {"", "***"}
         else submitted_key
     )
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    api_format = schema.get("api_format", "openai")
+    if api_format == "anthropic":
+        headers = {
+            "anthropic-version": "2023-06-01",
+            **({"x-api-key": api_key} if api_key else {}),
+        }
+    else:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     models_url = f"{base_url.rstrip('/')}/models"
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
@@ -2385,12 +2507,30 @@ async def discover_provider_models(body: DiscoverProviderModelsRequest):
     return {"models": models}
 
 
+@router.post("/model-providers/models/probe")
+async def probe_provider_model(body: ProbeProviderModelRequest):
+    """使用 Core 已保存的 Provider 配置发起一次最小真实推理。"""
+    from src.core.model_probe import ModelProbeError, probe_configured_model
+
+    try:
+        return await probe_configured_model(body.model)
+    except ModelProbeError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
+
 @router.delete("/model-providers/{provider_id}")
-async def delete_model_provider(provider_id: str):
+async def delete_model_provider(provider_id: str, request: Request):
     """删除模型供应商"""
     from src.core.model_manager import get_model_manager
 
     model_manager = get_model_manager()
+    configured = model_manager.get_provider(provider_id)
+    if configured is None:
+        raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
+    _require_provider_write_access(request, configured)
     model_manager.delete_provider(provider_id)
     return {"success": True, "message": f"供应商 {provider_id} 已删除"}
 
@@ -2405,12 +2545,17 @@ async def get_provider_schemas():
 
 
 @router.put("/model-providers/{provider_id}/priority")
-async def prioritize_model_provider(provider_id: str):
+async def prioritize_model_provider(provider_id: str, request: Request):
     """将供应商移到首位，作为 Main 自动模型来源。"""
     from src.core.model_manager import get_model_manager
 
+    model_manager = get_model_manager()
+    configured = model_manager.get_provider(provider_id)
+    if configured is None:
+        raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
+    _require_provider_write_access(request, configured)
     try:
-        get_model_manager().move_provider_to_front(provider_id)
+        model_manager.move_provider_to_front(provider_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"success": True, "message": f"供应商 {provider_id} 已移到首位"}
@@ -2429,13 +2574,25 @@ async def get_all_models():
     for model_id in models:
         provider_id, model_name = model_id.split(":", 1)
         provider = model_manager.get_provider(provider_id)
-        display_name = f"{provider['name']} - {model_name}" if provider else model_name
+        try:
+            capabilities = model_manager.get_model_capabilities(model_id)
+        except ValueError as exc:
+            logger.warning("忽略 Provider 类型无效的模型 %s: %s", model_id, exc)
+            continue
+        display_name = (
+            f"{provider['name']} - {model_name}"
+            if provider
+            else model_name
+        )
         model_list.append({
             "value": model_id,
             "label": display_name,
             "display_name": display_name,
             "provider_id": provider_id,
             "model_name": model_name,
+            "provider_type": capabilities["provider_type"] if provider else "",
+            "model_params": capabilities["model_params"] if provider else {},
+            "reasoning_efforts": capabilities["reasoning_efforts"] if provider else [],
             "category": provider.get("category", "") if provider else "",
         })
 

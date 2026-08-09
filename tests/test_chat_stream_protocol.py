@@ -202,6 +202,27 @@ def test_snapshot_excludes_incrementally_persisted_active_generation_messages():
     ]
 
 
+def test_terminal_snapshot_and_session_restore_keep_user_safe_error():
+    session = AgentSession(
+        session_type="main",
+        task_description="test",
+        session_id="failed-session",
+    )
+    session.status = "error"
+    session.record = [{"type": "assistant", "content": "earlier reply"}]
+    session.last_error = {
+        "code": "quota_exhausted",
+        "message": "公益模型额度已用完，请稍后再试",
+        "occurred_at": "2026-08-09T12:00:00+00:00",
+    }
+
+    snapshot = ws_handlers._build_session_snapshot(session, bus=EventBus())
+    restored = AgentSession.from_dict(session.to_dict())
+
+    assert snapshot["last_error"] == session.last_error
+    assert restored.last_error == session.last_error
+
+
 def test_chain_end_clears_active_draft_and_keeps_monotonic_revision():
     async def scenario():
         bus = EventBus()
@@ -452,6 +473,57 @@ def test_failed_tool_status_survives_chain_end_and_history_restore():
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.status == "error"
     assert tool_message.additional_kwargs["tool_status"] == "cancelled"
+
+
+def test_anthropic_content_blocks_and_signature_survive_history_restore():
+    blocks = [
+        {"type": "thinking", "thinking": "分析过程", "signature": "sig-123"},
+        {"type": "text", "text": "最终回答"},
+        {
+            "type": "tool_use",
+            "id": "toolu-1",
+            "name": "lookup",
+            "input": {"query": "value"},
+        },
+    ]
+
+    async def scenario():
+        session = AgentSession(session_type="sub", agent_type="test")
+        await session._append_to_record(AIMessage(
+            content=blocks,
+            response_metadata={"model_provider": "anthropic"},
+            tool_calls=[{
+                "id": "toolu-1",
+                "name": "lookup",
+                "args": {"query": "value"},
+            }],
+        ))
+        await session._append_to_record(ToolMessage(
+            content="result",
+            tool_call_id="toolu-1",
+        ))
+        return session.record
+
+    record = asyncio.run(scenario())
+    assert record[0]["content"] == "最终回答"
+    assert record[0]["reasoning_content"] == "分析过程"
+    assert record[0]["content_blocks"][0]["signature"] == "sig-123"
+
+    restored = AgentSession(session_type="sub", agent_type="test")
+    restored.record = record
+    restored._restore_lc_from_record()
+    assistant = restored.lc_messages[0]
+    assert isinstance(assistant, AIMessage)
+    assert assistant.content == blocks
+    assert assistant.tool_calls[0]["id"] == "toolu-1"
+
+
+def test_standard_reasoning_content_block_is_displayable():
+    from src.core.utils import message_content_reasoning
+
+    assert message_content_reasoning([
+        {"type": "reasoning", "reasoning": "标准思考块"},
+    ]) == "标准思考块"
 
 
 def test_parallel_tool_completion_resolves_by_call_id_not_finish_order():

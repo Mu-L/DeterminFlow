@@ -87,6 +87,74 @@ def test_manifest_without_lifecycle_loads_none(tmp_path: Path) -> None:
     assert parse_extension_manifest(manifest).extension_id == "demo"
 
 
+def test_manifest_parses_same_origin_header_status_source(tmp_path: Path) -> None:
+    manifest = _write_manifest(
+        tmp_path / "plugin",
+        """
+[header_status]
+endpoint = "/api/demo/status"
+refresh_endpoint = "/api/demo/refresh"
+""",
+    )
+
+    parsed = parse_extension_manifest(manifest)
+
+    assert parsed.header_status is not None
+    assert parsed.header_status.endpoint == "/api/demo/status"
+    assert parsed.header_status.refresh_endpoint == "/api/demo/refresh"
+
+
+def test_manifest_can_move_static_page_out_of_plugin_details(tmp_path: Path) -> None:
+    manifest = _write_manifest(
+        tmp_path / "plugin",
+        """
+[page]
+label = "Model list"
+static_dir = "ui"
+show_in_details = false
+""",
+    )
+
+    parsed = parse_extension_manifest(manifest)
+
+    assert parsed.page is not None
+    assert parsed.page.show_in_details is False
+
+
+def test_manifest_rejects_non_boolean_page_visibility(tmp_path: Path) -> None:
+    manifest = _write_manifest(
+        tmp_path / "plugin",
+        """
+[page]
+static_dir = "ui"
+show_in_details = "false"
+""",
+    )
+
+    with pytest.raises(ValueError, match="page.show_in_details 必须是布尔值"):
+        parse_extension_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["https://example.test/status", "//example.test/status", "/status", "/api/../secret"],
+)
+def test_manifest_rejects_unsafe_header_status_endpoint(
+    tmp_path: Path,
+    endpoint: str,
+) -> None:
+    manifest = _write_manifest(
+        tmp_path / "plugin",
+        f"""
+[header_status]
+endpoint = "{endpoint}"
+""",
+    )
+
+    with pytest.raises(ValueError, match="同源 /api/ 路径"):
+        parse_extension_manifest(manifest)
+
+
 @pytest.mark.parametrize(
     ("lifecycle", "message"),
     [

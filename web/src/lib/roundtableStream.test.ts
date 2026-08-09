@@ -9,6 +9,7 @@ import {
   shouldHandleRoundtableEvent,
 } from "./roundtableStream";
 import { restoreRoundtableHistory } from "../hooks/useRoundtable";
+import { getRoundtableErrorDescription } from "./roundtableFeedback";
 
 test("roundtable stream ignores scoped events for inactive meetings", () => {
   assert.equal(
@@ -149,4 +150,38 @@ test("roundtable detail restores summaries and structured conclusion from histor
     source: "主持人",
   });
   assert.deepEqual(restored.structuredConclusion, structuredConclusion);
+});
+
+test("roundtable feedback extracts a user-facing API detail", () => {
+  assert.equal(
+    getRoundtableErrorDescription(
+      new Error('API Error 400: {"detail":"至少需要保留 2 个席位"}'),
+      "操作失败",
+    ),
+    "至少需要保留 2 个席位",
+  );
+});
+
+test("roundtable feedback translates connection failures", () => {
+  assert.equal(
+    getRoundtableErrorDescription(new TypeError("Failed to fetch"), "操作失败"),
+    "无法连接到服务，请检查连接后重试。",
+  );
+});
+
+test("roundtable feedback hides malformed and internal responses", () => {
+  assert.equal(
+    getRoundtableErrorDescription(
+      new Error("API Error 500: internal traceback"),
+      "操作失败，请重试。",
+    ),
+    "操作失败，请重试。",
+  );
+  assert.equal(
+    getRoundtableErrorDescription(
+      new Error('API Error 500: {"detail":{"internal":"secret"}}'),
+      "操作失败，请重试。",
+    ),
+    "操作失败，请重试。",
+  );
 });

@@ -10,6 +10,7 @@ import src.agent.session as session_module
 import src.agent.session_lifecycle as session_lifecycle_module
 import src.agent.session_retention as session_retention_module
 import src.workflow.manager as workflow_manager_module
+import src.workflow.task_queries as task_queries_module
 from src.agent.session import AgentSession
 from src.agent.session_manager import SessionManager
 from src.web.event_bus import event_bus
@@ -149,6 +150,90 @@ def test_startup_indexes_history_without_hydrating_terminal_workflow_sessions(
     assert summaries["sub-interrupted"]["status"] == "error"
     tree = manager.get_session_tree(main_id="wf-finished")
     assert [child["session_id"] for child in tree["children"]] == ["sub-finished"]
+
+
+def test_deleting_historical_main_cascades_sessions_and_workflow_tasks(
+    isolated_sessions,
+    tmp_path,
+    monkeypatch,
+):
+    workflows_dir = tmp_path / "workflows"
+    monkeypatch.setattr(workflow_manager_module, "WORKFLOWS_DIR", workflows_dir)
+    monkeypatch.setattr(task_queries_module, "WORKFLOWS_DIR", workflows_dir)
+
+    _write_session(
+        isolated_sessions,
+        "main-current",
+        session_type="main",
+        runtime_scope="interactive",
+    )
+    _write_session(
+        isolated_sessions,
+        "main-history",
+        session_type="main",
+        status="running",
+        runtime_scope="interactive",
+    )
+    _write_session(
+        isolated_sessions,
+        "workflow-agent",
+        session_type="sub",
+        parent_id="main-history",
+        workflow_id="wf-demo",
+        task_id="task-demo",
+    )
+    _write_session(
+        isolated_sessions,
+        "workflow-main",
+        session_type="main",
+        workflow_id="wf-demo",
+        task_id="task-demo",
+        task_description="Workflow: wf-demo",
+        runtime_scope="workflow",
+    )
+    _write_session(
+        isolated_sessions,
+        "workflow-agent-child",
+        session_type="sub",
+        parent_id="workflow-agent",
+        workflow_id="wf-demo",
+        task_id="task-demo",
+    )
+
+    session_manager = SessionManager()
+    session_manager.load_sessions()
+    session_manager.main_session_id = "main-current"
+    workflow_manager = WorkflowManager(session_manager)
+    session_manager.inject_dependencies(workflow_manager=workflow_manager)
+
+    task_path = workflows_dir / "wf-demo" / "tasks" / "task-demo.json"
+    task_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_manager._save_task(WorkflowTask(
+        workflow_id="wf-demo",
+        task_id="task-demo",
+        main_session_id="main-history",
+        status="completed",
+    ))
+
+    result = asyncio.run(session_manager.delete_session("main-history"))
+
+    assert result["success"] is True
+    assert set(result["deleted_session_ids"]) == {
+        "main-history",
+        "workflow-agent",
+        "workflow-agent-child",
+        "workflow-main",
+    }
+    assert result["deleted_task_ids"] == ["task-demo"]
+    assert not task_path.exists()
+    assert (isolated_sessions / "main-current.json").exists()
+    assert not (isolated_sessions / "main-history.json").exists()
+    assert not (isolated_sessions / "workflow-agent.json").exists()
+    assert not (isolated_sessions / "workflow-agent-child.json").exists()
+
+    protected = asyncio.run(session_manager.delete_session("main-current"))
+    assert protected["success"] is False
+    assert "当前活跃的主会话" in protected["message"]
 
 
 def test_historical_session_load_is_bounded_by_lru(isolated_sessions):

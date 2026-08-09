@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, RefreshCw, X } from "lucide-react";
 import ModelListEditor from "./ModelListEditor";
-import { mergeUniqueModels } from "../lib/model-options";
+import {
+  mergeUniqueModels,
+  nextProviderId,
+  sanitizeProviderId,
+} from "../lib/model-options";
 import type { ProviderSchema } from "../types";
 
 interface AddProviderInput {
   provider_id: string;
+  provider_type: string;
   name: string;
   base_url: string;
   api_key: string;
@@ -20,6 +25,7 @@ interface Props {
   onAdd: (input: AddProviderInput) => Promise<void>;
   onDiscoverModels: (input: {
     provider_id: string;
+    provider_type: string;
     base_url?: string;
     api_key?: string;
   }) => Promise<string[]>;
@@ -34,12 +40,10 @@ export default function AddModelProviderDialog({
   onDiscoverModels,
 }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const availableProviderIds = useMemo(
-    () => Object.keys(schemas).filter((id) => !existingProviderIds.includes(id)),
-    [schemas, existingProviderIds],
-  );
-  const availableProviderKey = availableProviderIds.join("|");
-  const firstAvailableProviderId = availableProviderIds[0] || "";
+  const providerTypes = useMemo(() => Object.keys(schemas), [schemas]);
+  const providerTypeKey = providerTypes.join("|");
+  const firstProviderType = providerTypes[0] || "";
+  const [providerType, setProviderType] = useState("");
   const [providerId, setProviderId] = useState("");
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -49,25 +53,27 @@ export default function AddModelProviderDialog({
   const [discovering, setDiscovering] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const selectProvider = useCallback((id: string) => {
-    const schema = schemas[id];
-    setProviderId(id);
+  const providerIdExists = existingProviderIds.includes(providerId);
+  const selectProviderType = useCallback((type: string) => {
+    const schema = schemas[type];
+    setProviderType(type);
+    setProviderId(nextProviderId(type, existingProviderIds));
     setName(schema?.display_name || "");
     setBaseUrl(schema?.default_base_url || "");
     setModels([]);
     setError(null);
-  }, [schemas]);
+  }, [existingProviderIds, schemas]);
 
   useEffect(() => {
     if (!open) return;
-    selectProvider(firstAvailableProviderId);
+    selectProviderType(firstProviderType);
     setApiKey("");
     setApiExpanded(false);
     const frame = window.requestAnimationFrame(() => {
       dialogRef.current?.querySelector<HTMLElement>("select, input")?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [open, availableProviderKey, firstAvailableProviderId, selectProvider]);
+  }, [open, providerTypeKey, firstProviderType, selectProviderType]);
 
   useEffect(() => {
     if (!open) return;
@@ -79,12 +85,13 @@ export default function AddModelProviderDialog({
   }, [open, onClose]);
 
   const discoverModels = async () => {
-    if (!providerId || !baseUrl) return;
+    if (!providerType || !providerId || !baseUrl) return;
     setDiscovering(true);
     setError(null);
     try {
       const result = await onDiscoverModels({
         provider_id: providerId,
+        provider_type: providerType,
         base_url: baseUrl,
         api_key: apiKey,
       });
@@ -118,7 +125,6 @@ export default function AddModelProviderDialog({
         <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-700 bg-slate-900/95 px-5 py-4 backdrop-blur">
           <div>
             <h3 id="add-provider-title" className="text-lg font-semibold text-slate-100">添加模型供应商</h3>
-            <p className="mt-0.5 text-xs text-slate-500">选择模板后填写凭据并拉取模型</p>
           </div>
           <button
             type="button"
@@ -131,21 +137,40 @@ export default function AddModelProviderDialog({
         </header>
 
         <div className="space-y-4 p-5">
-          {availableProviderIds.length === 0 ? (
+          {providerTypes.length === 0 ? (
             <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 text-sm text-slate-400">
-              所有支持的供应商都已添加。
+              暂无可用的供应商类型。
             </div>
           ) : (
             <>
               <label className="block text-sm text-slate-300">
-                供应商
+                供应商类型
                 <select
-                  value={providerId}
-                  onChange={(event) => selectProvider(event.target.value)}
+                  value={providerType}
+                  onChange={(event) => selectProviderType(event.target.value)}
                   className="mt-1 min-h-11 w-full appearance-none rounded-lg border border-slate-600 bg-slate-800 px-3 text-sm text-slate-100 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
                 >
-                  {availableProviderIds.map((id) => <option key={id} value={id}>{schemas[id].display_name}</option>)}
+                  {providerTypes.map((type) => (
+                    <option key={type} value={type}>{schemas[type].display_name}</option>
+                  ))}
                 </select>
+              </label>
+
+              <label className="block text-sm text-slate-300">
+                供应商 ID
+                <input
+                  value={providerId}
+                  onChange={(event) => setProviderId(sanitizeProviderId(event.target.value))}
+                  aria-invalid={providerIdExists}
+                  aria-describedby={providerIdExists ? "provider-id-error" : undefined}
+                  placeholder="例如 deepseek-main"
+                  className="mt-1 min-h-11 w-full rounded-lg border border-slate-600 bg-slate-800 px-3 font-mono text-sm text-slate-100 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                />
+                {providerIdExists && (
+                  <span id="provider-id-error" className="mt-1 block text-xs text-amber-400">
+                    该 ID 已存在
+                  </span>
+                )}
               </label>
 
               <label className="block text-sm text-slate-300">
@@ -230,13 +255,14 @@ export default function AddModelProviderDialog({
           <button type="button" onClick={onClose} className="min-h-11 rounded-lg border border-slate-600 px-4 text-sm text-slate-300 hover:bg-slate-800">取消</button>
           <button
             type="button"
-            disabled={!providerId || !name.trim() || !baseUrl.trim() || models.length === 0 || saving}
+            disabled={!providerType || !providerId || providerIdExists || !name.trim() || !baseUrl.trim() || models.length === 0 || saving}
             onClick={async () => {
               setSaving(true);
               setError(null);
               try {
                 await onAdd({
                   provider_id: providerId,
+                  provider_type: providerType,
                   name: name.trim(),
                   base_url: baseUrl.trim(),
                   api_key: apiKey.trim(),

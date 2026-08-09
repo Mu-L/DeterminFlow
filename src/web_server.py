@@ -231,6 +231,7 @@ async def lifespan(app: FastAPI):
         llm = create_startup_llm(streaming=True)
 
         # 初始化 WorkflowManager（必须在 ToolRegistry 之前，因为工厂闭包通过 session_mgr._workflow_manager 获取）
+        from src.agent.extension_sessions import ExtensionSessionRuntime
         from src.workflow.manager import WorkflowManager
         from src.workflow.runtime import WorkflowRuntimeFacade
         from src.workflow.script_library import configure_script_library
@@ -263,6 +264,7 @@ async def lifespan(app: FastAPI):
             workflow_runtime=workflow_runtime,
             tool_registry=registry,
             event_publisher=None,
+            session_runtime=ExtensionSessionRuntime(session_mgr),
             services={
                 "mcp_client": mcp,
                 "agent_config_manager": agent_config_mgr,

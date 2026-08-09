@@ -7,10 +7,12 @@ import {
   buildCatalogInstallRequest,
   PluginInstallForm,
 } from "../components/extensions/PluginInstallForm.tsx";
+import { PluginLifecycleList } from "../components/extensions/PluginLifecycleList.tsx";
 import { PluginRepositoryDialog } from "../components/extensions/PluginRepositoryDialog.tsx";
 import type {
   PluginCatalogEntry,
   PluginCatalogSource,
+  PluginRecord,
   PluginSourceRequest,
 } from "./plugin-types.ts";
 
@@ -63,6 +65,36 @@ const save: (
   source: PluginCatalogSource | null,
   request: PluginSourceRequest,
 ) => Promise<boolean> = async () => true;
+
+const installedPlugin: PluginRecord = {
+  id: "public-api",
+  name: "笔枢公益模型",
+  description: "由笔枢写作免费提供的模型体验服务。",
+  resource_prefix: "public-api",
+  runtime_status: "running",
+  error: "",
+  active_enabled: true,
+  desired_enabled: true,
+  active_version: "0.1.19",
+  desired_version: "0.1.19",
+  restart_required: false,
+  pending_action: null,
+  dependencies: [],
+  capabilities: ["api.routes", "model.providers"],
+  source: {
+    url: "ssh://git@example.com/official.git",
+    ref: "main",
+    subdirectory: "plugins/public-api",
+    trust: "official",
+    resolved_commit: "1234567890abcdef",
+    content_sha256: "abcdef1234567890",
+  },
+  settings_schema: null,
+  settings: {},
+  config_present: true,
+  page_url: null,
+  processes: [],
+};
 
 test("install drawer exposes repository controls without a search field", () => {
   const markup = renderToStaticMarkup(createElement(PluginInstallForm, {
@@ -128,4 +160,18 @@ test("catalog installs pin the commit shown to the user", () => {
     resource_prefix: "demo",
     acknowledge_risk: false,
   });
+});
+
+test("installed plugins expose one dedicated description column", () => {
+  const markup = renderToStaticMarkup(createElement(PluginLifecycleList, {
+    plugins: [installedPlugin],
+    catalog: [],
+    busyAction: "",
+    onDetails: noop,
+    onSetEnabled: succeed,
+    onUpdate: succeed,
+  }));
+
+  assert.match(markup, />说明</);
+  assert.match(markup, /由笔枢写作免费提供的模型体验服务/);
 });

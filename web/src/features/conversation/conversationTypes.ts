@@ -131,7 +131,13 @@ export type ConversationAction =
   | { type: "select_session"; sessionId: string | null }
   | { type: "connection_changed"; connected: boolean }
   | { type: "server_event"; event: ConversationServerEvent }
-  | { type: "replace_messages"; sessionId: string; messages: Message[] }
+  | {
+      type: "replace_messages";
+      sessionId: string;
+      messages: Message[];
+      status?: string | null;
+      error?: string | null;
+    }
   | { type: "append_optimistic_message"; sessionId: string; message: Message }
   | {
       type: "edit_optimistic_message";

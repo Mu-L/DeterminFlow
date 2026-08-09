@@ -35,6 +35,22 @@ export interface PluginCatalogUpdate {
   available: boolean;
 }
 
+const STABLE_VERSION_PATTERN = /^\d+(?:\.\d+)*$/;
+
+function compareStableVersions(left: string, right: string): number | null {
+  if (!STABLE_VERSION_PATTERN.test(left) || !STABLE_VERSION_PATTERN.test(right)) {
+    return null;
+  }
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  const segmentCount = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < segmentCount; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
 export function getPluginCatalogUpdate(
   plugin: PluginRecord,
   catalog: PluginCatalogEntry[],
@@ -44,13 +60,18 @@ export function getPluginCatalogUpdate(
   ));
   if (!entry) return null;
   const installedCommit = plugin.source.resolved_commit;
-  const available = Boolean(
+  const installedVersion = plugin.desired_version || plugin.active_version;
+  const versionComparison = installedVersion && entry.version
+    ? compareStableVersions(entry.version, installedVersion)
+    : null;
+  const revisionChanged = Boolean(
     installedCommit && entry.resolved_commit
       ? installedCommit !== entry.resolved_commit
-      : plugin.desired_version
+      : installedVersion
         && entry.version
-        && plugin.desired_version !== entry.version,
+        && installedVersion !== entry.version,
   );
+  const available = revisionChanged && (versionComparison === null || versionComparison >= 0);
   return { entry, available };
 }
 

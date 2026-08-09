@@ -47,14 +47,15 @@ def _git(repo: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def _create_repo(tmp_path: Path) -> Path:
+def _create_repo(tmp_path: Path, *, show_in_details: bool = True) -> Path:
     repo = tmp_path / "plugin-repo"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.name", "Plugin Test")
     _git(repo, "config", "user.email", "plugin-test@example.invalid")
+    page_visibility = "" if show_in_details else "show_in_details = false"
     (repo / "extension.toml").write_text(
-        """
+        f"""
 [extension]
 id = "demo-plugin"
 name = "Demo Plugin"
@@ -72,6 +73,7 @@ schema = "settings.schema.json"
 label = "Demo"
 static_dir = "ui"
 entrypoint = "index.html"
+{page_visibility}
 """,
         encoding="utf-8",
     )
@@ -155,7 +157,7 @@ def test_plugin_management_routes_preserve_restart_boundary_and_static_page(
     tmp_path: Path,
     admin_headers: dict[str, str],
 ):
-    repo = _create_repo(tmp_path)
+    repo = _create_repo(tmp_path, show_in_details=False)
     base_dir = tmp_path / "core"
     store = PluginStore(
         tmp_path / "runtime" / "plugins",
@@ -237,11 +239,22 @@ def test_plugin_management_routes_preserve_restart_boundary_and_static_page(
     assert active["active_enabled"] is True
     assert active["desired_enabled"] is True
     assert active["restart_required"] is False
+    assert active["page_url"] is None
     assert response.json()["restart_required"] is False
 
     page = restarted_client.get("/api/plugins/demo-plugin/ui/index.html")
     assert page.status_code == 200
     assert "Plugin page" in page.text
+
+    root = restarted_client.get(
+        "/api/plugins/demo-plugin/ui",
+        follow_redirects=False,
+    )
+    assert root.status_code == 307
+    assert root.headers["location"] == "/api/plugins/demo-plugin/ui/"
+    redirected_page = restarted_client.get(root.headers["location"])
+    assert redirected_page.status_code == 200
+    assert "Plugin page" in redirected_page.text
 
     asyncio.run(restarted.stop())
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from src.extension_api.models import (
     EXTENSION_API_VERSION,
+    ExtensionHeaderStatus,
     ExtensionManifest,
     ExtensionPage,
     ExtensionProcess,
@@ -15,7 +16,6 @@ from src.extension_api.models import (
 from src.plugin_system.models import validate_plugin_id, validate_resource_prefix
 
 from .lifecycle import parse_extension_lifecycle
-
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
     "agents",
@@ -65,6 +65,19 @@ def _validate_relative_path(value: str, *, field_name: str) -> str:
     if path.is_absolute() or ".." in path.parts:
         raise ValueError(f"{field_name} 必须是 Plugin 根目录内的相对路径")
     return path.as_posix()
+
+
+def _validate_api_endpoint(value: str, *, field_name: str) -> str:
+    if (
+        not value.startswith("/api/")
+        or value.startswith("//")
+        or "?" in value
+        or "#" in value
+        or "\\" in value
+        or ".." in value.split("/")
+    ):
+        raise ValueError(f"{field_name} 必须是无查询参数的同源 /api/ 路径")
+    return value
 
 
 def _parse_processes(data: Any) -> tuple[ExtensionProcess, ...]:
@@ -289,6 +302,9 @@ def parse_extension_manifest(manifest_path: Path) -> ExtensionManifest:
             ),
             field_name="page.entrypoint",
         )
+        show_in_details = page_data.get("show_in_details", True)
+        if not isinstance(show_in_details, bool):
+            raise ValueError("page.show_in_details 必须是布尔值")
         page = ExtensionPage(
             label=_string(
                 page_data,
@@ -298,6 +314,44 @@ def parse_extension_manifest(manifest_path: Path) -> ExtensionManifest:
             ),
             static_dir=static_dir,
             entrypoint=entrypoint,
+            show_in_details=show_in_details,
+        )
+
+    header_status_data = data.get("header_status")
+    header_status = None
+    if header_status_data is not None:
+        if not isinstance(header_status_data, dict):
+            raise ValueError("[header_status] 必须是 TOML table")
+        unknown_header_fields = sorted(
+            set(header_status_data) - {"endpoint", "refresh_endpoint"}
+        )
+        if unknown_header_fields:
+            raise ValueError(
+                "header_status 包含不支持的字段: "
+                + ", ".join(unknown_header_fields)
+            )
+        endpoint = _validate_api_endpoint(
+            _string(
+                header_status_data,
+                "endpoint",
+                required=True,
+                context="header_status",
+            ),
+            field_name="header_status.endpoint",
+        )
+        refresh_endpoint = _string(
+            header_status_data,
+            "refresh_endpoint",
+            context="header_status",
+        )
+        if refresh_endpoint:
+            refresh_endpoint = _validate_api_endpoint(
+                refresh_endpoint,
+                field_name="header_status.refresh_endpoint",
+            )
+        header_status = ExtensionHeaderStatus(
+            endpoint=endpoint,
+            refresh_endpoint=refresh_endpoint,
         )
 
     return ExtensionManifest(
@@ -316,5 +370,6 @@ def parse_extension_manifest(manifest_path: Path) -> ExtensionManifest:
         requirements=requirements,
         settings_schema=settings_schema,
         page=page,
+        header_status=header_status,
         processes=_parse_processes(data.get("processes")),
     )

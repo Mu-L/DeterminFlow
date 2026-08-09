@@ -5,6 +5,7 @@ import pytest
 from src import config
 from src.core.workspace_manager import (
     WorkspaceManager,
+    resolve_workspace_base_path,
     resolve_workflow_workspace_path,
 )
 
@@ -39,6 +40,33 @@ def test_absolute_override_allows_external_data_dir(
 
     assert resolved == override.resolve()
     assert resolved.is_dir()
+
+
+def test_desktop_relative_workspace_root_uses_user_runtime_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_root = tmp_path / "desktop-user"
+    monkeypatch.setattr(config, "DATA_DIR", user_root / "data")
+    monkeypatch.setenv("DETERMINFLOW_DESKTOP", "1")
+
+    resolved = resolve_workspace_base_path("projects/agent-workspaces")
+
+    assert resolved == user_root / "projects" / "agent-workspaces"
+
+
+def test_updating_workspace_root_only_affects_new_workspaces(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    manager = WorkspaceManager(base_dir=str(first_root))
+    existing = manager.create_workspace("existing-session")
+
+    manager.set_base_dir(second_root)
+    created = manager.create_workspace("new-session")
+
+    assert existing == first_root / "existing-session"
+    assert manager.get_workspace("existing-session") == existing
+    assert created == second_root / "new-session"
 
 
 def test_pure_workspace_resolver_matches_runtime_without_creating_directory(

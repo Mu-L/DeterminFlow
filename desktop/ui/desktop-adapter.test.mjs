@@ -127,3 +127,20 @@ test("terminal WebSocket error opens the reusable dialog", () => {
   assert.equal(dialog.hidden, false);
   assert.equal(dialog.querySelector("#df-dialog-message").textContent, "provider authentication failed");
 });
+
+test("historical snapshot error stays in the conversation without reopening the dialog", () => {
+  const { window, document } = loadAdapter(async () => response());
+  const socket = new window.WebSocket("ws://127.0.0.1:4321/ws/chat");
+  socket.emit(JSON.stringify({
+    type: "snapshot",
+    session_id: "main-session",
+    status: "error",
+    last_error: {
+      code: "quota_exhausted",
+      message: "公益模型额度已用完，请稍后再试",
+    },
+  }));
+
+  const dialog = document.body.children.find((child) => child.id === "determinflow-desktop-dialog");
+  assert.equal(dialog, undefined);
+});

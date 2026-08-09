@@ -103,6 +103,13 @@ class SessionLifecycleMixin:
 
     @staticmethod
     def _normalize_loaded_status(session: AgentSession) -> None:
+        if (
+            getattr(session, "lifecycle_profile", "task")
+            == "detached_conversation"
+            and session.status in {"running", "streaming"}
+        ):
+            session.status = "completed"
+            return
         if session.session_type == "main" and session.status == "streaming":
             session.status = "running"
         elif session.session_type == "sub" and session.status in {"running", "streaming"}:
@@ -422,14 +429,65 @@ class SessionLifecycleMixin:
         })
         return {"success": True, "message": f"子会话 {session_id} 已终止"}
 
-    async def delete_session(self, session_id: str) -> dict:
+    def _session_tree_ids(self, root_session_id: str) -> list[str]:
+        """返回持久化会话树中的根节点和全部后代。"""
+        children_by_parent: dict[str, list[str]] = {}
+        for summary in self.get_session_summaries():
+            parent_id = summary.get("parent_id")
+            if parent_id:
+                children_by_parent.setdefault(parent_id, []).append(
+                    summary["session_id"]
+                )
+
+        session_ids: list[str] = []
+        pending = [root_session_id]
+        visited: set[str] = set()
+        while pending:
+            current_id = pending.pop()
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            session_ids.append(current_id)
+            pending.extend(children_by_parent.get(current_id, []))
+        return session_ids
+
+    def _session_ids_for_workflow_tasks(
+        self,
+        task_refs: list[dict[str, str]],
+    ) -> list[str]:
+        """找出 Workflow Main 与其 Agent 节点会话。"""
+        task_keys = {
+            (ref.get("workflow_id"), ref.get("task_id"))
+            for ref in task_refs
+        }
+        return [
+            summary["session_id"]
+            for summary in self.get_session_summaries()
+            if (
+                summary.get("workflow_id"),
+                summary.get("task_id"),
+            ) in task_keys
+        ]
+
+    async def _delete_session_record(
+        self,
+        session_id: str,
+        *,
+        cancel_active: bool,
+    ) -> dict:
         session = self.get_session(session_id)
         if not session:
-            return {"success": False, "message": f"未找到会话 {session_id}"}
-        if session_id == self.main_session_id:
-            return {"success": False, "message": "不能删除当前活跃的主会话"}
-        if session.status == "streaming" or session.invocation_active or session._invoke_lock.locked():
-            return {"success": False, "message": "会话正在生成中，请先终止后再删除"}
+            return {"success": True, "session_id": session_id}
+        if not cancel_active and (
+            session.status == "streaming"
+            or session.invocation_active
+            or session._invoke_lock.locked()
+        ):
+            return {
+                "success": False,
+                "message": "会话正在生成中，请先终止后再删除",
+            }
+
         session.request_termination()
         task = self._sub_tasks.get(session_id)
         if task and not task.done():
@@ -439,6 +497,14 @@ class SessionLifecycleMixin:
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         self._sub_tasks.pop(session_id, None)
+
+        if cancel_active and not await session.cancel_active_invocation(timeout=5.0):
+            return {
+                "success": False,
+                "message": f"会话 {session_id} 未能在超时内停止",
+            }
+        await session.stop_consumer()
+
         if self._workspace_manager and session.session_type == "sub":
             self._workspace_manager.cleanup_workspace(session_id)
         from src.agent.session import _persistence_manager
@@ -457,16 +523,94 @@ class SessionLifecycleMixin:
             "terminal": True,
         })
         event_bus.clear_session(session_id)
-        file_path = SESSIONS_DIR / f"{session_id}.json"
-        if file_path.exists():
-            file_path.unlink()
+        (SESSIONS_DIR / f"{session_id}.json").unlink(missing_ok=True)
         _try_emit_event({
             "type": "session_update",
             "action": "deleted",
             "session_id": session_id,
         })
         logger.info("会话 %s 已删除", session_id)
-        return {"success": True, "message": f"会话 {session_id} 已删除"}
+        return {"success": True, "session_id": session_id}
+
+    async def _delete_main_session_tree(self, session_id: str) -> dict:
+        root_session = self.get_session(session_id)
+        if root_session is None:
+            return {"success": False, "message": f"未找到会话 {session_id}"}
+        if not await root_session.cancel_active_invocation(timeout=5.0):
+            return {
+                "success": False,
+                "message": f"主会话 {session_id} 未能在超时内停止",
+            }
+
+        workflow_manager = getattr(self, "_workflow_manager", None)
+        delete_tasks = getattr(
+            workflow_manager,
+            "delete_tasks_for_main_session",
+            None,
+        )
+        deleted_task_ids: list[str] = []
+        deleted_task_refs: list[dict[str, str]] = []
+        if callable(delete_tasks):
+            task_result = await delete_tasks(session_id)
+            if not task_result.get("success"):
+                return {
+                    "success": False,
+                    "message": task_result.get("message", "删除关联工作流任务失败"),
+                    "deleted_task_ids": task_result.get("deleted_task_ids", []),
+                }
+            deleted_task_ids = task_result.get("deleted_task_ids", [])
+            deleted_task_refs = task_result.get("deleted_tasks", [])
+
+        session_ids: list[str] = self._session_tree_ids(session_id)
+        for task_session_id in self._session_ids_for_workflow_tasks(
+            deleted_task_refs,
+        ):
+            session_ids.extend(self._session_tree_ids(task_session_id))
+        ordered_session_ids = list(dict.fromkeys(session_ids))
+
+        deleted_session_ids: list[str] = []
+        for descendant_id in reversed(ordered_session_ids):
+            result = await self._delete_session_record(
+                descendant_id,
+                cancel_active=True,
+            )
+            if not result["success"]:
+                return {
+                    "success": False,
+                    "message": result["message"],
+                    "deleted_session_ids": deleted_session_ids,
+                    "deleted_task_ids": deleted_task_ids,
+                }
+            deleted_session_ids.append(descendant_id)
+
+        return {
+            "success": True,
+            "message": f"主会话 {session_id} 及其关联内容已删除",
+            "deleted_session_ids": deleted_session_ids,
+            "deleted_task_ids": deleted_task_ids,
+        }
+
+    async def delete_session(self, session_id: str) -> dict:
+        session = self.get_session(session_id)
+        if not session:
+            return {"success": False, "message": f"未找到会话 {session_id}"}
+        if session_id == self.main_session_id:
+            return {"success": False, "message": "不能删除当前活跃的主会话"}
+        if session.session_type == "main":
+            return await self._delete_main_session_tree(session_id)
+
+        result = await self._delete_session_record(
+            session_id,
+            cancel_active=False,
+        )
+        if not result["success"]:
+            return result
+        return {
+            "success": True,
+            "message": f"会话 {session_id} 已删除",
+            "deleted_session_ids": [session_id],
+            "deleted_task_ids": [],
+        }
 
     async def delete_sessions(self, session_ids: list[str]) -> dict:
         results = []

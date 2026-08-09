@@ -148,8 +148,8 @@ def test_interactive_main_model_switch_is_persisted(monkeypatch):
                 return ["first:model-a", "second:model-b"]
 
             @staticmethod
-            def get_provider_capabilities(provider_id):
-                assert provider_id == "second"
+            def get_model_capabilities(model_id):
+                assert model_id == "second:model-b"
                 return {"reasoning_efforts": ["low", "high"]}
 
         class FakeAgentConfigManager:

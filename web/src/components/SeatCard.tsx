@@ -6,11 +6,19 @@ interface SeatCardProps {
   seat: Seat;
   seatIndex: number;
   isDiscussing?: boolean;
+  actionsDisabled?: boolean;
   onRemove?: (seatId: string) => void;
   onNominate?: (seatId: string) => void;
 }
 
-export default function SeatCard({ seat, seatIndex, isDiscussing, onRemove, onNominate }: SeatCardProps) {
+export default function SeatCard({
+  seat,
+  seatIndex,
+  isDiscussing,
+  actionsDisabled = false,
+  onRemove,
+  onNominate,
+}: SeatCardProps) {
   const color = getSeatColor(seatIndex);
   const isSpeaking = seat.status === "speaking";
   const isThinking = seat.status === "thinking";
@@ -68,7 +76,8 @@ export default function SeatCard({ seat, seatIndex, isDiscussing, onRemove, onNo
           <button
             type="button"
             onClick={() => onNominate(seat.seat_id)}
-            className="text-slate-500 hover:text-cyan-400 transition-colors cursor-pointer p-2 min-w-[44px] min-h-[44px] flex items-center justify-center"
+            disabled={actionsDisabled}
+            className="text-slate-500 hover:text-cyan-400 transition-colors cursor-pointer p-2 min-w-[44px] min-h-[44px] flex items-center justify-center disabled:cursor-not-allowed disabled:opacity-40"
             aria-label={`点名 ${seat.role_name} 发言`}
           >
             <MessageCircle size={14} aria-hidden="true" />
@@ -79,7 +88,8 @@ export default function SeatCard({ seat, seatIndex, isDiscussing, onRemove, onNo
           <button
             type="button"
             onClick={() => onRemove(seat.seat_id)}
-            className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer p-2 min-w-[44px] min-h-[44px] flex items-center justify-center"
+            disabled={actionsDisabled}
+            className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer p-2 min-w-[44px] min-h-[44px] flex items-center justify-center disabled:cursor-not-allowed disabled:opacity-40"
             aria-label={`移除 ${seat.role_name}`}
           >
             <X size={14} aria-hidden="true" />

@@ -8,6 +8,8 @@ import type {
   ConversationToolStartEvent,
 } from "./conversationTypes";
 
+const FALLBACK_TERMINAL_ERROR_MESSAGE = "会话运行失败，请稍后再试";
+
 export function createConversationState(
   sessionId: string | null = null,
 ): ConversationState {
@@ -256,7 +258,10 @@ function reduceServerEvent(
       tokenUsage: event.tokenUsage,
       needsResync: waitingForActiveStream,
       syncIssue: null,
-      error: event.status === "error" ? event.error : null,
+      error:
+        event.status === "error"
+          ? event.error || FALLBACK_TERMINAL_ERROR_MESSAGE
+          : null,
       toolCallKeysByIndex,
     };
   }
@@ -426,8 +431,12 @@ export function conversationReducer(
         ? {
             ...state,
             messages: normalizeMessages(action.messages),
-            phase: "ready",
-            error: null,
+            status: action.status ?? state.status,
+            phase: action.status === "error" ? "error" : "ready",
+            error:
+              action.status === "error"
+                ? action.error || FALLBACK_TERMINAL_ERROR_MESSAGE
+                : null,
           }
         : state;
     case "append_optimistic_message":

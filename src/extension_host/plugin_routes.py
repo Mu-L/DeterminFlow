@@ -7,7 +7,7 @@ import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security.utils import get_authorization_scheme_param
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -298,6 +298,14 @@ async def uninstall_plugin(plugin_id: str, request: Request):
 
 
 @router.get("/{plugin_id}/ui")
+async def plugin_static_page_root(plugin_id: str, request: Request):
+    try:
+        _management(request).static_file(plugin_id, "")
+        return RedirectResponse(url=f"{request.url.path}/", status_code=307)
+    except Exception as exc:
+        _raise_http_error(exc)
+
+
 @router.get("/{plugin_id}/ui/{asset_path:path}")
 async def plugin_static_page(
     plugin_id: str,

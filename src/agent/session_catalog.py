@@ -33,10 +33,23 @@ def infer_runtime_scope(data: dict[str, Any]) -> str:
     return "interactive"
 
 
-def _normalized_status(session_type: str, status: str) -> str:
+def _normalized_status(
+    session_type: str,
+    status: str,
+    lifecycle_profile: str = "task",
+) -> str:
+    if (
+        lifecycle_profile == "detached_conversation"
+        and status in {"running", "streaming"}
+    ):
+        return "completed"
     if session_type == "main" and status == "streaming":
         return "running"
-    if session_type == "sub" and status in {"running", "streaming"}:
+    if (
+        session_type == "sub"
+        and status in {"running", "streaming"}
+        and lifecycle_profile != "detached_conversation"
+    ):
         return "error"
     return status
 
@@ -59,6 +72,10 @@ class SessionMetadata:
     workflow_id: str | None = None
     task_id: str | None = None
     node_id: str | None = None
+    lifecycle_profile: str = "task"
+    resource_owner: str = ""
+    external_ref: str = ""
+    scope_hash: str = ""
 
     @classmethod
     def from_data(cls, data: dict[str, Any], *, fallback_id: str = "") -> "SessionMetadata":
@@ -80,7 +97,12 @@ class SessionMetadata:
 
         session_type = str(data.get("session_type") or "sub")
         persisted_status = str(data.get("status") or "completed")
-        status = _normalized_status(session_type, persisted_status)
+        lifecycle_profile = str(data.get("lifecycle_profile") or "task")
+        status = _normalized_status(
+            session_type,
+            persisted_status,
+            lifecycle_profile,
+        )
         return cls(
             session_id=str(data.get("session_id") or fallback_id),
             session_type=session_type,
@@ -98,6 +120,10 @@ class SessionMetadata:
             workflow_id=data.get("workflow_id"),
             task_id=data.get("task_id"),
             node_id=data.get("node_id"),
+            lifecycle_profile=lifecycle_profile,
+            resource_owner=str(data.get("resource_owner") or ""),
+            external_ref=str(data.get("external_ref") or ""),
+            scope_hash=str(data.get("scope_hash") or ""),
         )
 
     @classmethod
@@ -120,6 +146,10 @@ class SessionMetadata:
             workflow_id=session.workflow_id,
             task_id=session.task_id,
             node_id=session.node_id or None,
+            lifecycle_profile=getattr(session, "lifecycle_profile", "task"),
+            resource_owner=getattr(session, "resource_owner", ""),
+            external_ref=getattr(session, "external_ref", ""),
+            scope_hash=getattr(session, "scope_hash", ""),
         )
 
     def to_summary(self) -> dict[str, Any]:

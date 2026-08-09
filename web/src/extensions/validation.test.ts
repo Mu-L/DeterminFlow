@@ -23,6 +23,7 @@ function createStatus(overrides: Partial<ExtensionStatus> = {}): ExtensionStatus
     dependencies: [],
     capabilities: [],
     frontend: "demo",
+    header_status: null,
     ...overrides,
   };
 }

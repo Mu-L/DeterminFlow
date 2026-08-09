@@ -4,7 +4,7 @@ description: >-
   创建、修改、删除或排查 DeterminFlow Agent Definition 时必须加载此技能；也适用于选择 agent_type、最小工具权限、Prompt 模板绑定、模型覆盖、Skill/Rule 可见分组、子会话可用性与 Workflow Agent 节点配置。
 metadata:
   display_name: agent-definition-guide
-  version: 1.0.0
+  version: 1.0.1
   author: system
   category: general
   priority: 50
@@ -86,6 +86,8 @@ metadata:
 - `prompt_template` 必须存在；删除模板前先迁移全部 Agent Definition 引用。
 - `system_prompt_template` 只放该 Agent 类型特有的短指令；通用结构放 Prompt Template。
 - `model` 和 `model_params` 是覆盖层。没有明确原因时继承默认值，避免配置漂移。
+- `model` 始终使用 `provider_id:model_name`；不要在 Agent Definition 中写
+  `provider_type`。Provider Adapter 会按该实例的类型领取 `model_params` 中支持的字段。
 - `max_turns` 太低会截断任务，太高会放大循环成本；根据工具步骤设置并通过真实任务验证。
 
 ## 验收清单

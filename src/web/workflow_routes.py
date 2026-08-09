@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from ..config import SESSIONS_DIR, WORKFLOWS_DIR
 from ..workflow.definition import WorkflowDef
+from ..workflow.task_overrides import TASK_OVERRIDE_ERROR_CODES
 from .workflow_access import (
     _ensure_http_mutation_allowed,
     _ensure_workflow_writable,
@@ -44,6 +45,16 @@ def _raise_runtime_draining(result: dict) -> None:
         status_code=503,
         detail={"code": "runtime_draining", "message": result.get("message")},
         headers={"Retry-After": str(result["retry_after_seconds"])},
+    )
+
+
+def _raise_task_override_error(result: dict) -> None:
+    error = result.get("error")
+    if error not in TASK_OVERRIDE_ERROR_CODES:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail={"code": error, "message": result.get("message")},
     )
 
 
@@ -253,6 +264,7 @@ async def create_task(workflow_id: str, request: Request,
     mgr = _ensure_http_mutation_allowed(request, workflow_id)
     result = mgr.create_task(workflow_id, from_node_id=body.from_node_id,
                               parameter_values=body.parameter_values,
+                              node_model_overrides=body.node_model_overrides,
                               disabled_node_ids=body.disabled_node_ids,
                               scheme_id=body.scheme_id,
                               selected_node_ids=body.selected_node_ids,
@@ -260,6 +272,7 @@ async def create_task(workflow_id: str, request: Request,
     if result is None:
         raise HTTPException(status_code=404, detail="工作流不存在")
     _raise_runtime_draining(result)
+    _raise_task_override_error(result)
     return result
 
 

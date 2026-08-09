@@ -7,10 +7,20 @@ import json
 import logging
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
 from src.environment import get_determinflow_env
+from src.core.provider_adapters import (
+    build_provider_request,
+    get_api_format,
+    get_client_base_url,
+    get_model_param_schema,
+    get_provider_adapter,
+    normalize_provider_type,
+)
+from src.core.provider_errors import normalize_provider_error_messages
 
 logger = logging.getLogger(__name__)
 
@@ -24,84 +34,14 @@ def normalize_base_url(base_url: Any) -> str:
     """规范化完整 API Base URL，不猜测或补充版本路径。"""
     return str(base_url or "").strip().rstrip("/")
 
-# ============================================================
-# Provider Category 注册表 — 不同供应商的参数格式差异在此集中管理
-# ============================================================
-# 每个 category 定义了：
-#   - build_extra_body: 根据合并后的 model_params 构建 extra_body 的函数
-#   - chat_openai_params: model_params 中哪些字段直接作为 ChatOpenAI kwargs
-# 新增 provider 只需在此注册一个 category 即可，无需修改 llm_client.py
-
-def _build_ds_extra_body(params: dict) -> dict:
-    """DeepSeek / MiMo 思考参数：thinking.type（extra_body） + reasoning_effort（顶层参数）
-
-    根据 DeepSeek 官方 API 文档，reasoning_effort 必须是顶层参数，
-    而非嵌套在 thinking.effort 内。否则 API 会静默忽略。
-    """
-    extra = {}
-    thinking_enabled = params.get("thinking_enabled", True)
-    extra["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
-    if thinking_enabled:
-        extra["reasoning_effort"] = params.get("reasoning_effort", "high")
-    return extra
-
-
-def _build_qwen_extra_body(params: dict) -> dict:
-    """Qwen 思考参数：enable_thinking + thinking_budget（None 时不传）"""
-    extra = {}
-    thinking_enabled = params.get("thinking_enabled")
-    if thinking_enabled is not None:
-        extra["enable_thinking"] = thinking_enabled
-    thinking_budget = params.get("thinking_budget")
-    if thinking_budget is not None:
-        extra["thinking_budget"] = thinking_budget
-    return extra
-
-
-def _build_gpt_extra_body(params: dict) -> dict:
-    """GPT 推理参数：reasoning_effort 作为顶层参数（low/medium/high/xhigh）
-
-    GPT-5 系列始终启用推理，无需 thinking_enabled 开关。
-    reasoning_effort 默认 medium。
-    """
-    extra = {}
-    extra["reasoning_effort"] = params.get("reasoning_effort", "medium")
-    return extra
-
-
-PROVIDER_CATEGORIES: dict[str, dict] = {
-    "ds": {
-        "display_name": "DeepSeek",
-        "build_extra_body": _build_ds_extra_body,
-        "chat_openai_params": ["temperature", "top_p", "presence_penalty"],
-    },
-    "mimo": {
-        "display_name": "MiMo",
-        "build_extra_body": _build_ds_extra_body,
-        "chat_openai_params": ["temperature", "top_p", "presence_penalty"],
-    },
-    "qwen": {
-        "display_name": "Qwen",
-        "build_extra_body": _build_qwen_extra_body,
-        "chat_openai_params": ["temperature", "top_p", "presence_penalty"],
-    },
-    "gpt": {
-        "display_name": "GPT",
-        "build_extra_body": _build_gpt_extra_body,
-        "chat_openai_params": ["temperature", "top_p", "presence_penalty"],
-    },
-}
-
-
-# 供应商超参数 Schema 定义（硬编码）
+# Provider 类型定义。provider_id 只标识配置实例，不能作为类型使用。
 # thinking/reasoning_effort/temperature/top_p/presence_penalty/thinking_budget 已提升到 Agent 级别（model_params），
 # Provider 仅保留与模型能力/行为相关的参数（max_completion_tokens / frequency_penalty）
 PROVIDER_SCHEMAS = {
     "deepseek": {
+        "provider_type": "deepseek",
         "display_name": "DeepSeek",
         "default_base_url": "https://api.deepseek.com/v1",
-        "category": "ds",
-        "reasoning_efforts": ["low", "medium", "high", "max"],
         "hyperparams": {
             "max_completion_tokens": {
                 "type": "number",
@@ -113,10 +53,9 @@ PROVIDER_SCHEMAS = {
         }
     },
     "mimo": {
+        "provider_type": "mimo",
         "display_name": "Xiaomi MiMo",
         "default_base_url": "https://api.xiaomimimo.com/v1",
-        "category": "mimo",
-        "reasoning_efforts": ["low", "medium", "high", "max"],
         "hyperparams": {
             "max_completion_tokens": {
                 "type": "number",
@@ -134,11 +73,10 @@ PROVIDER_SCHEMAS = {
             }
         }
     },
-    "alibaba": {
-        "display_name": "阿里百炼",
+    "qwen": {
+        "provider_type": "qwen",
+        "display_name": "Qwen / 阿里百炼",
         "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "category": "qwen",
-        "reasoning_efforts": [],
         "hyperparams": {
             "max_completion_tokens": {
                 "type": "number",
@@ -157,10 +95,9 @@ PROVIDER_SCHEMAS = {
         }
     },
     "openai": {
+        "provider_type": "openai",
         "display_name": "OpenAI",
         "default_base_url": "https://api.openai.com/v1",
-        "category": "gpt",
-        "reasoning_efforts": ["low", "medium", "high", "xhigh"],
         "hyperparams": {
             "max_completion_tokens": {
                 "type": "number",
@@ -170,7 +107,50 @@ PROVIDER_SCHEMAS = {
                 "label": "最大输出Token"
             }
         }
+    },
+    "anthropic": {
+        "provider_type": "anthropic",
+        "display_name": "Anthropic",
+        "default_base_url": "https://api.anthropic.com/v1",
+        "hyperparams": {
+            "max_completion_tokens": {
+                "type": "number",
+                "min": 1,
+                "max": 131072,
+                "default": 32768,
+                "label": "最大输出Token"
+            }
+        }
+    },
+    "openai_compatible": {
+        "provider_type": "openai_compatible",
+        "display_name": "OpenAI 兼容",
+        "default_base_url": "",
+        "hyperparams": {
+            "max_completion_tokens": {
+                "type": "number",
+                "min": 1,
+                "max": 131072,
+                "default": 32768,
+                "label": "最大输出Token"
+            },
+            "frequency_penalty": {
+                "type": "number",
+                "min": -2.0,
+                "max": 2.0,
+                "default": 0,
+                "label": "频率惩罚"
+            }
+        }
     }
+}
+
+LEGACY_PROVIDER_ID_TYPES = {
+    "deepseek": "deepseek",
+    "mimo": "mimo",
+    "alibaba": "qwen",
+    "openai": "openai",
+    "anthropic": "anthropic",
 }
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -187,7 +167,6 @@ _DEFAULT_CONFIG_PATH = str(
 )
 _DEFAULT_CONFIG_TEMPLATE = _PROJECT_ROOT / "config" / "models_config.example.json"
 _AGENTS_CONFIG_PATH = _CONFIG_ROOT / "agents_config.json"
-
 
 class ModelManager:
     """多供应商模型管理器"""
@@ -206,8 +185,9 @@ class ModelManager:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
             migrated_api_keys = self._migrate_legacy_api_key_fields()
+            migrated_provider_types = self._migrate_provider_types()
             normalized_base_urls = self._normalize_provider_base_urls()
-            if migrated_api_keys or normalized_base_urls:
+            if migrated_api_keys or migrated_provider_types or normalized_base_urls:
                 try:
                     self.save()
                 except OSError:
@@ -218,6 +198,40 @@ class ModelManager:
             return self.config
 
         return self._create_default_config()
+
+    def _infer_provider_type(
+        self,
+        provider_id: str,
+        provider: Dict | None = None,
+    ) -> str:
+        config = provider or {}
+        explicit_type = normalize_provider_type(config.get("provider_type"))
+        if explicit_type:
+            return explicit_type
+        legacy_category = normalize_provider_type(config.get("category"))
+        if legacy_category:
+            return legacy_category
+        legacy_type = LEGACY_PROVIDER_ID_TYPES.get(provider_id)
+        if legacy_type:
+            return legacy_type
+        if config.get("api_format") == "anthropic":
+            return "anthropic"
+        return "openai_compatible"
+
+    def _migrate_provider_types(self) -> bool:
+        """Persist an explicit Provider type without removing legacy fields."""
+        changed = False
+        providers = self.config.get("providers", {})
+        if not isinstance(providers, dict):
+            return False
+        for provider_id, provider in providers.items():
+            if not isinstance(provider, dict):
+                continue
+            provider_type = self._infer_provider_type(provider_id, provider)
+            if provider.get("provider_type") != provider_type:
+                provider["provider_type"] = provider_type
+                changed = True
+        return changed
 
     def _normalize_provider_base_urls(self) -> bool:
         """移除已保存 Base URL 的空白和末尾斜杠。"""
@@ -301,7 +315,8 @@ class ModelManager:
     # 允许通过 update_provider 修改的字段白名单
     _PROVIDER_UPDATE_KEYS = frozenset({
         "name", "display_name", "base_url", "api_key", "models", "models_config",
-        "maxContextTokens", "hyperparameter_values",
+        "maxContextTokens", "provider_type",
+        "hyperparameter_values", "managed_by", "error_messages",
     })
 
     def update_provider(self, provider_id: str, updates: Dict):
@@ -309,8 +324,20 @@ class ModelManager:
         if provider_id not in self.config["providers"]:
             raise ValueError(f"Provider {provider_id} not found")
         filtered = {k: v for k, v in updates.items() if k in self._PROVIDER_UPDATE_KEYS}
+        if "provider_type" in filtered:
+            filtered["provider_type"] = self._require_provider_type(
+                filtered["provider_type"]
+            )
         if "base_url" in filtered:
             filtered["base_url"] = normalize_base_url(filtered["base_url"])
+        if "managed_by" in filtered:
+            filtered["managed_by"] = self._require_managed_by(
+                filtered["managed_by"]
+            )
+        if "error_messages" in filtered:
+            filtered["error_messages"] = normalize_provider_error_messages(
+                filtered["error_messages"]
+            )
         ignored = set(updates) - self._PROVIDER_UPDATE_KEYS
         if ignored:
             logger.warning(f"update_provider 忽略非白名单字段: {ignored} | provider={provider_id}")
@@ -324,10 +351,33 @@ class ModelManager:
         config = dict(config)
         if "base_url" in config:
             config["base_url"] = normalize_base_url(config["base_url"])
-        schema = self.get_provider_schema(provider_id) or {}
-        config.setdefault("category", schema.get("category"))
+        requested_type = config.get("provider_type")
+        if requested_type is not None:
+            config["provider_type"] = self._require_provider_type(requested_type)
+        else:
+            config["provider_type"] = self._infer_provider_type(provider_id, config)
+        if "managed_by" in config:
+            config["managed_by"] = self._require_managed_by(config["managed_by"])
+        if "error_messages" in config:
+            config["error_messages"] = normalize_provider_error_messages(
+                config["error_messages"]
+            )
         self.config["providers"][provider_id] = config
         self.save()
+
+    @staticmethod
+    def _require_provider_type(provider_type: Any) -> str:
+        normalized = normalize_provider_type(provider_type)
+        if normalized is None:
+            raise ValueError(f"Unsupported provider_type: {provider_type}")
+        return normalized
+
+    @staticmethod
+    def _require_managed_by(managed_by: Any) -> str:
+        owner = str(managed_by or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", owner):
+            raise ValueError(f"Invalid managed_by: {managed_by}")
+        return owner
 
     def move_provider_to_front(self, provider_id: str) -> None:
         """将供应商移动到首位；首个供应商的首个模型是 Main 自动模型。"""
@@ -409,58 +459,186 @@ class ModelManager:
             "delays": retry.get("delays", [5, 15, 30]),
         }
 
-    def get_provider_category(self, provider_id: str) -> str | None:
-        """获取供应商的 category（ds/qwen/mimo），用于区分参数格式。
-
-        category 从 provider 配置的 `category` 字段读取，
-        不再依赖 provider_id 字符串推断。
-        """
+    def get_provider_type(self, provider_id: str) -> str:
+        """Resolve request behavior from Provider configuration, not its ID."""
         provider = self.get_provider(provider_id)
-        if provider:
-            return provider.get("category")
-        return None
+        return self._infer_provider_type(provider_id, provider)
+
+    def get_model_provider_type(self, provider_id: str, model_name: str) -> str:
+        """Resolve a model-specific Adapter while keeping Provider identity."""
+        provider = self.get_provider(provider_id)
+        if provider is None:
+            raise ValueError(f"Provider {provider_id} not found")
+
+        fallback_type = self._infer_provider_type(provider_id, provider)
+        models_config = provider.get("models_config", {})
+        model_config = (
+            models_config.get(model_name, {})
+            if isinstance(models_config, dict)
+            else {}
+        )
+        if not isinstance(model_config, dict):
+            return fallback_type
+        model_provider_type = model_config.get("provider_type")
+        if model_provider_type is None:
+            return fallback_type
+        return self._require_provider_type(model_provider_type)
+
+    def resolve_provider_type(
+        self,
+        provider_id: str,
+        provider_type: str | None = None,
+    ) -> str:
+        """Resolve an explicit type for unsaved Providers or an existing instance."""
+        if provider_type is not None:
+            return self._require_provider_type(provider_type)
+        return self.get_provider_type(provider_id)
+
+    def get_provider_category(self, provider_id: str) -> str:
+        """Compatibility alias for callers using the old category name."""
+        return self.get_provider_type(provider_id)
 
     def get_category_params_config(self, provider_id: str) -> dict | None:
-        """获取 category 的参数配置，包含 build_extra_body 函数和 chat_openai_params 列表。
-
-        供 llm_client 查询：哪些 model_params 应作为 ChatOpenAI kwargs 直接透传。
-        """
-        category = self.get_provider_category(provider_id)
-        if category:
-            return PROVIDER_CATEGORIES.get(category)
-        return None
+        """获取 Provider Adapter 声明（保留旧方法名以兼容内部调用）。"""
+        return get_provider_adapter(self.get_provider_type(provider_id))
 
     def build_extra_body(self, provider_id: str, model_params: Dict | None = None) -> Dict:
-        """根据供应商 category 和 model_params 构建 extra_body。
-
-        不同 category 的思考参数格式差异由 PROVIDER_CATEGORIES 注册表驱动：
-        - ds / mimo → {"thinking": {"type": "enabled"/"disabled", "effort": "high"/"max"}}
-        - qwen       → {"enable_thinking": true/false, "thinking_budget": N}
-
-        Args:
-            provider_id: 供应商 ID（如 "deepseek"、"mimo"、"alibaba"）
-            model_params: 合并后的模型参数字典
-        """
+        """构建 OpenAI-compatible Provider 的 extra_body。"""
         params = model_params or self.get_default_params()
-        category = self.get_provider_category(provider_id)
-        if category and category in PROVIDER_CATEGORIES:
-            return PROVIDER_CATEGORIES[category]["build_extra_body"](params)
-        # 未注册的 category：不传思考参数，由模型自行决定
-        return {}
+        provider_type = self.get_provider_type(provider_id)
+        provider = self._provider_for_adapter(
+            provider_type, self.get_provider(provider_id) or {}
+        )
+        request = build_provider_request(
+            provider_type, params, provider
+        )
+        return request.get("extra_body", {})
 
-    def get_provider_schema(self, provider_id: str) -> Optional[Dict]:
-        """获取供应商的超参数 Schema"""
-        return PROVIDER_SCHEMAS.get(provider_id)
+    def build_provider_request(
+        self,
+        provider_id: str,
+        model_params: Dict,
+        provider_config: Dict | None = None,
+        model_name: str | None = None,
+    ) -> Dict:
+        """让所选 Provider Adapter 领取并映射支持的 model_params。"""
+        provider_type = (
+            self.get_model_provider_type(provider_id, model_name)
+            if model_name
+            else self.get_provider_type(provider_id)
+        )
+        provider = self._provider_for_adapter(
+            provider_type,
+            provider_config or self.get_provider(provider_id) or {},
+        )
+        return build_provider_request(
+            provider_type,
+            model_params,
+            provider,
+        )
+
+    def _provider_for_adapter(
+        self,
+        provider_type: str,
+        provider: Dict,
+    ) -> Dict:
+        """Hide stale Provider hyperparameters not claimed by the active type."""
+        filtered = dict(provider)
+        schema = self.get_provider_schema(provider_type) or {}
+        allowed = set(schema.get("hyperparams", {}))
+        hyperparams = provider.get("hyperparameter_values", {})
+        filtered["hyperparameter_values"] = (
+            {
+                key: value
+                for key, value in hyperparams.items()
+                if key in allowed
+            }
+            if isinstance(hyperparams, dict)
+            else {}
+        )
+        return filtered
+
+    def get_provider_api_format(
+        self,
+        provider_id: str,
+        model_name: str | None = None,
+    ) -> str:
+        """Return the SDK protocol derived from the configured Provider type."""
+        provider_type = (
+            self.get_model_provider_type(provider_id, model_name)
+            if model_name
+            else self.get_provider_type(provider_id)
+        )
+        return get_api_format(provider_type)
+
+    def get_provider_client_base_url(
+        self,
+        provider_id: str,
+        base_url: str,
+        model_name: str | None = None,
+    ) -> str:
+        """返回所选 Provider SDK 需要的 Base URL。"""
+        provider_type = (
+            self.get_model_provider_type(provider_id, model_name)
+            if model_name
+            else self.get_provider_type(provider_id)
+        )
+        return get_client_base_url(provider_type, base_url)
+
+    def get_provider_schema(self, provider_id_or_type: str) -> Optional[Dict]:
+        """Return the schema for a Provider instance or canonical type."""
+        providers = self.config.get("providers", {})
+        if provider_id_or_type in providers:
+            provider_type = self.get_provider_type(provider_id_or_type)
+        else:
+            provider_type = (
+                normalize_provider_type(provider_id_or_type)
+                or LEGACY_PROVIDER_ID_TYPES.get(provider_id_or_type)
+            )
+        raw_schema = PROVIDER_SCHEMAS.get(provider_type or "")
+        if raw_schema is None:
+            return None
+        schema = deepcopy(raw_schema)
+        model_params = get_model_param_schema(provider_type)
+        schema["api_format"] = get_api_format(provider_type)
+        schema["model_params"] = model_params
+        schema["reasoning_efforts"] = list(
+            model_params.get("reasoning_effort", {}).get("options", [])
+        )
+        return schema
 
     def get_all_schemas(self) -> Dict:
         """获取所有供应商的超参数 Schema"""
-        return PROVIDER_SCHEMAS
+        return {
+            provider_id: self.get_provider_schema(provider_id)
+            for provider_id in PROVIDER_SCHEMAS
+        }
 
     def get_provider_capabilities(self, provider_id: str) -> Dict:
         """返回 UI 可动态读取的供应商能力。"""
-        schema = self.get_provider_schema(provider_id) or {}
+        provider_type = self.get_provider_type(provider_id)
+        model_params = get_model_param_schema(provider_type)
         return {
-            "reasoning_efforts": list(schema.get("reasoning_efforts", [])),
+            "provider_type": provider_type,
+            "reasoning_efforts": list(
+                model_params.get("reasoning_effort", {}).get("options", [])
+            ),
+            "model_params": model_params,
+        }
+
+    def get_model_capabilities(self, model_override: str) -> Dict:
+        """Return parameter fields claimed by the selected model Adapter."""
+        if ":" not in model_override:
+            raise ValueError("model must use provider_id:model_name")
+        provider_id, model_name = model_override.split(":", 1)
+        provider_type = self.get_model_provider_type(provider_id, model_name)
+        model_params = get_model_param_schema(provider_type)
+        return {
+            "provider_type": provider_type,
+            "reasoning_efforts": list(
+                model_params.get("reasoning_effort", {}).get("options", [])
+            ),
+            "model_params": model_params,
         }
 
     def get_max_context_tokens(self, model_override: str | None = None) -> int:
@@ -516,6 +694,9 @@ class ModelManager:
                     "maxContextTokens": model_config.get("maxContextTokens",
                                                         provider.get("maxContextTokens", DEFAULT_MAX_CONTEXT_TOKENS)),
                     "provider_name": provider.get("name", ""),
+                    "provider_type": self.get_model_provider_type(
+                        provider_id, model_name
+                    ),
                 }
 
         # 使用默认模型

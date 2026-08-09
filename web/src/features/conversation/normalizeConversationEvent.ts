@@ -109,6 +109,7 @@ export function normalizeConversationEvent(
   if (wireType === "snapshot" || wireType === "history") {
     if (!Array.isArray(event.messages)) return null;
     const activeStream = asRecord(event.active_stream);
+    const lastError = asRecord(event.last_error);
     const activeGenerationId = activeStream
       ? asString(activeStream.generation_id)
       : null;
@@ -127,7 +128,7 @@ export function normalizeConversationEvent(
             }
           : null,
       tokenUsage: asTokenUsage(event.token_usage),
-      error: asString(event.error),
+      error: asString(event.error) || asString(lastError?.message),
       legacy: wireType === "history",
     };
   }

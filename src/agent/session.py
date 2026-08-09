@@ -51,6 +51,8 @@ from src.core.utils import (
     _sanitize_tool_pairs,
     estimate_tokens,
     is_visible_to_frontend,
+    message_content_reasoning,
+    message_content_text,
 )
 from src.compression.checker import get_compression_checker
 from src.compression.scheduler import get_compression_scheduler
@@ -78,9 +80,8 @@ _PERSIST_INTERVAL = 5.0
 
 if TYPE_CHECKING:
 
+    from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.tools import BaseTool
-
-    from langchain_openai import ChatOpenAI
 
 
 
@@ -496,6 +497,14 @@ class AgentSession:
 
         model_params: dict[str, Any] | None = None,
 
+        lifecycle_profile: str = "task",
+
+        resource_owner: str = "",
+
+        external_ref: str = "",
+
+        scope_hash: str = "",
+
     ):
 
         self.session_id: str = session_id or uuid.uuid4().hex[:8]
@@ -509,6 +518,14 @@ class AgentSession:
         self.workflow_id: str | None = workflow_id
 
         self.task_id: str | None = task_id
+
+        self.lifecycle_profile: str = lifecycle_profile or "task"
+
+        self.resource_owner: str = resource_owner
+
+        self.external_ref: str = external_ref
+
+        self.scope_hash: str = scope_hash
 
         if runtime_scope in {"interactive", "workflow"}:
             self.runtime_scope = runtime_scope
@@ -560,6 +577,9 @@ class AgentSession:
 
         # Token 使用监控数据（每次 API 调用覆盖最新值，供前端实时展示）
         self.token_usage: dict | None = None
+
+        # Last terminal failure is persisted for authoritative snapshot recovery.
+        self.last_error: dict[str, str] | None = None
 
         # 累计 Token 使用数据（按 model_id 分组，用于工作流统计）
         # key = model_id (e.g. "deepseek:deepseek-v4-pro")
@@ -686,7 +706,7 @@ class AgentSession:
 
         self,
 
-        llm: "ChatOpenAI",
+        llm: "BaseChatModel",
 
         tools: list["BaseTool"],
 
@@ -1274,6 +1294,10 @@ class AgentSession:
             agent_type=self.agent_type,
             workflow_id=self.workflow_id or "",
             task_id=self.task_id or "",
+            lifecycle_profile=self.lifecycle_profile,
+            resource_owner=self.resource_owner,
+            external_ref=self.external_ref,
+            scope_hash=self.scope_hash,
             on_node_complete=self._on_node_complete,
             on_reject_upstream=self._on_reject_upstream,
         )
@@ -1380,6 +1404,7 @@ class AgentSession:
 
         # 通知流开始
 
+        self.last_error = None
         self.status = "streaming"
 
         if event_callback:
@@ -1448,6 +1473,10 @@ class AgentSession:
                             reasoning_content = chunk.reasoning_content
                         elif hasattr(chunk, "additional_kwargs"):
                             reasoning_content = chunk.additional_kwargs.get("reasoning_content")
+                        if not reasoning_content:
+                            reasoning_content = message_content_reasoning(
+                                getattr(chunk, "content", None)
+                            )
 
                         if reasoning_content and event_callback:
                             await self._emit_event({
@@ -1459,9 +1488,9 @@ class AgentSession:
                         # 处理普通内容
                         if hasattr(chunk, "content") and chunk.content:
 
-                            token = chunk.content
+                            token = message_content_text(chunk.content)
 
-                            if isinstance(token, str) and token and event_callback:
+                            if token and event_callback:
 
                                 await self._emit_event({
 
@@ -1789,6 +1818,7 @@ class AgentSession:
                     self.session_id, type(e).__name__,
                 )
                 self._logger.error(f"Graph invoke BadRequestError: {e}", exc_info=True)
+                error_message = self._record_terminal_error(e)
                 self.status = "error"
                 await self._rollback_on_error(sanitize_pairs=True, sync_snapshot=False)
                 if event_callback:
@@ -1796,7 +1826,7 @@ class AgentSession:
                         await event_callback({
                             "type": "error",
                             "session_id": self.session_id,
-                            "message": str(e),
+                            "message": error_message,
                             "terminal": True,
                             "messages": self._visible_record(),
                         })
@@ -1847,6 +1877,7 @@ class AgentSession:
             )
             self._logger.error(f"Graph invoke 错误: {e}", exc_info=True)
 
+            error_message = self._record_terminal_error(e)
             self.status = "error"
 
             await self._rollback_on_error(sanitize_pairs=True)
@@ -1858,7 +1889,7 @@ class AgentSession:
                     await event_callback({
                         "type": "error",
                         "session_id": self.session_id,
-                        "message": str(e),
+                        "message": error_message,
                         "terminal": True,
                         "messages": self._visible_record(),
                     })
@@ -1922,6 +1953,27 @@ class AgentSession:
 
         return self.get_last_assistant_message()
 
+    def _record_terminal_error(self, error: Exception) -> str:
+        """Persist one user-safe terminal error and return its display message."""
+        from src.core.model_manager import get_model_manager
+        from src.core.provider_errors import present_session_error
+
+        provider_config = None
+        if self.model_id and ":" in self.model_id:
+            provider_id = self.model_id.split(":", 1)[0]
+            try:
+                provider_config = get_model_manager().get_provider(provider_id)
+            except (OSError, TypeError, ValueError):
+                provider_config = None
+
+        presented = present_session_error(error, provider_config)
+        self.last_error = {
+            "code": presented.code,
+            "message": presented.message,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return presented.message
+
     async def _rollback_on_error(
         self,
         *,
@@ -1964,7 +2016,7 @@ class AgentSession:
         total_tokens = 0
 
         for msg in self.lc_messages:
-            content = msg.content if isinstance(msg.content, str) else str(msg.content) if msg.content else ""
+            content = message_content_text(msg.content)
 
             # 统计工具结果 token
             if isinstance(msg, ToolMessage):
@@ -2403,7 +2455,11 @@ class AgentSession:
         if strategy == "full":
             for msg in self.lc_messages:
                 if isinstance(msg, AIMessage):
-                    match = re.search(r'<summary>(.*?)</summary>', msg.content, re.DOTALL)
+                    match = re.search(
+                        r'<summary>(.*?)</summary>',
+                        message_content_text(msg.content),
+                        re.DOTALL,
+                    )
                     if match:
                         event_data["summary"] = match.group(1).strip()
                     break
@@ -2437,8 +2493,10 @@ class AgentSession:
         entry = {
             "id": f"msg_{self._msg_counter:05d}",
             "type": msg_type,
-            "content": msg.content if isinstance(msg.content, str) else str(msg.content),
+            "content": message_content_text(msg.content),
         }
+        if isinstance(msg.content, list):
+            entry["content_blocks"] = deepcopy(msg.content)
 
         # 提取 name 字段
         if hasattr(msg, "name") and msg.name:
@@ -2450,6 +2508,10 @@ class AgentSession:
             if source:
                 entry["source"] = source
             reasoning_content = msg.additional_kwargs.get("reasoning_content")
+            if reasoning_content:
+                entry["reasoning_content"] = reasoning_content
+        if not entry.get("reasoning_content"):
+            reasoning_content = message_content_reasoning(msg.content)
             if reasoning_content:
                 entry["reasoning_content"] = reasoning_content
 
@@ -2862,6 +2924,14 @@ class AgentSession:
 
             "runtime_scope": self.runtime_scope,
 
+            "lifecycle_profile": self.lifecycle_profile,
+
+            "resource_owner": self.resource_owner,
+
+            "external_ref": self.external_ref,
+
+            "scope_hash": self.scope_hash,
+
             "model_id": self.model_id,
 
             "model_params": self.model_params,
@@ -2877,6 +2947,9 @@ class AgentSession:
 
         if self.token_usage:
             result["token_usage"] = self.token_usage
+
+        if self.last_error:
+            result["last_error"] = self.last_error
 
         # 持久化累计 token 使用数据（按 model_id 分组）
         if self._token_usage_cumulative:
@@ -2916,6 +2989,10 @@ class AgentSession:
             task_id=data.get("task_id"),
             runtime_scope=data.get("runtime_scope"),
             model_params=data.get("model_params"),
+            lifecycle_profile=data.get("lifecycle_profile", "task"),
+            resource_owner=data.get("resource_owner", ""),
+            external_ref=data.get("external_ref", ""),
+            scope_hash=data.get("scope_hash", ""),
         )
         session.node_id = data.get("node_id", "")
         session.model_id = data.get("model_id")
@@ -2926,6 +3003,20 @@ class AgentSession:
 
         # 恢复 token 监控数据
         session.token_usage = data.get("token_usage")
+        raw_last_error = data.get("last_error")
+        if isinstance(raw_last_error, dict):
+            code = raw_last_error.get("code")
+            message = raw_last_error.get("message")
+            occurred_at = raw_last_error.get("occurred_at")
+            if all(
+                isinstance(value, str) and value
+                for value in (code, message, occurred_at)
+            ):
+                session.last_error = {
+                    "code": code,
+                    "message": message,
+                    "occurred_at": occurred_at,
+                }
         session._llm_call_count = session.token_usage.get("llm_call_count", 0) if session.token_usage else 0
         # 恢复累计 token 数据（从磁盘恢复的 dict key 可能是 str，需要确保 int 类型）
         raw_cumulative = data.get("token_usage_cumulative", {})
@@ -3069,7 +3160,7 @@ class AgentSession:
                 "recursion_limit_reached",
             ):
                 continue
-            content = msg.get("content", "")
+            content = msg.get("content_blocks", msg.get("content", ""))
             if msg_type == "user":
                 entry = HumanMessage(content=content)
                 if msg.get("name"):

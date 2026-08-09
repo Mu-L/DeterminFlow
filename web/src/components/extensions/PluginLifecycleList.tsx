@@ -1,3 +1,4 @@
+import React from "react";
 import {
   Info,
   Loader2,
@@ -52,8 +53,9 @@ export function PluginLifecycleList({
       <CardContent className="p-0">
         {plugins.length > 0 ? (
           <>
-            <div className="hidden grid-cols-[minmax(15rem,1.6fr)_minmax(9rem,0.8fr)_minmax(9rem,0.8fr)_auto] gap-4 border-b px-5 py-3 text-xs font-medium text-muted-foreground lg:grid">
+            <div className="hidden grid-cols-[minmax(15rem,1.4fr)_minmax(14rem,1.2fr)_minmax(8rem,0.65fr)_minmax(8rem,0.65fr)_auto] gap-4 border-b px-5 py-3 text-xs font-medium text-muted-foreground xl:grid">
               <span>插件</span>
+              <span>说明</span>
               <span>当前运行</span>
               <span>重启后</span>
               <span className="text-right">操作</span>
@@ -74,7 +76,7 @@ export function PluginLifecycleList({
                 return (
                   <article
                     key={plugin.id}
-                    className={`grid gap-4 px-5 py-4 lg:grid-cols-[minmax(15rem,1.6fr)_minmax(9rem,0.8fr)_minmax(9rem,0.8fr)_auto] lg:items-center ${
+                    className={`grid gap-4 px-5 py-4 xl:grid-cols-[minmax(15rem,1.4fr)_minmax(14rem,1.2fr)_minmax(8rem,0.65fr)_minmax(8rem,0.65fr)_auto] xl:items-center ${
                       plugin.restart_required ? "bg-amber-500/5" : ""
                     }`}
                   >
@@ -110,14 +112,21 @@ export function PluginLifecycleList({
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between gap-3 lg:block">
-                      <span className="text-xs text-muted-foreground lg:hidden">当前运行</span>
+                    <div className="flex min-w-0 items-start justify-between gap-3 xl:block">
+                      <span className="shrink-0 text-xs text-muted-foreground xl:hidden">说明</span>
+                      <p className="line-clamp-2 text-right text-sm text-muted-foreground xl:text-left">
+                        {plugin.description || "—"}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 xl:block">
+                      <span className="text-xs text-muted-foreground xl:hidden">当前运行</span>
                       <Badge variant={runtime.variant}>{runtime.label}</Badge>
                     </div>
 
-                    <div className="flex items-center justify-between gap-3 lg:block">
-                      <span className="text-xs text-muted-foreground lg:hidden">重启后</span>
-                      <div className="text-right lg:text-left">
+                    <div className="flex items-center justify-between gap-3 xl:block">
+                      <span className="text-xs text-muted-foreground xl:hidden">重启后</span>
+                      <div className="text-right xl:text-left">
                         <p className="text-sm font-medium">{target.label}</p>
                         {target.pending ? (
                           <p className="mt-0.5 text-xs text-amber-500">{target.description}</p>

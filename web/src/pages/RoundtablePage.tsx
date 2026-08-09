@@ -9,6 +9,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   EmptyState,
+  DeleteRoundtableDialog,
   InfoRow,
   SessionStatusBadge,
   StrategyBadge,
@@ -18,6 +19,7 @@ import {
   type RoundtableTemplate,
   type SeatFormItem,
 } from "../components/roundtable/roundtableTemplates";
+import type { RoundtableSummary } from "../types";
 
 export default function RoundtablePage() {
   const {
@@ -52,6 +54,7 @@ export default function RoundtablePage() {
     handleNominate,
     handleAddSeat,
     handleRemoveSeat,
+    pendingAction,
   } = useRoundtable();
   const [showCreate, setShowCreate] = useState(false);
   const [topic, setTopic] = useState("");
@@ -64,12 +67,15 @@ export default function RoundtablePage() {
     { role_name: "", system_prompt: "", temperature: 0.7, is_moderator: false },
     { role_name: "", system_prompt: "", temperature: 0.7, is_moderator: false },
   ]);
-  const [creating, setCreating] = useState(false);
   const [injectContent, setInjectContent] = useState("");
   const [showAddSeat, setShowAddSeat] = useState(false);
   const [newSeatName, setNewSeatName] = useState("");
   const [newSeatPrompt, setNewSeatPrompt] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<RoundtableSummary | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const creating = pendingAction === "create";
+  const actionPending = pendingAction !== null;
+  const interventionPending = pendingAction === "inject" || pendingAction === "nominate";
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -135,7 +141,6 @@ export default function RoundtablePage() {
     if (!topic.trim()) return;
     if (seatForms.some((s) => !s.role_name.trim())) return;
 
-    setCreating(true);
     const result = await handleCreate({
       topic: topic.trim(),
       seats: seatForms.map((s) => ({
@@ -152,9 +157,8 @@ export default function RoundtablePage() {
         summary_interval: compressorInterval,
       } : null,
     });
-    setCreating(false);
 
-    if (result.success) {
+    if (result?.success) {
       setShowCreate(false);
       setTopic("");
       setSeatForms([
@@ -164,6 +168,23 @@ export default function RoundtablePage() {
       setSelectedStrategy("round_robin");
       setCompressorEnabled(false);
     }
+  };
+
+  const submitIntervention = async () => {
+    const content = injectContent.trim();
+    if (!activeSession || !content || interventionPending) return;
+
+    const atMatch = content.match(/^@(\S+)\s*(.*)/);
+    const result = atMatch
+      ? await handleNominate(activeSession.session_id, undefined, atMatch[1], atMatch[2])
+      : await handleInject(activeSession.session_id, content);
+    if (result?.success) setInjectContent("");
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || pendingAction === "delete") return;
+    const result = await handleDelete(deleteTarget.session_id);
+    if (result?.success) setDeleteTarget(null);
   };
 
   // 判断 transcript 中轮次是否变化
@@ -266,7 +287,7 @@ export default function RoundtablePage() {
               onShowCreate={() => setShowCreate(true)}
               roundtables={roundtables}
               onSelect={(id) => loadDetail(id)}
-              onDelete={(id) => handleDelete(id)}
+              onDelete={setDeleteTarget}
             />
           )}
 
@@ -391,41 +412,30 @@ export default function RoundtablePage() {
                   type="text"
                   value={injectContent}
                   onChange={(e) => setInjectContent(e.target.value)}
+                  disabled={interventionPending}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && injectContent.trim()) {
-                      // 检查是否有 @角色名 格式
-                      const atMatch = injectContent.match(/^@(\S+)\s*(.*)/);
-                      if (atMatch) {
-                        handleNominate(activeSession.session_id, undefined, atMatch[1], atMatch[2]);
-                      } else {
-                        handleInject(activeSession.session_id, injectContent.trim());
-                      }
-                      setInjectContent("");
+                    if (e.key === "Enter" && injectContent.trim() && !interventionPending) {
+                      e.preventDefault();
+                      void submitIntervention();
                     }
                   }}
                   placeholder="插话... (输入 @角色名 可点名发言)"
                   aria-label="插话输入，输入 @角色名 可点名发言"
-                  className="flex-1 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 min-h-[44px]"
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 min-h-[44px] disabled:cursor-not-allowed disabled:opacity-60"
                 />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (injectContent.trim()) {
-                      const atMatch = injectContent.match(/^@(\S+)\s*(.*)/);
-                      if (atMatch) {
-                        handleNominate(activeSession.session_id, undefined, atMatch[1], atMatch[2]);
-                      } else {
-                        handleInject(activeSession.session_id, injectContent.trim());
-                      }
-                      setInjectContent("");
-                    }
-                  }}
-                  disabled={!injectContent.trim()}
-                  aria-label="发送插话"
+                  <button
+                    type="button"
+                    onClick={() => void submitIntervention()}
+                    disabled={!injectContent.trim() || interventionPending}
+                    aria-label="发送插话"
                   className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg bg-indigo-500/20 text-indigo-500 hover:bg-indigo-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/30 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  <Send size={14} aria-hidden="true" />
-                </button>
+                  >
+                    {interventionPending ? (
+                      <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : (
+                      <Send size={14} aria-hidden="true" />
+                    )}
+                  </button>
               </div>
             )}
 
@@ -435,11 +445,16 @@ export default function RoundtablePage() {
                 <button
                   type="button"
                   onClick={() => handleStart(activeSession.session_id)}
+                  disabled={actionPending}
                   aria-label="开始讨论"
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-emerald-500/30 cursor-pointer min-h-[44px]"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-emerald-500/30 cursor-pointer min-h-[44px] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <Play size={16} aria-hidden="true" />
-                  开始讨论
+                  {pendingAction === "start" ? (
+                    <Loader2 size={16} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                  ) : (
+                    <Play size={16} aria-hidden="true" />
+                  )}
+                  {pendingAction === "start" ? "正在开始" : "开始讨论"}
                 </button>
               )}
 
@@ -452,11 +467,16 @@ export default function RoundtablePage() {
                   <button
                     type="button"
                     onClick={() => handlePause(activeSession.session_id)}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-amber-500/30 cursor-pointer min-h-[44px]"
+                    disabled={actionPending}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-amber-500/30 cursor-pointer min-h-[44px] disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="暂停讨论"
                   >
-                    <Pause size={14} aria-hidden="true" />
-                    暂停
+                    {pendingAction === "pause" ? (
+                      <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : (
+                      <Pause size={14} aria-hidden="true" />
+                    )}
+                    {pendingAction === "pause" ? "正在暂停" : "暂停"}
                   </button>
                 </>
               )}
@@ -470,11 +490,16 @@ export default function RoundtablePage() {
                   <button
                     type="button"
                     onClick={() => handleResume(activeSession.session_id)}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-emerald-500/30 cursor-pointer min-h-[44px]"
+                    disabled={actionPending}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-emerald-500/30 cursor-pointer min-h-[44px] disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="恢复讨论"
                   >
-                    <SkipForward size={14} aria-hidden="true" />
-                    继续
+                    {pendingAction === "resume" ? (
+                      <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : (
+                      <SkipForward size={14} aria-hidden="true" />
+                    )}
+                    {pendingAction === "resume" ? "正在继续" : "继续"}
                   </button>
                 </>
               )}
@@ -486,7 +511,8 @@ export default function RoundtablePage() {
                     <button
                       type="button"
                       onClick={() => setShowAddSeat(true)}
-                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-700/50 text-slate-400 hover:text-slate-200 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/30 cursor-pointer min-h-[44px]"
+                      disabled={actionPending}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-700/50 text-slate-400 hover:text-slate-200 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/30 cursor-pointer min-h-[44px] disabled:cursor-not-allowed disabled:opacity-40"
                       aria-label="添加席位"
                     >
                       <UserPlus size={14} aria-hidden="true" />
@@ -499,6 +525,7 @@ export default function RoundtablePage() {
                         type="text"
                         value={newSeatName}
                         onChange={(e) => setNewSeatName(e.target.value)}
+                        disabled={pendingAction === "addSeat"}
                         placeholder="角色名"
                         aria-label="新席位角色名"
                         className="w-20 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 min-h-[44px]"
@@ -509,6 +536,7 @@ export default function RoundtablePage() {
                         type="text"
                         value={newSeatPrompt}
                         onChange={(e) => setNewSeatPrompt(e.target.value)}
+                        disabled={pendingAction === "addSeat"}
                         placeholder="角色 Prompt"
                         aria-label="新席位系统提示词"
                         className="w-32 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 min-h-[44px]"
@@ -517,26 +545,33 @@ export default function RoundtablePage() {
                         type="button"
                         onClick={async () => {
                           if (newSeatName.trim()) {
-                            await handleAddSeat(activeSession.session_id, {
+                            const result = await handleAddSeat(activeSession.session_id, {
                               role_name: newSeatName.trim(),
                               system_prompt: newSeatPrompt.trim() || `你是${newSeatName.trim()}。`,
                             });
-                            setNewSeatName("");
-                            setNewSeatPrompt("");
-                            setShowAddSeat(false);
+                            if (result?.success) {
+                              setNewSeatName("");
+                              setNewSeatPrompt("");
+                              setShowAddSeat(false);
+                            }
                           }
                         }}
-                        disabled={!newSeatName.trim()}
+                        disabled={!newSeatName.trim() || actionPending}
                         aria-label="确认添加席位"
                         className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                       >
-                        <Plus size={12} aria-hidden="true" />
+                        {pendingAction === "addSeat" ? (
+                          <Loader2 size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                        ) : (
+                          <Plus size={12} aria-hidden="true" />
+                        )}
                       </button>
                       <button
                         type="button"
                         onClick={() => { setShowAddSeat(false); setNewSeatName(""); setNewSeatPrompt(""); }}
+                        disabled={actionPending}
                         aria-label="取消添加席位"
-                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded text-slate-500 hover:text-slate-300 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/30 cursor-pointer"
+                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded text-slate-500 hover:text-slate-300 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/30 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <X size={12} aria-hidden="true" />
                       </button>
@@ -547,11 +582,16 @@ export default function RoundtablePage() {
                   <button
                     type="button"
                     onClick={() => handleStop(activeSession.session_id)}
+                    disabled={actionPending}
                     aria-label="终止讨论"
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-red-500/30 ml-auto cursor-pointer min-h-[44px]"
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-red-500/30 ml-auto cursor-pointer min-h-[44px] disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <Square size={14} aria-hidden="true" />
-                    终止
+                    {pendingAction === "stop" ? (
+                      <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : (
+                      <Square size={14} aria-hidden="true" />
+                    )}
+                    {pendingAction === "stop" ? "正在终止" : "终止"}
                   </button>
                 </>
               )}
@@ -599,6 +639,7 @@ export default function RoundtablePage() {
                       ? (seatId) => activeSession && handleRemoveSeat(activeSession.session_id, seatId)
                       : undefined
                   }
+                  actionsDisabled={actionPending}
                   onNominate={
                     (isDiscussing || isPaused)
                       ? (seatId) => activeSession && handleNominate(activeSession.session_id, seatId)
@@ -709,6 +750,12 @@ export default function RoundtablePage() {
           )}
         </ScrollArea>
       </div>
+      <DeleteRoundtableDialog
+        roundtable={deleteTarget}
+        deleting={pendingAction === "delete"}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => void confirmDelete()}
+      />
     </div>
   );
 }

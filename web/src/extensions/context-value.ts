@@ -1,14 +1,15 @@
 import { createContext, useContext } from "react";
 
-import type { FrontendExtension } from "./types";
+import type { ExtensionStatus, FrontendExtension } from "./types";
 import type { ExtensionActivationError } from "./validation";
 
 export interface ExtensionContextValue {
   extensions: FrontendExtension[];
+  statuses: ExtensionStatus[];
   errors: ExtensionActivationError[];
 }
 
-export const EMPTY_EXTENSION_CONTEXT: ExtensionContextValue = { extensions: [], errors: [] };
+export const EMPTY_EXTENSION_CONTEXT: ExtensionContextValue = { extensions: [], statuses: [], errors: [] };
 export const ExtensionContext = createContext<ExtensionContextValue>(EMPTY_EXTENSION_CONTEXT);
 
 export function useExtensions(): FrontendExtension[] {
@@ -17,4 +18,8 @@ export function useExtensions(): FrontendExtension[] {
 
 export function useExtensionActivationErrors(): ExtensionActivationError[] {
   return useContext(ExtensionContext).errors;
+}
+
+export function useExtensionStatuses(): ExtensionStatus[] {
+  return useContext(ExtensionContext).statuses;
 }
