@@ -167,6 +167,7 @@ try {
     }
     $Plugins = (Invoke-RestMethod -Uri "$BackendBaseUrl/api/plugins" -TimeoutSec 5).plugins
     $Bishu = $Plugins | Where-Object { $_.id -eq "bishu-novel" } | Select-Object -First 1
+    $PublicApi = $Plugins | Where-Object { $_.id -eq "public-api" } | Select-Object -First 1
     if ($Flavor -eq "full") {
         if (-not $Bishu) {
             throw "Full installer did not seed bishu-novel"
@@ -175,11 +176,20 @@ try {
             throw "Full installer did not enable bishu-novel"
         }
         if ($Bishu.runtime_status -ne "running") {
-            throw "Full installer Plugin is not running: $($Bishu.runtime_status)"
+            throw "Full installer bishu-novel is not running: $($Bishu.runtime_status)"
+        }
+        if (-not $PublicApi) {
+            throw "Full installer did not seed public-api"
+        }
+        if (-not $PublicApi.active_enabled -or -not $PublicApi.desired_enabled) {
+            throw "Full installer did not enable public-api"
+        }
+        if ($PublicApi.runtime_status -ne "running") {
+            throw "Full installer public-api is not running: $($PublicApi.runtime_status)"
         }
     }
-    elseif ($Bishu) {
-        throw "Core installer unexpectedly seeded bishu-novel"
+    elseif ($Bishu -or $PublicApi) {
+        throw "Core installer unexpectedly seeded an official Plugin"
     }
     Write-Output "Installed application status endpoint verified"
 
