@@ -68,3 +68,28 @@ def test_install_plugin_requirements_rejects_symlink_escape(tmp_path: Path):
 
     with pytest.raises(PluginDependencyError, match="必须位于 Plugin 目录内"):
         install_plugin_requirements(manifest)
+
+
+def test_install_plugin_requirements_skips_satisfied_shared_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("httpx>=0.27,<1\n", encoding="utf-8")
+    manifest = ExtensionManifest(
+        extension_id="demo",
+        name="Demo",
+        version="1.0.0",
+        base_path=tmp_path,
+        requirements="requirements.txt",
+    )
+    monkeypatch.setattr(
+        "src.plugin_system.dependencies.metadata.version",
+        lambda name: "0.28.1" if name == "httpx" else "0",
+    )
+    monkeypatch.setattr(
+        "src.plugin_system.dependencies.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("satisfied requirements invoked pip"),
+    )
+
+    install_plugin_requirements(manifest)

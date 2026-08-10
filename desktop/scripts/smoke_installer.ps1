@@ -185,7 +185,7 @@ try {
             throw "Full installer did not enable public-api"
         }
         if ($PublicApi.runtime_status -ne "running") {
-            throw "Full installer public-api is not running: $($PublicApi.runtime_status)"
+            throw "Full installer public-api is not running: $($PublicApi.runtime_status); $($PublicApi.error)"
         }
     }
     elseif ($Bishu -or $PublicApi) {

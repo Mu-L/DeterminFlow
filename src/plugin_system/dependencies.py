@@ -6,13 +6,39 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
+from importlib import metadata
 from pathlib import Path
+
+from packaging.requirements import InvalidRequirement, Requirement
 
 from src.extension_api.models import ExtensionManifest
 
 
 class PluginDependencyError(RuntimeError):
     """Raised when a declared shared-environment dependency install fails."""
+
+
+def _requirements_are_satisfied(requirements: Path) -> bool:
+    """Avoid invoking pip when every simple requirement is already installed."""
+    for raw_line in requirements.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            requirement = Requirement(line)
+        except InvalidRequirement:
+            return False
+        if requirement.url or requirement.extras:
+            return False
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        try:
+            installed_version = metadata.version(requirement.name)
+        except metadata.PackageNotFoundError:
+            return False
+        if requirement.specifier and installed_version not in requirement.specifier:
+            return False
+    return True
 
 
 def install_plugin_requirements(
@@ -36,6 +62,8 @@ def install_plugin_requirements(
         raise PluginDependencyError(
             f"Plugin requirements 不存在: {manifest.requirements}"
         )
+    if _requirements_are_satisfied(requirements):
+        return
 
     uv_binary = shutil.which("uv")
     command = (
