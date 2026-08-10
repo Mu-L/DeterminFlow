@@ -38,6 +38,7 @@ def test_desktop_backend_bundles_anthropic_provider() -> None:
     assert "anthropic==0.121.0" in requirements
     assert "langchain-anthropic==1.4.1" in requirements
     assert '    "anthropic",' in spec
+    assert '    "httpx",' in spec
     assert '    "langchain-anthropic",' in spec
     assert 'collect_submodules("anthropic")' in spec
     assert 'collect_submodules("langchain_anthropic")' in spec

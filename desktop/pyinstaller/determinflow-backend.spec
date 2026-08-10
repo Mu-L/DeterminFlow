@@ -25,6 +25,7 @@ if bundled_plugins.is_dir():
 for distribution in (
     "anthropic",
     "fastapi",
+    "httpx",
     "langchain-anthropic",
     "langchain-core",
     "langchain-openai",
