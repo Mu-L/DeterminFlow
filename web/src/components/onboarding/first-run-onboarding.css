@@ -785,6 +785,14 @@
   margin: 0;
 }
 
+.first-run-api-endpoint-control {
+  min-width: 0;
+}
+
+.first-run-api-endpoint-control .first-run-field {
+  margin-top: 0.45rem;
+}
+
 .first-run-model.is-active .first-run-public-model-panel,
 .first-run-model.is-active .first-run-owned-model-panel,
 .first-run-plugins.is-active .first-run-plugin-selector,
@@ -938,7 +946,25 @@
   cursor: pointer;
   font-size: 0.74rem;
   font-weight: 650;
+  align-self: end;
   transition: background-color 180ms var(--first-run-ease), border-color 180ms var(--first-run-ease), transform 140ms var(--first-run-ease);
+}
+
+.first-run-completion-error {
+  position: fixed;
+  z-index: 110;
+  top: 4.25rem;
+  left: 50%;
+  width: min(34rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  border: 1px solid oklch(0.72 0.16 26 / 0.55);
+  border-radius: 0.75rem;
+  background: oklch(0.18 0.035 26 / 0.96);
+  padding: 0.75rem 1rem;
+  color: oklch(0.86 0.08 26);
+  box-shadow: 0 1rem 2.5rem oklch(0.08 0.02 273 / 0.38);
+  font-size: 0.76rem;
+  text-align: center;
 }
 
 .first-run-verify-button:hover:not(:disabled) {

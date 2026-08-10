@@ -580,7 +580,7 @@
     grid-template-columns: 1fr;
   }
 
-  .first-run-owned-model-form .first-run-disclosure,
+  .first-run-owned-model-form .first-run-api-endpoint-control,
   .first-run-owned-model-form .first-run-verify-button,
   .first-run-owned-model-form .first-run-field {
     grid-column: 1;

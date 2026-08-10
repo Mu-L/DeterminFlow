@@ -102,9 +102,35 @@ def test_desktop_update_capability_only_trusts_the_bundled_loopback_ui() -> None
     assert capability["windows"] == ["main"]
     assert capability["remote"]["urls"] == ["http://127.0.0.1:*/*"]
     assert capability["permissions"] == [
+        "allow-check-update-sources",
+        "allow-prepare-for-update",
         "core:app:allow-version",
         "updater:default",
         "process:allow-restart",
+    ]
+
+
+def test_desktop_onboarding_capability_allows_only_the_bundled_loopback_ui() -> None:
+    build_script = (REPO_ROOT / "desktop" / "src-tauri" / "build.rs").read_text(
+        encoding="utf-8"
+    )
+    capability = json.loads(
+        (
+            REPO_ROOT
+            / "desktop"
+            / "src-tauri"
+            / "capabilities"
+            / "desktop-onboarding.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert '"get_desktop_onboarding_status"' in build_script
+    assert '"set_desktop_onboarding_status"' in build_script
+    assert capability["windows"] == ["main"]
+    assert capability["remote"]["urls"] == ["http://127.0.0.1:*/*"]
+    assert capability["permissions"] == [
+        "allow-get-desktop-onboarding-status",
+        "allow-set-desktop-onboarding-status",
     ]
 
 

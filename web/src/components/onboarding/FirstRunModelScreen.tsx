@@ -488,29 +488,31 @@ export function FirstRunModelScreen({
                 </div>
               </div>
 
-              <button
-                type="button"
-                className="first-run-disclosure"
-                onClick={() => setShowBaseUrl((current) => !current)}
-                aria-expanded={showBaseUrl}
-              >
-                API 地址
-                <ChevronDown className={showBaseUrl ? "is-open" : ""} size={15} />
-              </button>
-              {showBaseUrl ? (
-                <div className="first-run-field first-run-field--technical">
-                  <label className="sr-only" htmlFor="first-run-base-url">API 地址</label>
-                  <input
-                    id="first-run-base-url"
-                    value={baseUrl}
-                    onChange={(event) => {
-                      setBaseUrl(event.target.value);
-                      setValidationState("idle");
-                      setError("");
-                    }}
-                  />
-                </div>
-              ) : null}
+              <div className="first-run-api-endpoint-control">
+                <button
+                  type="button"
+                  className="first-run-disclosure"
+                  onClick={() => setShowBaseUrl((current) => !current)}
+                  aria-expanded={showBaseUrl}
+                >
+                  API 地址
+                  <ChevronDown className={showBaseUrl ? "is-open" : ""} size={15} />
+                </button>
+                {showBaseUrl ? (
+                  <div className="first-run-field first-run-field--technical">
+                    <label className="sr-only" htmlFor="first-run-base-url">API 地址</label>
+                    <input
+                      id="first-run-base-url"
+                      value={baseUrl}
+                      onChange={(event) => {
+                        setBaseUrl(event.target.value);
+                        setValidationState("idle");
+                        setError("");
+                      }}
+                    />
+                  </div>
+                ) : null}
+              </div>
 
               <button type="submit" className="first-run-verify-button" disabled={validationState === "loading"}>
                 {validationState === "loading" ? <Loader2 className="first-run-spinner" size={16} /> : ownedValidated ? <Check size={16} /> : <RefreshCw size={16} />}

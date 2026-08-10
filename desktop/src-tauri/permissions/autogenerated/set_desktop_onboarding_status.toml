@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-desktop-onboarding-status"
+description = "Enables the set_desktop_onboarding_status command without any pre-configured scope."
+commands.allow = ["set_desktop_onboarding_status"]
+
+[[permission]]
+identifier = "deny-set-desktop-onboarding-status"
+description = "Denies the set_desktop_onboarding_status command without any pre-configured scope."
+commands.deny = ["set_desktop_onboarding_status"]

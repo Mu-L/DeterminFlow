@@ -65,6 +65,7 @@ interface FirstRunData {
 
 interface OnboardingProps extends FirstRunData {
   onComplete: () => void | Promise<void>;
+  completionError?: string;
 }
 
 interface WorkflowSceneProps {
@@ -450,6 +451,7 @@ function FirstRunExperience({
   preferredModel,
   currentMainModel,
   onComplete,
+  completionError = "",
   initialStep = 0,
 }: OnboardingProps & { initialStep?: number }) {
   const [step, setStep] = useState(initialStep);
@@ -497,6 +499,9 @@ function FirstRunExperience({
         onStepChange={goTo}
         onSkip={onComplete}
       />
+      {completionError ? (
+        <p className="first-run-completion-error" role="alert">{completionError}</p>
+      ) : null}
       <div className="first-run-track">
         <WelcomeScreen active={step === 0} offset={0 - step} onNext={() => goTo(1)} />
         <FirstRunModelScreen
@@ -541,6 +546,7 @@ export default function FirstRunOnboarding({ children }: { children: ReactNode }
     desktopRuntime || previewStep !== null ? "checking" : "app"
   ));
   const [data, setData] = useState<FirstRunData | null>(null);
+  const [completionError, setCompletionError] = useState("");
 
   useEffect(() => {
     if (mode !== "checking") return;
@@ -600,13 +606,26 @@ export default function FirstRunOnboarding({ children }: { children: ReactNode }
   }, [desktopRuntime, mode, previewStep]);
 
   const complete = async () => {
+    setCompletionError("");
     if (desktopRuntime && previewStep === null) {
-      await markDesktopOnboardingComplete().catch(() => undefined);
+      try {
+        await markDesktopOnboardingComplete();
+      } catch (reason) {
+        setCompletionError(normalizeApiError(reason, "无法保存引导完成状态，请重试"));
+        return;
+      }
     }
     setMode("app");
   };
 
   if (mode === "app") return children;
   if (mode === "checking" || !data) return <FirstRunBootstrap />;
-  return <FirstRunExperience {...data} initialStep={previewStep ?? 0} onComplete={complete} />;
+  return (
+    <FirstRunExperience
+      {...data}
+      completionError={completionError}
+      initialStep={previewStep ?? 0}
+      onComplete={complete}
+    />
+  );
 }
