@@ -96,6 +96,171 @@ def _update_rejection_retry_audit(
 class WorkflowFlowMixin:
     """为 WorkflowEngine 提供非循环控制流调度。"""
 
+    @staticmethod
+    def _find_plan_step_index(
+        execution_plan: list[dict], node_id: str, start_index: int,
+    ) -> int | None:
+        """定位节点或网关在执行计划中的位置。"""
+        for index in range(start_index, len(execution_plan)):
+            step = execution_plan[index]
+            if step.get("node_id") == node_id:
+                return index
+            if step.get("gateway_id") == node_id:
+                return index
+        return None
+
+    async def _execute_plan_segment(
+        self,
+        *,
+        definition: WorkflowDef,
+        task: WorkflowTask,
+        execution_plan: list[dict],
+        disabled_ids: set[str],
+        shared_ws: Path | None,
+        parent_id: str,
+        on_node_started: Callable,
+        needs_approval: bool,
+        run_record: WorkflowRunRecord,
+        start_index: int = 0,
+        stop_before_node_id: str | None = None,
+    ) -> str:
+        """执行结构化计划片段，保留嵌套网关的调度语义。"""
+        plan_index = start_index
+        while plan_index < len(execution_plan):
+            step = execution_plan[plan_index]
+            step_type = step.get("type")
+
+            if step_type == "parallel_gateway":
+                plan_index += 1
+                branches: list[dict] = []
+                converge_step: dict | None = None
+                while plan_index < len(execution_plan):
+                    nested_step = execution_plan[plan_index]
+                    if nested_step.get("type") == "branch":
+                        branches.append(nested_step)
+                        plan_index += 1
+                    elif nested_step.get("type") == "converge_gateway":
+                        converge_step = nested_step
+                        plan_index += 1
+                        break
+                    else:
+                        break
+
+                logger.debug(
+                    "[ENGINE] 并行网关开始: gateway=%s, 分支数=%d, task=%s",
+                    step.get("gateway_id", ""), len(branches), task.task_id,
+                )
+                outcome = await self._execute_parallel_branches(
+                    definition=definition,
+                    task=task,
+                    branches=branches,
+                    converge_step=converge_step or {},
+                    disabled_ids=disabled_ids,
+                    shared_ws=shared_ws,
+                    parent_id=parent_id,
+                    on_node_started=on_node_started,
+                    needs_approval=needs_approval,
+                    run_record=run_record,
+                )
+                if outcome in {"failed", "retry_waiting"}:
+                    return outcome
+                continue
+
+            if step_type == "converge_gateway":
+                plan_index += 1
+                continue
+
+            if step_type == "condition_gateway":
+                if step.get("loop"):
+                    outcome = await self._execute_loop(
+                        definition=definition,
+                        task=task,
+                        step=step,
+                        disabled_ids=disabled_ids,
+                        shared_ws=shared_ws,
+                        parent_id=parent_id,
+                        on_node_started=on_node_started,
+                        needs_approval=needs_approval,
+                        run_record=run_record,
+                    )
+                    if outcome in {"failed", "retry_waiting"}:
+                        return outcome
+                    plan_index += 1
+                    continue
+
+                outcome = await self._evaluate_condition_gateway(
+                    definition=definition,
+                    task=task,
+                    step=step,
+                    disabled_ids=disabled_ids,
+                    shared_ws=shared_ws,
+                    parent_id=parent_id,
+                    on_node_started=on_node_started,
+                    needs_approval=needs_approval,
+                    run_record=run_record,
+                )
+                if outcome in {"failed", "retry_waiting"}:
+                    return outcome
+
+                convergence = str(step.get("convergence_node_id") or "")
+                if not convergence:
+                    plan_index += 1
+                    continue
+                if convergence == "__end__" or convergence == stop_before_node_id:
+                    return "completed"
+                convergence_index = self._find_plan_step_index(
+                    execution_plan, convergence, plan_index + 1,
+                )
+                if convergence_index is None:
+                    logger.error(
+                        "条件网关公共汇合点不在当前执行计划: "
+                        "gateway=%s convergence=%s",
+                        step.get("gateway_id", ""), convergence,
+                    )
+                    return "failed"
+                plan_index = convergence_index
+                continue
+
+            if step_type == "loop_gateway":
+                outcome = await self._execute_loop_gateway(
+                    definition=definition,
+                    task=task,
+                    step=step,
+                    disabled_ids=disabled_ids,
+                    shared_ws=shared_ws,
+                    parent_id=parent_id,
+                    on_node_started=on_node_started,
+                    needs_approval=needs_approval,
+                    run_record=run_record,
+                )
+                if outcome in {"failed", "retry_waiting"}:
+                    return outcome
+                plan_index += 1
+                continue
+
+            if step_type == "node":
+                node_id = str(step.get("node_id") or "")
+                if definition.get_node(node_id) is None or node_id in disabled_ids:
+                    plan_index += 1
+                    continue
+                outcome = await self._execute_node_sequence(
+                    definition=definition,
+                    task=task,
+                    node_ids=[node_id],
+                    disabled_ids=disabled_ids,
+                    shared_ws=shared_ws,
+                    parent_id=parent_id,
+                    on_node_started=on_node_started,
+                    needs_approval=needs_approval,
+                    run_record=run_record,
+                )
+                if outcome in {"failed", "retry_waiting"}:
+                    return outcome
+
+            plan_index += 1
+
+        return "completed"
+
     async def _apply_failed_node_policy(
         self,
         *,
@@ -651,24 +816,6 @@ class WorkflowFlowMixin:
     # 条件网关 & 循环调度
     # ============================================================
 
-    @staticmethod
-    def _ordered_condition_branch_nodes(
-        definition: WorkflowDef,
-        start_node: str,
-        convergence_node: str,
-    ) -> list[str]:
-        """按边顺序收集排他分支节点，直到公共汇合点。"""
-        ordered: list[str] = []
-        visited: set[str] = set()
-        current = start_node
-        while current and current not in visited and current != convergence_node:
-            visited.add(current)
-            if definition.get_node(current):
-                ordered.append(current)
-            next_ids = [e.target for e in definition.edges if e.source == current]
-            current = next_ids[0] if next_ids else ""
-        return ordered
-
     async def _evaluate_condition_gateway(
         self, definition: WorkflowDef, task: WorkflowTask,
         step: dict, disabled_ids: set[str],
@@ -725,18 +872,20 @@ class WorkflowFlowMixin:
             selected_target = selected_branch["target"]
             gateway_state = {
                 "selected_target": selected_target,
-                "branch_nodes": self._ordered_condition_branch_nodes(
-                    definition, selected_target, convergence,
-                ),
+                "convergence_node_id": convergence,
                 "status": "running",
             }
             condition_states[gateway_id] = gateway_state
 
+            node_ids = {node.id for node in definition.nodes}
             for branch in branches:
                 if branch["target"] == selected_target:
                     continue
-                for nid in self._ordered_condition_branch_nodes(
-                    definition, branch["target"], convergence,
+                for nid in definition._collect_branch_nodes(
+                    definition.edges,
+                    node_ids,
+                    branch["target"],
+                    convergence,
                 ):
                     state = task.node_states.get(
                         nid, NodeExecutionState(node_id=nid),
@@ -747,14 +896,31 @@ class WorkflowFlowMixin:
                     task.node_states[nid] = state
             await self._save_task_state(definition.workflow_id, task)
 
-        branch_nodes = gateway_state.get("branch_nodes") or [selected_target]
-        outcome = await self._execute_node_sequence(
+        gateway_state.pop("branch_nodes", None)
+        gateway_state["convergence_node_id"] = convergence
+        branch_plan = definition.get_execution_plan(
+            start_node_id=selected_target,
+            stop_before_node_id=convergence or None,
+        )
+        if not branch_plan and selected_target != convergence:
+            logger.error(
+                "条件网关选中分支无法生成执行计划: gateway=%s target=%s",
+                gateway_id, selected_target,
+            )
+            outcome = "failed"
+            gateway_state["status"] = outcome
+            condition_states[gateway_id] = gateway_state
+            await self._save_task_state(definition.workflow_id, task)
+            return outcome
+        outcome = await self._execute_plan_segment(
             definition=definition, task=task,
-            node_ids=branch_nodes, disabled_ids=disabled_ids,
+            execution_plan=branch_plan,
+            disabled_ids=disabled_ids,
             shared_ws=shared_ws, parent_id=parent_id,
             on_node_started=on_node_started,
             needs_approval=needs_approval,
             run_record=run_record,
+            stop_before_node_id=convergence or None,
         )
         gateway_state["status"] = outcome
         condition_states[gateway_id] = gateway_state

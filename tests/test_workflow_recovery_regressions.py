@@ -265,6 +265,108 @@ def test_agent_file_output_requires_a_final_ai_message(tmp_path):
     assert not (tmp_path / "result.json").exists()
 
 
+def test_agent_output_gate_does_not_fall_back_to_older_non_empty_message(tmp_path):
+    class EmptyLatestOutputSessionManager:
+        def __init__(self):
+            self.sessions = {}
+
+        async def create_sub_session(self, **kwargs):
+            session_id = "session-empty-latest-output"
+            self.sessions[session_id] = SimpleNamespace(
+                record=[
+                    {"type": "assistant", "content": '{"body":"旧正文"}'},
+                    {"type": "assistant", "content": ""},
+                ],
+                get_cumulative_token_usage=lambda: None,
+            )
+            kwargs["on_auto_complete"](
+                session_id,
+                "graph completed with an empty final message",
+                "success",
+                "",
+            )
+            return {"success": True, "session_id": session_id}
+
+    node = WorkflowNode(
+        id="writer",
+        node_type="agent",
+        first_message="write",
+        output_variable="draft",
+        save_output_to_file=True,
+        output_file_path="result.json",
+        require_non_empty_output=True,
+    )
+    result = asyncio.run(
+        AgentNode().execute(
+            NodeContext(
+                definition=WorkflowDef(
+                    workflow_id="wf-agent-output-gate",
+                    nodes=[node],
+                ),
+                node_def=node,
+                node_state=NodeExecutionState(node_id=node.id),
+                shared_ws=tmp_path,
+                session_manager=EmptyLatestOutputSessionManager(),
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert "LLM 最终输出为空" in result.error
+    assert result.outputs == {}
+    assert not (tmp_path / "result.json").exists()
+
+
+def test_agent_json_field_gate_fails_before_output_file_write(tmp_path):
+    class ShortJsonOutputSessionManager:
+        def __init__(self):
+            self.sessions = {}
+
+        async def create_sub_session(self, **kwargs):
+            session_id = "session-short-json-output"
+            self.sessions[session_id] = SimpleNamespace(
+                record=[{"type": "assistant", "content": '{"body":"太短"}'}],
+                get_cumulative_token_usage=lambda: None,
+            )
+            kwargs["on_auto_complete"](
+                session_id,
+                "graph completed with short JSON body",
+                "success",
+                "",
+            )
+            return {"success": True, "session_id": session_id}
+
+    node = WorkflowNode(
+        id="writer",
+        node_type="agent",
+        first_message="write",
+        output_variable="draft",
+        save_output_to_file=True,
+        output_file_path="result.json",
+        json_output_field="body",
+        json_output_field_min_chars=10,
+    )
+    result = asyncio.run(
+        AgentNode().execute(
+            NodeContext(
+                definition=WorkflowDef(
+                    workflow_id="wf-agent-json-field-gate",
+                    nodes=[node],
+                ),
+                node_def=node,
+                node_state=NodeExecutionState(node_id=node.id),
+                shared_ws=tmp_path,
+                session_manager=ShortJsonOutputSessionManager(),
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert "字段 'body' 字数为 2，必须大于 10" in result.error
+    assert result.outputs == {}
+    assert not (tmp_path / "result.json").exists()
+
+
 def test_agent_approval_recovery_route_failure_fails_without_waiting():
     class RecoverySessionManager:
         def __init__(self):

@@ -20,6 +20,7 @@ from src.workflow.json_output import (
     get_json_retry_count,
     validate_and_format_json,
 )
+from src.workflow.output_validation import validate_agent_output
 
 from .base import BaseNodePlugin, NodeContext, NodeResult
 from ..definition import resolve_placeholders, _now_iso
@@ -112,6 +113,30 @@ class AgentNode(BaseNodePlugin):
                 "description": "开启后，Agent 最后一轮回复文本将写入此变量，供后续节点通过 {{变量名}} 引用",
             },
             {
+                "key": "require_non_empty_output",
+                "label": "要求 LLM 输出非空",
+                "type": "boolean",
+                "required": False,
+                "default": False,
+                "description": "开启后，最后一条 LLM 输出为空时节点失败，并进入节点自动重试策略",
+            },
+            {
+                "key": "json_output_field",
+                "label": "JSON 字段路径",
+                "type": "text",
+                "required": False,
+                "default": "",
+                "description": "可选，例如 body 或 data.chapters.0.body；需与最小字数同时配置",
+            },
+            {
+                "key": "json_output_field_min_chars",
+                "label": "JSON 字段最小字数",
+                "type": "text",
+                "required": False,
+                "default": "0",
+                "description": "指定字符串字段的字数必须严格大于此值；0 表示关闭",
+            },
+            {
                 "key": "save_output_to_file",
                 "label": "保存最后输出到文件",
                 "type": "boolean",
@@ -198,6 +223,13 @@ class AgentNode(BaseNodePlugin):
         max_reject_count = getattr(node_def, "max_reject_count", 3)
         save_output_to_file = getattr(node_def, "save_output_to_file", False)
         output_file_path_raw = getattr(node_def, "output_file_path", "")
+        require_non_empty_output = getattr(
+            node_def, "require_non_empty_output", False,
+        )
+        json_output_field = getattr(node_def, "json_output_field", "")
+        json_output_field_min_chars = getattr(
+            node_def, "json_output_field_min_chars", 0,
+        )
         model_override_raw = getattr(node_def, "model_override", "")
         model_override = (await resolve_placeholders(model_override_raw, pv, variables, shared_ws)) if model_override_raw else None
 
@@ -419,17 +451,47 @@ class AgentNode(BaseNodePlugin):
         # 从 session 读取累计 token 消耗
         node_token_usage = self._get_session_token_usage(sm, session_id)
 
+        validation_enabled = bool(
+            require_non_empty_output
+            or json_output_field
+            or json_output_field_min_chars
+        )
+        validated_output = ""
+        if completion_result["status"] == "success" and validation_enabled:
+            validated_output = self._get_latest_ai_message(sm, session_id)
+            validation = validate_agent_output(
+                validated_output,
+                require_non_empty=require_non_empty_output,
+                json_field=json_output_field,
+                json_field_min_chars=json_output_field_min_chars,
+            )
+            if not validation.success:
+                return NodeResult(
+                    summary=completion_result["summary"],
+                    status="failed",
+                    error=f"LLM 输出校验失败: {validation.error}",
+                    session_id=session_id,
+                    outputs={},
+                    token_usage=node_token_usage,
+                )
+
         # 构建 NodeResult，提取输出变量
         outputs: dict[str, str] = {}
         if output_var_key and completion_result["status"] == "success":
-            last_msg = self._get_last_ai_message(sm, session_id)
+            last_msg = (
+                validated_output if validation_enabled
+                else self._get_last_ai_message(sm, session_id)
+            )
             if last_msg:
                 outputs[output_var_key] = last_msg
 
         # ---- 保存最后输出到文件 ----
         if save_output_to_file and output_file_path_raw and completion_result["status"] == "success":
             last_msg_for_file = outputs.get(output_var_key) if output_var_key else \
-                self._get_last_ai_message(sm, session_id)
+                (
+                    validated_output if validation_enabled
+                    else self._get_last_ai_message(sm, session_id)
+                )
             if last_msg_for_file:
                 try:
                     # 解析路径中的 {{key}} 占位符
@@ -629,6 +691,18 @@ class AgentNode(BaseNodePlugin):
         for msg in reversed(session.record):
             if msg.get("type") == "assistant" and msg.get("content"):
                 return msg["content"]
+        return ""
+
+    @staticmethod
+    def _get_latest_ai_message(sm, session_id: str) -> str:
+        """读取最新 assistant 消息；不得用更早的非空消息替代空输出。"""
+        session = sm.sessions.get(session_id) if hasattr(sm, "sessions") else None
+        if not session:
+            return ""
+        for msg in reversed(session.record):
+            if msg.get("type") == "assistant":
+                content = msg.get("content")
+                return content if isinstance(content, str) else ""
         return ""
 
     @staticmethod

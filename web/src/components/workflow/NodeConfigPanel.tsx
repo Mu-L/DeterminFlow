@@ -135,6 +135,17 @@ export default function NodeConfigPanel({
   const [outputFilePath, setOutputFilePath] = useState(
     node.output_file_path || "",
   );
+  const [requireNonEmptyOutput, setRequireNonEmptyOutput] = useState(
+    node.require_non_empty_output || false,
+  );
+  const [jsonOutputField, setJsonOutputField] = useState(
+    node.json_output_field || "",
+  );
+  const [jsonOutputFieldMinChars, setJsonOutputFieldMinChars] = useState(
+    node.json_output_field_min_chars != null
+      ? String(node.json_output_field_min_chars)
+      : "0",
+  );
   // Model override
   const [modelOverride, setModelOverride] = useState(node.model_override || "");
   const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
@@ -220,6 +231,13 @@ export default function NodeConfigPanel({
     );
     setSaveOutputToFile(node.save_output_to_file || false);
     setOutputFilePath(node.output_file_path || "");
+    setRequireNonEmptyOutput(node.require_non_empty_output || false);
+    setJsonOutputField(node.json_output_field || "");
+    setJsonOutputFieldMinChars(
+      node.json_output_field_min_chars != null
+        ? String(node.json_output_field_min_chars)
+        : "0",
+    );
     setModelOverride(node.model_override || "");
     setFilePaths(nodeParamString(node.node_params, "file_paths"));
     setRejectionPlaceholder(nodeParamString(node.node_params, "rejection_reason_placeholder", "请输入驳回原因..."));
@@ -393,6 +411,12 @@ export default function NodeConfigPanel({
       updates.max_reject_count = parseInt(maxRejectCount, 10) || 3;
       updates.save_output_to_file = saveOutputToFile;
       updates.output_file_path = outputFilePath;
+      updates.require_non_empty_output = requireNonEmptyOutput;
+      updates.json_output_field = jsonOutputField.trim();
+      updates.json_output_field_min_chars = Number.parseInt(
+        jsonOutputFieldMinChars,
+        10,
+      ) || 0;
       updates.model_override = modelOverride;
 
       // 输出变量名变更：同步到变量列表（delete old + create new）
@@ -640,6 +664,12 @@ export default function NodeConfigPanel({
             setSaveOutputToFile={setSaveOutputToFile}
             outputFilePath={outputFilePath}
             setOutputFilePath={setOutputFilePath}
+            requireNonEmptyOutput={requireNonEmptyOutput}
+            setRequireNonEmptyOutput={setRequireNonEmptyOutput}
+            jsonOutputField={jsonOutputField}
+            setJsonOutputField={setJsonOutputField}
+            jsonOutputFieldMinChars={jsonOutputFieldMinChars}
+            setJsonOutputFieldMinChars={setJsonOutputFieldMinChars}
             enableRejectUpstream={enableRejectUpstream}
             setEnableRejectUpstream={setEnableRejectUpstream}
             maxRejectCount={maxRejectCount}

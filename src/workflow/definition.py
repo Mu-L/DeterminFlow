@@ -14,6 +14,10 @@ from .failure_policy import (
     MAX_AUTO_RETRY_COUNT,
     MAX_AUTO_RETRY_INTERVAL_SECONDS,
 )
+from .output_validation import (
+    MAX_JSON_FIELD_MIN_CHARS,
+    is_valid_json_field_path,
+)
 from .runtime_models import (
     NodeExecutionState,
     WorkflowRunRecord,
@@ -99,6 +103,9 @@ class WorkflowNode:
     max_reject_count: int = 3                   # 最大拒绝次数（enable_reject_upstream 为 true 时生效）
     save_output_to_file: bool = False           # 是否将LLM最后输出保存到文件
     output_file_path: str = ""                  # 保存路径（仅限 workspace 内，支持相对路径/{{key}}占位符）
+    require_non_empty_output: bool = False      # 是否要求最后一条 LLM 输出非空
+    json_output_field: str = ""                 # 要求最小字数的 JSON 字符串字段路径
+    json_output_field_min_chars: int = 0        # JSON 字段字数必须严格大于此值（0=关闭）
     model_override: str = ""                    # 模型覆盖（格式 "provider_id:model_name"，空则使用 agent 类型默认模型，支持 {{key}} 占位符）
     sub_workflow_id: str | None = None          # 引用的子流程模板 ID（node_type="subprocess" 时有效）
     sub_scheme_id: str | None = None            # 子流程使用的执行方案 ID（空=全部执行，node_type="subprocess" 时有效）
@@ -146,6 +153,12 @@ class WorkflowNode:
             max_reject_count=int(data.get("max_reject_count", 3)),
             save_output_to_file=data.get("save_output_to_file", False),
             output_file_path=data.get("output_file_path", ""),
+            require_non_empty_output=data.get("require_non_empty_output", False),
+            json_output_field=data.get("json_output_field", ""),
+            json_output_field_min_chars=_coerce_integer_setting(
+                data.get("json_output_field_min_chars", 0),
+                default=0,
+            ),
             model_override=data.get("model_override", ""),
             sub_workflow_id=data.get("sub_workflow_id"),
             sub_scheme_id=data.get("sub_scheme_id"),
@@ -486,28 +499,48 @@ class WorkflowDef:
 
         return errors
 
-    def get_execution_plan(self) -> list[dict]:
+    def get_execution_plan(
+        self,
+        *,
+        start_node_id: str | None = None,
+        stop_before_node_id: str | None = None,
+    ) -> list[dict]:
         """生成带并行/条件标记的执行计划。
 
         对于无网关的简单工作流，返回纯串行计划（向后兼容）。
         对于有网关的工作流，返回混合调度计划。
 
         新增 condition_gateway 步骤，并自动检测回环（循环结构）。
+        start_node_id 与 stop_before_node_id 用于生成条件分支的结构化子计划；
+        子计划仍保留其中的并行和其他控制流步骤。
         """
         if not self.edges:
-            return [{"type": "node", "node_id": n.id} for n in self.nodes if not (n.id.startswith("__") and n.id.endswith("__"))]
+            return [
+                {"type": "node", "node_id": n.id}
+                for n in self.nodes
+                if not (n.id.startswith("__") and n.id.endswith("__"))
+                and (start_node_id is None or n.id == start_node_id)
+                and n.id != stop_before_node_id
+            ]
 
         # 构建邻接表
         adj: dict[str, list[str]] = {}
         for e in self.edges:
             adj.setdefault(e.source, []).append(e.target)
 
-        # 找到起点
-        all_sources = set(adj.keys())
-        all_targets = {t for targets in adj.values() for t in targets}
-        start_candidates = all_sources - all_targets
-        start_id = next(iter(start_candidates)) if start_candidates else "__start__"
-        if start_id == "__start__" and "__start__" not in adj:
+        # 找到起点。条件分支可显式指定入口，并在公共汇合点前停止。
+        if start_node_id:
+            start_id = start_node_id
+        else:
+            all_sources = set(adj.keys())
+            all_targets = {t for targets in adj.values() for t in targets}
+            start_candidates = all_sources - all_targets
+            start_id = next(iter(start_candidates)) if start_candidates else "__start__"
+        if (
+            start_node_id is None
+            and start_id == "__start__"
+            and "__start__" not in adj
+        ):
             return [{"type": "node", "node_id": n.id} for n in self.nodes if not (n.id.startswith("__") and n.id.endswith("__"))]
 
         # 如果没有网关，回退到串行
@@ -515,7 +548,11 @@ class WorkflowDef:
             plan: list[dict] = []
             visited: set[str] = set()
             current = start_id
-            while current and current not in visited:
+            while (
+                current
+                and current not in visited
+                and current != stop_before_node_id
+            ):
                 visited.add(current)
                 node_def = self.get_node(current)
                 if node_def:
@@ -535,7 +572,11 @@ class WorkflowDef:
         visited_order: list[str] = []  # 维护访问顺序（用于回环检测）
         current = start_id
 
-        while current and current not in visited:
+        while (
+            current
+            and current not in visited
+            and current != stop_before_node_id
+        ):
             visited.add(current)
             visited_order.append(current)
 
@@ -786,6 +827,43 @@ class WorkflowDef:
                 errors.append(
                     f"节点 '{node_label}' 的自动重试间隔必须是 "
                     f"0 到 {MAX_AUTO_RETRY_INTERVAL_SECONDS} 秒的整数"
+                )
+            if node_def.node_type != "agent" and (
+                node_def.require_non_empty_output
+                or node_def.json_output_field
+                or node_def.json_output_field_min_chars
+            ):
+                errors.append(
+                    f"节点 '{node_label}' 不是 Agent 节点，不能配置 LLM 输出校验"
+                )
+                continue
+            if not isinstance(node_def.require_non_empty_output, bool):
+                errors.append(
+                    f"节点 '{node_label}' 的 LLM 非空输出校验必须是布尔值"
+                )
+            has_json_field = bool(
+                isinstance(node_def.json_output_field, str)
+                and node_def.json_output_field.strip()
+            )
+            has_json_minimum = node_def.json_output_field_min_chars != 0
+            if has_json_field != has_json_minimum:
+                errors.append(
+                    f"节点 '{node_label}' 的 JSON 字段路径和最小字数必须同时配置"
+                )
+            if has_json_field and not is_valid_json_field_path(
+                node_def.json_output_field
+            ):
+                errors.append(
+                    f"节点 '{node_label}' 的 JSON 字段路径格式无效"
+                )
+            if has_json_minimum and not _is_integer_in_range(
+                node_def.json_output_field_min_chars,
+                minimum=1,
+                maximum=MAX_JSON_FIELD_MIN_CHARS,
+            ):
+                errors.append(
+                    f"节点 '{node_label}' 的 JSON 字段最小字数必须是 "
+                    f"1 到 {MAX_JSON_FIELD_MIN_CHARS} 的整数"
                 )
 
         # 空工作流允许保存

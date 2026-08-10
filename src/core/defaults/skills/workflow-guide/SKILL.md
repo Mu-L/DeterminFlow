@@ -4,7 +4,7 @@ description: >-
   创建、编辑、校验、运行或排查 DeterminFlow 工作流时必须先加载此技能；也适用于任务填参、节点审批、变量传递、网关、执行方案、子流程与工作区覆盖。涉及 Agent 定义、Prompt 模板或 Script Library 的专项设计时，继续加载对应 Core Skill。
 metadata:
   display_name: workflow-guide
-  version: 3.3.0
+  version: 3.4.0
   author: system
   category: workflow
   priority: 50
@@ -129,6 +129,10 @@ Agent 节点的常用输出控制：
 
 - `output_variable` 把最后回复写入运行时变量池。
 - `save_output_to_file` 与 `output_file_path` 把最后回复保存到共享 workspace；两者可同时用。
+- `require_non_empty_output=true` 要求最后一条 LLM 回复去除首尾空白后非空。
+- `json_output_field` 与 `json_output_field_min_chars` 必须同时配置；前者支持
+  `body`、`data.chapters.0.body` 形式的字段路径，目标必须是字符串，字数必须严格大于阈值。
+  校验发生在变量赋值和文件写入前；失败统一进入节点的 `auto_retry_count` 策略。
 - `auto_flow=true` 让 LLM 输出结束即成功，通常配合
   `enable_complete_node_task=false`。
 - `enable_reject_upstream` 与 `max_reject_count` 允许下游有限次打回上游。

@@ -42,6 +42,12 @@ interface NodeConfigAgentFieldsProps {
   setSaveOutputToFile: (value: boolean) => void;
   outputFilePath: string;
   setOutputFilePath: (value: string) => void;
+  requireNonEmptyOutput: boolean;
+  setRequireNonEmptyOutput: (value: boolean) => void;
+  jsonOutputField: string;
+  setJsonOutputField: (value: string) => void;
+  jsonOutputFieldMinChars: string;
+  setJsonOutputFieldMinChars: (value: string) => void;
   enableRejectUpstream: boolean;
   setEnableRejectUpstream: (value: boolean) => void;
   maxRejectCount: string;
@@ -90,6 +96,12 @@ export default function NodeConfigAgentFields({
   setSaveOutputToFile,
   outputFilePath,
   setOutputFilePath,
+  requireNonEmptyOutput,
+  setRequireNonEmptyOutput,
+  jsonOutputField,
+  setJsonOutputField,
+  jsonOutputFieldMinChars,
+  setJsonOutputFieldMinChars,
   enableRejectUpstream,
   setEnableRejectUpstream,
   maxRejectCount,
@@ -277,6 +289,93 @@ export default function NodeConfigAgentFields({
             onToggle={onHookToggle}
           />
         </div>
+      </div>
+
+      <div className="space-y-3 pt-3 border-t border-indigo-500/10">
+        <p className="text-xs font-medium text-slate-400">LLM 输出校验</p>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={requireNonEmptyOutput}
+            onChange={(event) => {
+              setRequireNonEmptyOutput(event.target.checked);
+              onMarkUnsaved();
+            }}
+            disabled={isReadOnly}
+            className="mt-0.5 w-4 h-4 rounded border-indigo-500/30 bg-slate-950 text-indigo-500 focus:ring-indigo-500/30"
+          />
+          <div>
+            <span className="text-sm text-slate-100">要求最后输出非空</span>
+            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+              最后一条 LLM 输出为空时节点失败，由节点自动重试策略处理。
+            </p>
+          </div>
+        </label>
+
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={Boolean(jsonOutputField)}
+            onChange={(event) => {
+              if (event.target.checked) {
+                setJsonOutputField("body");
+                setJsonOutputFieldMinChars("1000");
+              } else {
+                setJsonOutputField("");
+                setJsonOutputFieldMinChars("0");
+              }
+              onMarkUnsaved();
+            }}
+            disabled={isReadOnly}
+            className="mt-0.5 w-4 h-4 rounded border-indigo-500/30 bg-slate-950 text-indigo-500 focus:ring-indigo-500/30"
+          />
+          <div>
+            <span className="text-sm text-slate-100">要求 JSON 字段达到最小字数</span>
+            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+              指定字段必须是字符串，去除首尾空白后的字数必须严格大于阈值。
+            </p>
+          </div>
+        </label>
+
+        {jsonOutputField && (
+          <div className="ml-7 grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="json-output-field" className="block text-xs font-medium text-slate-400 mb-1">
+                JSON 字段路径
+              </label>
+              <input
+                type="text"
+                id="json-output-field"
+                value={jsonOutputField}
+                onChange={(event) => {
+                  setJsonOutputField(event.target.value);
+                  onMarkUnsaved();
+                }}
+                disabled={isReadOnly}
+                className={baseInputClass}
+                placeholder="body"
+              />
+            </div>
+            <div>
+              <label htmlFor="json-output-min-chars" className="block text-xs font-medium text-slate-400 mb-1">
+                必须大于
+              </label>
+              <input
+                type="number"
+                id="json-output-min-chars"
+                min="1"
+                max="10000000"
+                value={jsonOutputFieldMinChars}
+                onChange={(event) => {
+                  setJsonOutputFieldMinChars(event.target.value);
+                  onMarkUnsaved();
+                }}
+                disabled={isReadOnly}
+                className={baseInputClass}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="space-y-3 pt-3 border-t border-indigo-500/10">

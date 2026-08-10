@@ -13,6 +13,7 @@ from src.workflow.definition import (
     NodeExecutionState,
     WorkflowDef,
     WorkflowEdge,
+    WorkflowGateway,
     WorkflowNode,
     WorkflowRunRecord,
     WorkflowTask,
@@ -50,6 +51,37 @@ class _RetryProbeNode(BaseNodePlugin):
             status="success",
             summary=f"ok:{node_id}:{loop_value}",
             outputs={f"out_{node_id}": loop_value or "ok"},
+        )
+
+
+class _ParallelBarrierProbeNode(BaseNodePlugin):
+    node_type = "parallel_barrier_probe"
+    writer_ids: set[str] = set()
+    started_writers: set[str] = set()
+    completed_writers: set[str] = set()
+    calls: dict[str, int] = defaultdict(int)
+    all_started: asyncio.Event | None = None
+
+    async def execute(self, ctx: NodeContext) -> NodeResult:
+        node_id = ctx.node_def.id
+        type(self).calls[node_id] += 1
+
+        if node_id in type(self).writer_ids:
+            type(self).started_writers.add(node_id)
+            if type(self).started_writers == type(self).writer_ids:
+                assert type(self).all_started is not None
+                type(self).all_started.set()
+            assert type(self).all_started is not None
+            await asyncio.wait_for(type(self).all_started.wait(), timeout=1)
+            type(self).completed_writers.add(node_id)
+
+        if node_id == "integrator":
+            assert type(self).completed_writers == type(self).writer_ids
+
+        return NodeResult(
+            status="success",
+            summary=f"ok:{node_id}",
+            outputs={f"out_{node_id}": "ok"},
         )
 
 
@@ -439,6 +471,247 @@ def test_condition_choice_is_frozen_and_complete_branch_resumes(monkeypatch):
     assert task.control_flow_state["conditions"]["choice"]["selected_target"] == "yes_1"
     assert task.node_states["no_1"].status == "skipped"
     assert _RetryProbeNode.calls == {"yes_1": 1, "yes_2": 2}
+
+
+def test_plan_segment_runs_default_condition_branch_then_common_tail(monkeypatch):
+    engine = _engine(monkeypatch)
+    definition = WorkflowDef(
+        workflow_id="wf-condition-default",
+        nodes=[
+            WorkflowNode(id="multi", node_type="retry_probe"),
+            WorkflowNode(id="single", node_type="retry_probe"),
+            WorkflowNode(id="join", node_type="retry_probe"),
+        ],
+        gateways=[WorkflowGateway(id="choice", gateway_type="condition")],
+        edges=[
+            WorkflowEdge(source="__start__", target="choice"),
+            WorkflowEdge(
+                source="choice",
+                target="multi",
+                condition={"expression": "{{writer_type}} == multi"},
+            ),
+            WorkflowEdge(
+                source="choice",
+                target="single",
+                condition={"is_default": True},
+            ),
+            WorkflowEdge(source="multi", target="join"),
+            WorkflowEdge(source="single", target="join"),
+            WorkflowEdge(source="join", target="__end__"),
+        ],
+    )
+    definition._rebuild_caches()
+    task = _task(definition, {"writer_type": "single"})
+
+    async def _run() -> str:
+        return await engine._execute_plan_segment(
+            definition=definition,
+            task=task,
+            execution_plan=definition.get_execution_plan(),
+            disabled_ids=set(),
+            shared_ws=None,
+            parent_id="main",
+            on_node_started=lambda _state: None,
+            needs_approval=False,
+            run_record=WorkflowRunRecord(workflow_id=definition.workflow_id),
+        )
+
+    assert asyncio.run(_run()) == "completed"
+    assert _RetryProbeNode.calls == {"single": 1, "join": 1}
+    assert task.node_states["multi"].status == "skipped"
+
+
+def test_condition_branch_preserves_nested_parallel_gateway(monkeypatch):
+    engine = _engine(monkeypatch)
+    monkeypatch.setitem(
+        registry._plugins,
+        _ParallelBarrierProbeNode.node_type,
+        _ParallelBarrierProbeNode,
+    )
+    writer_ids = {f"writer_{index}" for index in range(5)}
+    _ParallelBarrierProbeNode.writer_ids = writer_ids
+    _ParallelBarrierProbeNode.started_writers = set()
+    _ParallelBarrierProbeNode.completed_writers = set()
+    _ParallelBarrierProbeNode.calls = defaultdict(int)
+
+    definition = WorkflowDef(
+        workflow_id="wf-condition-nested-parallel",
+        nodes=[
+            WorkflowNode(id="skeleton", node_type="retry_probe"),
+            *[
+                WorkflowNode(
+                    id=node_id,
+                    node_type=_ParallelBarrierProbeNode.node_type,
+                )
+                for node_id in sorted(writer_ids)
+            ],
+            WorkflowNode(
+                id="integrator",
+                node_type=_ParallelBarrierProbeNode.node_type,
+            ),
+            WorkflowNode(id="single_writer", node_type="retry_probe"),
+            WorkflowNode(id="common_tail", node_type="retry_probe"),
+        ],
+        gateways=[
+            WorkflowGateway(id="writer_choice", gateway_type="condition"),
+            WorkflowGateway(
+                id="writer_fork",
+                gateway_type="parallel",
+                converge_gateway_id="writer_merge",
+            ),
+            WorkflowGateway(id="writer_merge", gateway_type="converge"),
+        ],
+        edges=[
+            WorkflowEdge(source="__start__", target="writer_choice"),
+            WorkflowEdge(
+                source="writer_choice",
+                target="skeleton",
+                condition={"expression": "{{writer_type}} == multi"},
+            ),
+            WorkflowEdge(
+                source="writer_choice",
+                target="single_writer",
+                condition={"is_default": True},
+            ),
+            WorkflowEdge(source="skeleton", target="writer_fork"),
+            *[
+                WorkflowEdge(source="writer_fork", target=node_id)
+                for node_id in sorted(writer_ids)
+            ],
+            *[
+                WorkflowEdge(source=node_id, target="writer_merge")
+                for node_id in sorted(writer_ids)
+            ],
+            WorkflowEdge(source="writer_merge", target="integrator"),
+            WorkflowEdge(source="integrator", target="common_tail"),
+            WorkflowEdge(source="single_writer", target="common_tail"),
+            WorkflowEdge(source="common_tail", target="__end__"),
+        ],
+    )
+    definition._rebuild_caches()
+    task = _task(definition, {"writer_type": "multi"})
+
+    async def _run() -> str:
+        _ParallelBarrierProbeNode.all_started = asyncio.Event()
+        return await engine._execute_plan_segment(
+            definition=definition,
+            task=task,
+            execution_plan=definition.get_execution_plan(),
+            disabled_ids=set(),
+            shared_ws=None,
+            parent_id="main",
+            on_node_started=lambda _state: None,
+            needs_approval=False,
+            run_record=WorkflowRunRecord(workflow_id=definition.workflow_id),
+        )
+
+    assert asyncio.run(_run()) == "completed"
+    assert _ParallelBarrierProbeNode.started_writers == writer_ids
+    assert _ParallelBarrierProbeNode.completed_writers == writer_ids
+    assert _ParallelBarrierProbeNode.calls == {
+        **{node_id: 1 for node_id in writer_ids},
+        "integrator": 1,
+    }
+    assert _RetryProbeNode.calls == {"skeleton": 1, "common_tail": 1}
+    assert task.node_states["single_writer"].status == "skipped"
+    assert task.node_states["writer_merge"].status == "completed"
+    merged_summary = task.node_states["writer_merge"].summary
+    assert all(node_id in merged_summary for node_id in writer_ids)
+    condition_state = task.control_flow_state["conditions"]["writer_choice"]
+    assert condition_state["selected_target"] == "skeleton"
+    assert "branch_nodes" not in condition_state
+
+
+def test_condition_nested_parallel_resume_keeps_choice_and_completed_writers(
+    monkeypatch,
+):
+    engine = _engine(monkeypatch)
+    definition = WorkflowDef(
+        workflow_id="wf-condition-nested-parallel-resume",
+        nodes=[
+            WorkflowNode(id="skeleton", node_type="retry_probe"),
+            WorkflowNode(id="writer_a", node_type="retry_probe"),
+            WorkflowNode(
+                id="writer_b",
+                node_type="retry_probe",
+                auto_retry_count=1,
+            ),
+            WorkflowNode(id="integrator", node_type="retry_probe"),
+            WorkflowNode(id="single_writer", node_type="retry_probe"),
+            WorkflowNode(id="common_tail", node_type="retry_probe"),
+        ],
+        gateways=[
+            WorkflowGateway(id="writer_choice", gateway_type="condition"),
+            WorkflowGateway(
+                id="writer_fork",
+                gateway_type="parallel",
+                converge_gateway_id="writer_merge",
+            ),
+            WorkflowGateway(id="writer_merge", gateway_type="converge"),
+        ],
+        edges=[
+            WorkflowEdge(source="__start__", target="writer_choice"),
+            WorkflowEdge(
+                source="writer_choice",
+                target="skeleton",
+                condition={"expression": "{{writer_type}} == multi"},
+            ),
+            WorkflowEdge(
+                source="writer_choice",
+                target="single_writer",
+                condition={"is_default": True},
+            ),
+            WorkflowEdge(source="skeleton", target="writer_fork"),
+            WorkflowEdge(source="writer_fork", target="writer_a"),
+            WorkflowEdge(source="writer_fork", target="writer_b"),
+            WorkflowEdge(source="writer_a", target="writer_merge"),
+            WorkflowEdge(source="writer_b", target="writer_merge"),
+            WorkflowEdge(source="writer_merge", target="integrator"),
+            WorkflowEdge(source="integrator", target="common_tail"),
+            WorkflowEdge(source="single_writer", target="common_tail"),
+            WorkflowEdge(source="common_tail", target="__end__"),
+        ],
+    )
+    definition._rebuild_caches()
+    task = _task(definition, {"writer_type": "multi"})
+    _RetryProbeNode.fail_once = {("writer_b", "")}
+
+    async def _run() -> str:
+        return await engine._execute_plan_segment(
+            definition=definition,
+            task=task,
+            execution_plan=definition.get_execution_plan(),
+            disabled_ids=set(),
+            shared_ws=None,
+            parent_id="main",
+            on_node_started=lambda _state: None,
+            needs_approval=False,
+            run_record=WorkflowRunRecord(workflow_id=definition.workflow_id),
+        )
+
+    assert asyncio.run(_run()) == "retry_waiting"
+    assert _RetryProbeNode.calls == {
+        "skeleton": 1,
+        "writer_a": 1,
+        "writer_b": 1,
+    }
+    task.parameter_values["writer_type"] = "single"
+    task.node_states["writer_b"] = activate_scheduled_retry(
+        task.node_states["writer_b"],
+    )
+
+    assert asyncio.run(_run()) == "completed"
+    assert task.control_flow_state["conditions"]["writer_choice"][
+        "selected_target"
+    ] == "skeleton"
+    assert _RetryProbeNode.calls == {
+        "skeleton": 1,
+        "writer_a": 1,
+        "writer_b": 2,
+        "integrator": 1,
+        "common_tail": 1,
+    }
+    assert task.node_states["single_writer"].status == "skipped"
 
 
 def test_loop_resume_continues_current_iteration_without_rerunning_prefix(monkeypatch):

@@ -224,132 +224,22 @@ class WorkflowEngine(WorkflowFlowMixin, WorkflowLoopMixin):
             plan_index = 0
             if from_node_id:
                 plan_index = self._skip_to_node(execution_plan, from_node_id, disabled_ids)
-
-            while plan_index < len(execution_plan):
-                step = execution_plan[plan_index]
-
-                if step["type"] == "parallel_gateway":
-                    # 收集后续的 branch 和 converge_gateway 步骤
-                    plan_index += 1
-                    branches: list[dict] = []
-                    converge_step: dict | None = None
-                    while plan_index < len(execution_plan):
-                        s = execution_plan[plan_index]
-                        if s["type"] == "branch":
-                            branches.append(s)
-                            plan_index += 1
-                        elif s["type"] == "converge_gateway":
-                            converge_step = s
-                            plan_index += 1
-                            break
-                        else:
-                            break
-
-                    # 并行执行所有分支
-                    logger.debug(
-                        "[ENGINE] 并行网关开始: gateway=%s, 分支数=%d, task=%s",
-                        step.get("gateway_id", ""), len(branches), task.task_id,
-                    )
-                    parallel_result = await self._execute_parallel_branches(
-                        definition=definition, task=task,
-                        branches=branches, converge_step=converge_step or {},
-                        disabled_ids=disabled_ids,
-                        shared_ws=shared_ws,
-                        parent_id=node_parent_id,
-                        on_node_started=_on_node_started,
-                        needs_approval=needs_approval,
-                        run_record=run_record,
-                    )
-                    if parallel_result in {"failed", "retry_waiting"}:
-                        task.status = parallel_result
-                        run_record.status = parallel_result
-                        self._push_wf_task_update(definition.workflow_id, task)
-                        break
-
-                elif step["type"] == "converge_gateway":
-                    # 不应该直接到达这里（已在 parallel_gateway 块中处理）
-                    plan_index += 1
-
-                elif step["type"] == "condition_gateway":
-                    if step.get("loop"):
-                        # 循环调度
-                        loop_result = await self._execute_loop(
-                            definition=definition, task=task,
-                            step=step,
-                            disabled_ids=disabled_ids,
-                            shared_ws=shared_ws,
-                            parent_id=node_parent_id,
-                            on_node_started=_on_node_started,
-                            needs_approval=needs_approval,
-                            run_record=run_record,
-                        )
-                        if loop_result in {"failed", "retry_waiting"}:
-                            task.status = loop_result
-                            run_record.status = loop_result
-                            self._push_wf_task_update(definition.workflow_id, task)
-                            break
-                    else:
-                        # 分支调度
-                        branch_result = await self._evaluate_condition_gateway(
-                            definition=definition, task=task,
-                            step=step,
-                            disabled_ids=disabled_ids,
-                            shared_ws=shared_ws,
-                            parent_id=node_parent_id,
-                            on_node_started=_on_node_started,
-                            needs_approval=needs_approval,
-                            run_record=run_record,
-                        )
-                        if branch_result in {"failed", "retry_waiting"}:
-                            task.status = branch_result
-                            run_record.status = branch_result
-                            self._push_wf_task_update(definition.workflow_id, task)
-                            break
-                    plan_index += 1
-
-                elif step["type"] == "loop_gateway":
-                    loop_result = await self._execute_loop_gateway(
-                        definition=definition, task=task,
-                        step=step, disabled_ids=disabled_ids,
-                        shared_ws=shared_ws, parent_id=node_parent_id,
-                        on_node_started=_on_node_started,
-                        needs_approval=needs_approval,
-                        run_record=run_record,
-                    )
-                    if loop_result in {"failed", "retry_waiting"}:
-                        task.status = loop_result
-                        run_record.status = loop_result
-                        self._push_wf_task_update(definition.workflow_id, task)
-                        break
-                    plan_index += 1
-
-                elif step["type"] == "node":
-                    node_id = step["node_id"]
-                    node_def = definition.get_node(node_id)
-                    if node_def is None: plan_index += 1; continue
-
-                    if node_id in disabled_ids:
-                        plan_index += 1; continue
-
-                    task_seq_result = await self._execute_node_sequence(
-                        definition=definition, task=task,
-                        node_ids=[node_id],
-                        disabled_ids=disabled_ids,
-                        shared_ws=shared_ws,
-                        parent_id=node_parent_id,
-                        on_node_started=_on_node_started,
-                        needs_approval=needs_approval,
-                        run_record=run_record,
-                    )
-                    if task_seq_result in {"failed", "retry_waiting"}:
-                        task.status = task_seq_result
-                        run_record.status = task_seq_result
-                        self._push_wf_task_update(definition.workflow_id, task)
-                        break
-                    plan_index += 1
-
-                else:
-                    plan_index += 1
+            outcome = await self._execute_plan_segment(
+                definition=definition,
+                task=task,
+                execution_plan=execution_plan,
+                disabled_ids=disabled_ids,
+                shared_ws=shared_ws,
+                parent_id=node_parent_id,
+                on_node_started=_on_node_started,
+                needs_approval=needs_approval,
+                run_record=run_record,
+                start_index=plan_index,
+            )
+            if outcome in {"failed", "retry_waiting"}:
+                task.status = outcome
+                run_record.status = outcome
+                self._push_wf_task_update(definition.workflow_id, task)
             else:
                 task.status = "completed"; task.current_node_id = None
                 run_record.status = "completed"
