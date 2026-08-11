@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canDeleteMainSession } from "./SessionsPanel";
+import { canDeleteMainSession } from "./sessionPolicy";
 import type { Session } from "../types";
 
 const historicalRunningMain = {

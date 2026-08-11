@@ -37,7 +37,7 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="px-3 py-2 border-b border-border/50 flex-shrink-0">
+      <div className="flex-shrink-0 border-b border-border/50 px-4 py-3">
         <div className="flex items-center justify-between mb-1.5">
           <div className="flex items-center gap-1.5">
             <span className="text-xs font-medium text-purple-500">LLM 完整上下文</span>
@@ -55,7 +55,7 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
           </button>
         </div>
         {/* 摘要统计条 */}
-        <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span className="font-mono text-cyan-500">{sessionId}</span>
           <span aria-hidden="true">·</span>
           <span>{model_config.model}</span>
@@ -92,12 +92,12 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
 
       {/* Content */}
       <ScrollArea className="flex-1">
-        <div className="px-3 py-2">
+        <div className="space-y-3 px-4 py-4">
           {/* === System Prompt Tab === */}
           {activeTab === "system_prompt" && (
             <div id="tabpanel-system_prompt" role="tabpanel" aria-label="System Prompt 内容">
               {system_prompt ? (
-                <div className="p-3 rounded-lg bg-slate-800/80 border border-slate-700/50 prose prose-invert prose-sm max-w-none
+                <div className="max-w-none break-words rounded-lg bg-slate-800/80 border border-slate-700/50 p-4 prose prose-invert prose-sm
                   prose-headings:text-purple-500 prose-headings:text-sm prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1.5
                   prose-p:text-xs prose-p:text-slate-300 prose-p:leading-relaxed prose-p:my-1
                   prose-li:text-xs prose-li:text-slate-300 prose-li:my-0.5
@@ -118,7 +118,7 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
           {/* === Messages Tab === */}
           {activeTab === "messages" && (
             <div id="tabpanel-messages" role="tabpanel" aria-label="会话历史内容" className="space-y-2">
-              <div className="text-xs text-muted-foreground mb-2 bg-slate-800/40 rounded p-2">
+              <div className="mb-2 rounded bg-slate-800/40 p-2 text-xs text-muted-foreground">
                 <div className="font-medium text-amber-500 mb-1 flex items-center gap-1.5">
                   <Lightbulb size={14} className="flex-shrink-0" aria-hidden="true" />
                   这是 LLM 实际看到的会话历史
@@ -127,7 +127,7 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
               </div>
 
               {/* Token 使用概览 */}
-              <div className="p-3 rounded-lg bg-slate-800/80 border border-slate-700/50 mb-2">
+              <div className="mb-2 rounded-lg bg-slate-800/80 border border-slate-700/50 p-3">
                 <h4 className="text-xs text-muted-foreground font-medium mb-2">Token 估算</h4>
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-xs">
@@ -142,7 +142,7 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
                     <span className="text-slate-300 font-medium">总计（不含 tools schema）</span>
                     <span className="text-foreground font-mono font-bold">{token_estimate.total}</span>
                   </div>
-                  <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mt-1" role="progressbar" aria-valuenow={Math.min((token_estimate.total / model_config.max_context_tokens) * 100, 100)} aria-valuemin={0} aria-valuemax={100} aria-label={`Token 使用率 ${Math.round((token_estimate.total / model_config.max_context_tokens) * 100)}%`}>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800" role="progressbar" aria-valuenow={Math.min((token_estimate.total / model_config.max_context_tokens) * 100, 100)} aria-valuemin={0} aria-valuemax={100} aria-label={`Token 使用率 ${Math.round((token_estimate.total / model_config.max_context_tokens) * 100)}%`}>
                     <div
                       className={`h-full rounded-full transition-all ${
                         token_estimate.total > model_config.max_context_tokens * 0.8 ? "bg-red-500" :
@@ -158,7 +158,7 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
               </div>
 
               {/* 消息统计 */}
-              <div className="p-3 rounded-lg bg-slate-800/80 border border-slate-700/50 mb-2">
+              <div className="mb-2 rounded-lg bg-slate-800/80 border border-slate-700/50 p-3">
                 <h4 className="text-xs text-muted-foreground font-medium mb-2">消息组成</h4>
                 <div className="grid grid-cols-2 gap-2" role="list" aria-label="消息类型统计">
                   {([
@@ -192,12 +192,8 @@ export default function PromptPanel({ llmContext, loading, onRefresh, sessionId 
           {/* === Tools Tab === */}
           {activeTab === "tools" && (
             <div id="tabpanel-tools" role="tabpanel" aria-label="工具列表内容" className="space-y-1.5">
-              <div className="text-xs text-muted-foreground mb-2">
-                以下 {tools_count} 个工具通过 <code className="text-cyan-500 bg-slate-800/60 px-1 rounded">bind_tools</code> 绑定，
-                以独立的 <code className="text-cyan-500 bg-slate-800/60 px-1 rounded">tools</code> 参数传给 API（不在 system message 中）
-              </div>
               {tools.map((tool) => (
-                <div key={tool.name} className="px-2.5 py-2 rounded-lg bg-slate-800/80 border border-slate-700/50" role="article" aria-label={`工具: ${tool.name}`}>
+                <div key={tool.name} className="rounded-lg bg-slate-800/80 border border-slate-700/50 px-3 py-2.5" role="article" aria-label={`工具: ${tool.name}`}>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs font-mono text-cyan-500 font-semibold">{tool.name}</span>
                   </div>

@@ -27,15 +27,16 @@ export default function ToolStatsPanel({ tools, stats }: ToolStatsPanelProps) {
           <div className="h-64" role="img" aria-label="工具调用频率柱状图">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={freqData} layout="vertical">
-                <XAxis type="number" tick={{ fontSize: 12, fill: "#94a3b8" }} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: "#94a3b8" }} width={120} />
+                <XAxis type="number" tick={{ fontSize: 12, fill: "var(--chart-axis-color)" }} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: "var(--chart-axis-color)" }} width={120} />
                 <Tooltip
                   contentStyle={{
-                    background: "#1e293b",
-                    border: "1px solid #475569",
+                    background: "var(--chart-tooltip-background)",
+                    border: "1px solid var(--chart-tooltip-border)",
                     borderRadius: "8px",
-                    color: "#f1f5f9",
+                    color: "var(--chart-tooltip-foreground)",
                     fontSize: "12px",
+                    boxShadow: "var(--chart-tooltip-shadow)",
                   }}
                 />
                 <Bar dataKey="count" fill="#F59E0B" radius={[0, 4, 4, 0]} />

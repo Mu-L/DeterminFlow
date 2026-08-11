@@ -23,7 +23,8 @@ import {
   useState,
 } from "react";
 
-import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
+import { PRODUCT_NAME } from "@/brand";
+import { BrandMark } from "@/components/BrandMark";
 import { Switch } from "@/components/ui/switch";
 import type { PluginRecord } from "@/extensions/plugin-types";
 import type { ExtensionStatus } from "@/extensions/types";
@@ -46,11 +47,12 @@ import {
   shouldStartFirstRun,
 } from "./firstRunOnboardingModel";
 import {
+  completeDesktopOnboarding,
   ensureDesktopOnboardingStatus,
-  markDesktopOnboardingComplete,
 } from "./desktopOnboarding";
 import "./first-run-onboarding.css";
 import "./first-run-onboarding-support.css";
+import "./first-run-onboarding-theme.css";
 
 type ProviderMap = Record<string, Omit<ModelProvider, "id">>;
 
@@ -67,6 +69,7 @@ interface FirstRunData {
 
 interface OnboardingProps extends FirstRunData {
   onComplete: () => void | Promise<void>;
+  completing?: boolean;
   completionError?: string;
 }
 
@@ -105,7 +108,7 @@ function WorkflowScene({ active, compact = false, pluginCount = 0 }: WorkflowSce
         <span className="first-run-core-node__orbit first-run-core-node__orbit--outer" />
         <span className="first-run-core-node__orbit first-run-core-node__orbit--inner" />
         <span className="first-run-core-node__mark">
-          <img src={BRAND_MARK_DARK} alt="" />
+          <BrandMark />
         </span>
         <strong>Main</strong>
         <small>协调执行</small>
@@ -146,16 +149,18 @@ function OnboardingChrome({
   furthestStep,
   onStepChange,
   onSkip,
+  completing,
 }: {
   step: number;
   furthestStep: number;
   onStepChange: (step: number) => void;
   onSkip: () => void | Promise<void>;
+  completing: boolean;
 }) {
   return (
     <header className="first-run-chrome">
       <div className="first-run-brand">
-        <img src={BRAND_MARK_DARK} alt="" />
+        <BrandMark />
         <span>{PRODUCT_NAME}</span>
       </div>
       <nav className="first-run-progress" aria-label="首次运行进度">
@@ -173,8 +178,14 @@ function OnboardingChrome({
           </button>
         ))}
       </nav>
-      <button type="button" className="first-run-skip" onClick={() => void onSkip()}>
-        跳过引导
+      <button
+        type="button"
+        className="first-run-skip"
+        onClick={() => void onSkip()}
+        disabled={completing}
+      >
+        {completing ? <Loader2 className="first-run-spinner" size={14} aria-hidden="true" /> : null}
+        {completing ? "正在保存" : "跳过引导"}
       </button>
     </header>
   );
@@ -224,6 +235,7 @@ function PluginScreen({
   requiredPluginId,
   onBack,
   onComplete,
+  completing,
 }: {
   active: boolean;
   offset: number;
@@ -232,6 +244,7 @@ function PluginScreen({
   requiredPluginId: string | null;
   onBack: () => void;
   onComplete: () => void | Promise<void>;
+  completing: boolean;
 }) {
   const [plugins, setPlugins] = useState(initialPlugins);
   const [selection, setSelection] = useState<Record<string, boolean>>(() => Object.fromEntries(
@@ -360,7 +373,7 @@ function PluginScreen({
                       <Switch
                         checked={checked}
                         onCheckedChange={(enabled) => requestToggle(plugin, enabled)}
-                        disabled={saving || requiredByModel}
+                        disabled={saving || completing || requiredByModel}
                         aria-label={requiredByModel ? `${plugin.name}，模型正在使用` : `${checked ? "停用" : "启用"}${plugin.name}`}
                         className="first-run-plugin-switch"
                       />
@@ -402,12 +415,12 @@ function PluginScreen({
             <button
               type="button"
               className="first-run-primary-button"
-              disabled={saving || loading}
+              disabled={saving || loading || completing}
               onClick={saved ? () => void onComplete() : () => void saveSelection()}
             >
-              {saving ? <Loader2 className="first-run-spinner" size={16} /> : saved || changes.length === 0 ? <Play size={16} /> : null}
-              {saving ? "正在保存" : saved || changes.length === 0 ? `进入 ${PRODUCT_NAME}` : "保存插件选择"}
-              {!saving && changes.length > 0 && !saved ? <ArrowRight size={16} /> : null}
+              {saving || completing ? <Loader2 className="first-run-spinner" size={16} /> : saved || changes.length === 0 ? <Play size={16} /> : null}
+              {saving || completing ? "正在保存" : saved || changes.length === 0 ? `进入 ${PRODUCT_NAME}` : "保存插件选择"}
+              {!saving && !completing && changes.length > 0 && !saved ? <ArrowRight size={16} /> : null}
             </button>
           </div>
         </div>
@@ -454,6 +467,7 @@ function FirstRunExperience({
   currentMainModel,
   currentMainSessionId,
   onComplete,
+  completing = false,
   completionError = "",
   initialStep = 0,
 }: OnboardingProps & { initialStep?: number }) {
@@ -501,6 +515,7 @@ function FirstRunExperience({
         furthestStep={furthestStep}
         onStepChange={goTo}
         onSkip={onComplete}
+        completing={completing}
       />
       {completionError ? (
         <p className="first-run-completion-error" role="alert">{completionError}</p>
@@ -528,6 +543,7 @@ function FirstRunExperience({
           requiredPluginId={requiredPluginId}
           onBack={() => goTo(1)}
           onComplete={onComplete}
+          completing={completing}
         />
       </div>
     </div>
@@ -537,7 +553,7 @@ function FirstRunExperience({
 function FirstRunBootstrap() {
   return (
     <div className="first-run-bootstrap" role="status" aria-label="正在准备 DeterminFlow">
-      <span><img src={BRAND_MARK_DARK} alt="" /></span>
+      <span><BrandMark /></span>
       <strong>{PRODUCT_NAME}</strong>
     </div>
   );
@@ -550,6 +566,7 @@ export default function FirstRunOnboarding({ children }: { children: ReactNode }
     desktopRuntime || previewStep !== null ? "checking" : "app"
   ));
   const [data, setData] = useState<FirstRunData | null>(null);
+  const [completing, setCompleting] = useState(false);
   const [completionError, setCompletionError] = useState("");
 
   useEffect(() => {
@@ -612,16 +629,20 @@ export default function FirstRunOnboarding({ children }: { children: ReactNode }
   }, [desktopRuntime, mode, previewStep]);
 
   const complete = async () => {
+    if (completing) return;
+    setCompleting(true);
     setCompletionError("");
-    if (desktopRuntime && previewStep === null) {
-      try {
-        await markDesktopOnboardingComplete();
-      } catch (reason) {
-        setCompletionError(normalizeApiError(reason, "无法保存引导完成状态，请重试"));
-        return;
-      }
+    try {
+      await completeDesktopOnboarding({
+        desktopRuntime,
+        previewRequested: previewStep !== null,
+        showApp: () => setMode("app"),
+      });
+    } catch (reason) {
+      setCompletionError(normalizeApiError(reason, "无法保存引导完成状态，请重试"));
+    } finally {
+      setCompleting(false);
     }
-    setMode("app");
   };
 
   if (mode === "app") return children;
@@ -629,6 +650,7 @@ export default function FirstRunOnboarding({ children }: { children: ReactNode }
   return (
     <FirstRunExperience
       {...data}
+      completing={completing}
       completionError={completionError}
       initialStep={previewStep ?? 0}
       onComplete={complete}

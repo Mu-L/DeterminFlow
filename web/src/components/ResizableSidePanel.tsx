@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useEffect } from "react";
-import { MessageSquare, FileText, FolderCode, GripVertical } from "lucide-react";
+import { MessageSquare, FileText, FolderCode, GripVertical, X } from "lucide-react";
 import WorkspaceExplorer from "./WorkspaceExplorer";
 import SessionsPanel from "./SessionsPanel";
 import PromptPanel from "./PromptPanel";
@@ -21,6 +21,8 @@ interface ResizableSidePanelProps {
   onRefreshPrompt: () => void;
   viewingSession: SessionDetail | null;
   sessions: Session[];
+  mobileOpen: boolean;
+  onMobileClose: () => void;
 }
 
 function ResizableSidePanel({
@@ -38,6 +40,8 @@ function ResizableSidePanel({
   onRefreshPrompt,
   viewingSession,
   sessions,
+  mobileOpen,
+  onMobileClose,
 }: ResizableSidePanelProps) {
   const [width, setWidth] = useState(320); // 默认 320px (w-80)
   const [isResizing, setIsResizing] = useState(false);
@@ -89,8 +93,9 @@ function ResizableSidePanel({
   return (
     <div
       ref={panelRef}
-      className="border-l border-border bg-slate-900 flex flex-col relative"
-      style={{ width: `${width}px`, minWidth: "280px", maxWidth: "800px" }}
+      id="chat-side-panel"
+      className={`${mobileOpen ? "flex" : "hidden md:flex"} fixed inset-x-0 bottom-0 top-14 z-40 w-full min-w-0 max-w-none flex-col border-l border-border bg-slate-900 md:relative md:inset-auto md:z-auto md:min-w-[280px] md:max-w-[800px] md:w-[var(--panel-width)]`}
+      style={{ "--panel-width": `${width}px` } as React.CSSProperties}
     >
       {/* Resize Handle */}
       <div
@@ -100,7 +105,7 @@ function ResizableSidePanel({
         aria-orientation="vertical"
         aria-label="调整侧边面板宽度，使用左右箭头键调整"
         tabIndex={0}
-        className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-indigo-500/30 transition-colors z-10 group ${
+        className={`absolute left-0 top-0 bottom-0 hidden w-1 cursor-col-resize hover:bg-indigo-500/30 transition-colors z-10 group md:block ${
           isResizing ? "bg-indigo-500/50" : ""
         }`}
       >
@@ -110,28 +115,38 @@ function ResizableSidePanel({
       </div>
 
       {/* Panel Tabs */}
-      <div className="flex border-b border-border" role="tablist" aria-label="侧边面板导航">
-        {[
-          { key: "sessions" as const, icon: MessageSquare, label: "会话" },
-          { key: "prompt" as const, icon: FileText, label: "提示词" },
-          { key: "workspace" as const, icon: FolderCode, label: "工作空间" },
-        ].map(({ key, icon: Icon, label }) => (
-          <button
-            key={key}
-            onClick={() => setSidePanel(key)}
-            role="tab"
-            aria-selected={sidePanel === key}
-            aria-controls={`panel-${key}`}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors cursor-pointer min-h-[44px] ${
-              sidePanel === key
-                ? "text-indigo-500 border-b-2 border-indigo-500"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <Icon size={14} aria-hidden="true" />
-            {label}
-          </button>
-        ))}
+      <div className="flex border-b border-border">
+        <div className="flex min-w-0 flex-1" role="tablist" aria-label="侧边面板导航">
+          {[
+            { key: "sessions" as const, icon: MessageSquare, label: "会话" },
+            { key: "prompt" as const, icon: FileText, label: "提示词" },
+            { key: "workspace" as const, icon: FolderCode, label: "工作空间" },
+          ].map(({ key, icon: Icon, label }) => (
+            <button
+              key={key}
+              onClick={() => setSidePanel(key)}
+              role="tab"
+              aria-selected={sidePanel === key}
+              aria-controls={`panel-${key}`}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors cursor-pointer min-h-[44px] ${
+                sidePanel === key
+                  ? "text-indigo-500 border-b-2 border-indigo-500"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Icon size={14} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onMobileClose}
+          className="flex min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:bg-slate-800 hover:text-foreground md:hidden"
+          aria-label="关闭侧边面板"
+        >
+          <X size={16} aria-hidden="true" />
+        </button>
       </div>
 
       {/* Panel Content */}
@@ -142,7 +157,10 @@ function ResizableSidePanel({
               sessions={sortedSessions}
               viewingSessionId={viewingSessionId}
               mainSessionId={mainSessionId}
-              onViewSession={onViewSession}
+              onViewSession={(sessionId) => {
+                onViewSession(sessionId);
+                onMobileClose();
+              }}
               onDeleteSession={onDeleteSession}
               onKillSession={onKillSession}
               onCreateSession={onCreateSession}

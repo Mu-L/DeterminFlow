@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from "react";
 import {
   Settings, Cpu, Users, MessageCircle, Server, Code,
   Save, RefreshCw, Eye, EyeOff, Lock, ChevronDown, ChevronUp,
-  Plus, Trash2,
+  Moon, Plus, Sun, Trash2,
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { useTheme } from "@/theme-context";
 import { useSettings } from "../hooks/useSettings";
 import { ConfigItemMeta } from "../types";
 import ModelProviderCard, { type ModelProvider, type ProviderSchema } from "../components/ModelProviderCard";
@@ -235,6 +237,7 @@ function ConfigGroup({
 }
 
 export default function SettingsPage() {
+  const { theme, setTheme } = useTheme();
   const {
     meta, loading, saving, hasChanges,
     loadConfig, setValue, saveConfig, resetChanges, getDisplayValue, isEdited,
@@ -360,6 +363,26 @@ export default function SettingsPage() {
             </button>
           </div>
         </nav>
+
+        <section aria-labelledby="appearance-heading" className="overflow-hidden rounded-xl bg-slate-800/80 border border-slate-700/50">
+          <div className="flex items-center gap-3 px-5 py-4">
+            <div className="text-indigo-400">
+              {theme === "dark" ? <Moon size={18} aria-hidden="true" /> : <Sun size={18} aria-hidden="true" />}
+            </div>
+            <h3 id="appearance-heading" className="text-base font-semibold text-slate-100">外观</h3>
+          </div>
+          <div className="flex items-center justify-between border-t border-slate-700/50 px-5 py-4">
+            <div>
+              <div className="text-sm font-medium text-slate-200">界面主题</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">{theme === "dark" ? "深色" : "浅色"}</div>
+            </div>
+            <Switch
+              checked={theme === "light"}
+              onCheckedChange={(checked) => setTheme(checked ? "light" : "dark")}
+              aria-label="使用浅色主题"
+            />
+          </div>
+        </section>
 
         <DesktopUpdatePanel />
 

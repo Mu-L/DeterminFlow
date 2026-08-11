@@ -13,7 +13,7 @@
     "test:extensions": "tsx --test src/extensions/*.test.ts src/lib/plugin-api.test.ts",
     "test:workflow": "tsx --test src/components/workflow/*.test.ts",
     "test:conversation": "tsx --test src/features/conversation/*.test.ts src/components/conversation/*.test.ts src/hooks/useUrlParam.test.ts src/lib/roundtableStream.test.ts",
-    "test:settings": "tsx --test src/lib/navigation-settings.test.ts src/lib/model-options.test.ts",
+    "test:settings": "tsx --test src/lib/navigation-settings.test.ts src/lib/model-options.test.ts src/lib/theme.test.ts",
     "test:desktop": "tsx --test src/lib/desktop-update.test.ts",
     "test:graph": "tsx --test src/lib/graph-api.test.ts",
     "test:onboarding": "tsx --test src/components/onboarding/*.test.ts",

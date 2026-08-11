@@ -5,6 +5,7 @@ import { Trash2, X, Plus, ChevronDown, ChevronRight, Zap } from "lucide-react";
 import { Session } from "../types";
 import { getStatusConfig, formatRelativeTime, truncate } from "../lib/utils-helpers";
 import { useAgentTypes } from "../hooks/useAgentTypes";
+import { canDeleteMainSession } from "./sessionPolicy";
 
 interface SessionsPanelProps {
   sessions: Session[];
@@ -18,13 +19,6 @@ interface SessionsPanelProps {
 
 function isWorkflowMain(session: Session): boolean {
   return session.type === "main" && (session.task || "").startsWith("Workflow:");
-}
-
-export function canDeleteMainSession(
-  session: Session,
-  activeMainSessionId: string | null,
-): boolean {
-  return session.session_id !== activeMainSessionId;
 }
 
 const AGENT_TYPE_LABELS: Record<string, string> = {
@@ -232,7 +226,7 @@ export default function SessionsPanel({
 
           {/* 下拉菜单 */}
           {dropdownOpen && (
-            <div className="absolute left-0 right-0 mt-1 z-50 bg-slate-800 border border-border/60 rounded-lg shadow-xl py-1 max-h-64 overflow-y-auto" role="menu" aria-label="选择会话类型">
+            <div className="absolute left-0 right-0 mt-1 z-50 max-h-64 overflow-y-auto rounded-lg bg-slate-800 border border-border/60 shadow-xl py-1" role="menu" aria-label="选择会话类型">
               {agentTypes.map((t) => (
                 <button
                   key={t.agent_type}
@@ -308,9 +302,9 @@ export default function SessionsPanel({
                 >
                   {/* 3 层堆叠卡片 */}
                   <div className="relative h-6">
-                    <div className="absolute inset-x-0 top-0 h-[20px] rounded-lg border border-indigo-500/15 bg-slate-800/60 z-30" />
-                    <div className="absolute left-[3px] right-[3px] top-[2px] h-[18px] rounded-lg border border-indigo-500/10 bg-slate-800/40 z-20" />
-                    <div className="absolute left-[6px] right-[6px] top-[4px] h-[16px] rounded-lg border border-indigo-500/5 bg-slate-800/20 z-10" />
+                    <div className="absolute inset-x-0 top-0 z-30 h-[20px] rounded-lg border border-indigo-500/15 bg-slate-800/60" />
+                    <div className="absolute left-[3px] right-[3px] top-[2px] z-20 h-[18px] rounded-lg border border-indigo-500/10 bg-slate-800/40" />
+                    <div className="absolute left-[6px] right-[6px] top-[4px] z-10 h-[16px] rounded-lg border border-indigo-500/5 bg-slate-800/20" />
                   </div>
                   {/* +N 徽章 */}
                   <Badge variant="outline" className="absolute -right-1 top-1/2 -translate-y-1/2 text-xs text-indigo-400 border-indigo-500/30 bg-slate-900/80">

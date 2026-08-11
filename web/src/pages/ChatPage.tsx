@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   Trash2, X,
-  Edit3, Minimize2,
+  Edit3, Minimize2, PanelRightOpen,
 } from "lucide-react";
 
 // Dialog focus trap helper
@@ -33,7 +33,8 @@ function useDialogFocus(open: boolean, containerRef: React.RefObject<HTMLDivElem
     return () => el.removeEventListener("keydown", handleKeyDown);
   }, [open, containerRef]);
 }
-import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
+import { PRODUCT_NAME } from "@/brand";
+import { BrandMark } from "@/components/BrandMark";
 
 import { useSessions } from "../hooks/useSessions";
 import { useApprovals } from "../hooks/useApprovals";
@@ -124,6 +125,7 @@ export default function ChatPage() {
     approve: handleApprove, reject: handleReject, clearResolved,
   } = useApprovals();
   const [sidePanel, setSidePanel] = useState<"sessions" | "prompt" | "workspace">("sessions");
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
 
   // 预设短语状态
   const [presetPhrases, setPresetPhrases] = useState<PresetPhrase[]>([]);
@@ -491,7 +493,7 @@ export default function ChatPage() {
   }, []);
 
   return (
-    <div className="h-[calc(100dvh-3.5rem)] flex">
+    <div className="relative flex h-[calc(100dvh-3.5rem)]">
       {/* Token 监控竖向边栏 - 左侧，可折叠 */}
       <div
         className={`shrink-0 flex flex-col transition-all duration-300 ${monitoringCollapsed ? "w-7" : "w-64"}`}
@@ -509,6 +511,16 @@ export default function ChatPage() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0" role="main" aria-label="聊天区域">
+        <button
+          type="button"
+          onClick={() => setMobilePanelOpen(true)}
+          className="absolute right-3 top-3 z-30 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-border bg-background/95 text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground md:hidden"
+          aria-label="打开侧边面板"
+          aria-controls="chat-side-panel"
+          aria-expanded={mobilePanelOpen}
+        >
+          <PanelRightOpen size={18} aria-hidden="true" />
+        </button>
         {/* 审批通知面板 */}
         <ApprovalPanel
           pendingApprovals={pendingApprovals}
@@ -543,7 +555,7 @@ export default function ChatPage() {
           emptyState={(
             <div className="flex flex-col items-center justify-center h-64 text-center" role="status" aria-label="暂无消息">
               <div className="mb-4 h-16 w-16 animate-float motion-reduce:animate-none">
-                <img src={BRAND_MARK_DARK} alt="" className="h-full w-full" aria-hidden="true" />
+                <BrandMark className="h-full w-full" />
               </div>
               <h2 className="text-xl font-semibold text-slate-200 mb-2">
                 {isViewingOther ? "此会话暂无消息" : PRODUCT_NAME}
@@ -806,6 +818,8 @@ export default function ChatPage() {
         onRefreshPrompt={loadSystemPrompt}
         viewingSession={viewingSession}
         sessions={sessions}
+        mobileOpen={mobilePanelOpen}
+        onMobileClose={() => setMobilePanelOpen(false)}
       />
 
       {/* 自定义确认对话框 */}

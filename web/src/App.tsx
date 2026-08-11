@@ -3,7 +3,9 @@ import { MessageSquare, LayoutDashboard, GitBranch, Users, Layers, Settings, Boo
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { CORE_TAB_IDS, isCoreTabId, type CoreTabId } from "@/core-tabs";
-import { BRAND_MARK_DARK, PRODUCT_NAME } from "@/brand";
+import { PRODUCT_NAME } from "@/brand";
+import { BrandMark } from "@/components/BrandMark";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useGlobalEvents } from "./hooks/useGlobalEvents";
 import { patchSearchParams, useUrlParam } from "./hooks/useUrlParam";
 import { useExtensions } from "./extensions/context-value";
@@ -146,8 +148,7 @@ function App() {
               <div className="h-full flex items-center gap-3 px-4">
                 {/* Brand */}
                 <div className="flex shrink-0 items-center gap-3">
-                  <img
-                    src={BRAND_MARK_DARK}
+                  <BrandMark
                     alt={PRODUCT_NAME}
                     className="h-8 w-8 shrink-0"
                   />
@@ -184,6 +185,7 @@ function App() {
 
                 <ExtensionHeaderStatusSlot onManage={handleManageExtension} />
                 <GlobalConnectionStatus />
+                <ThemeToggle />
               </div>
             </header>
 
