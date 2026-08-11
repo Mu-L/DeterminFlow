@@ -9,6 +9,45 @@ from src.agent.session_manager import SessionManager
 from src.web import ws_handlers
 
 
+def test_new_main_keeps_an_implicit_model_unresolved(monkeypatch):
+    async def scenario():
+        definition = SimpleNamespace(
+            model=None,
+            model_params={},
+            prompt_template="main",
+            system_prompt_template="",
+        )
+        created_with = []
+        fake_llm = object()
+        monkeypatch.setattr(
+            "src.agent.definition.get_agent_definition",
+            lambda _agent_type: definition,
+        )
+        monkeypatch.setattr(
+            "src.core.llm_client.create_startup_llm",
+            lambda **options: created_with.append(options) or fake_llm,
+        )
+        monkeypatch.setattr(AgentSession, "setup_graph", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(AgentSession, "start_consumer", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            "src.agent.session_manager._try_emit_event",
+            lambda _event: None,
+        )
+
+        manager = SessionManager()
+        manager.set_builders(
+            SimpleNamespace(build=lambda *_args, **_kwargs: "system prompt"),
+            SimpleNamespace(build=lambda *_args, **_kwargs: []),
+        )
+        result = await manager.create_main_session(agent_type="main")
+        return manager.get_session(result["session_id"]), created_with
+
+    session, created_with = asyncio.run(scenario())
+
+    assert session.model_id is None
+    assert created_with[0]["model_override"] is None
+
+
 def test_delete_refuses_pre_stream_invocation():
     async def scenario():
         session = AgentSession(

@@ -187,7 +187,13 @@ class ModelManager:
             migrated_api_keys = self._migrate_legacy_api_key_fields()
             migrated_provider_types = self._migrate_provider_types()
             normalized_base_urls = self._normalize_provider_base_urls()
-            if migrated_api_keys or migrated_provider_types or normalized_base_urls:
+            removed_placeholders = self._remove_unconfirmed_default_providers()
+            if (
+                migrated_api_keys
+                or migrated_provider_types
+                or normalized_base_urls
+                or removed_placeholders
+            ):
                 try:
                     self.save()
                 except OSError:
@@ -198,6 +204,52 @@ class ModelManager:
             return self.config
 
         return self._create_default_config()
+
+    def _remove_unconfirmed_default_providers(self) -> bool:
+        """Remove the exact old DeepSeek placeholder unless its env key is active."""
+        providers = self.config.get("providers", {})
+        if not isinstance(providers, dict):
+            return False
+        provider = providers.get("deepseek")
+        if not isinstance(provider, dict):
+            return False
+        allowed_keys = {
+            "api_key",
+            "base_url",
+            "category",
+            "hyperparameter_values",
+            "maxContextTokens",
+            "models",
+            "name",
+            "provider_type",
+        }
+        if set(provider) - allowed_keys:
+            return False
+        if provider.get("api_key") != "${DEEPSEEK_API_KEY}":
+            return False
+        if os.getenv("DEEPSEEK_API_KEY", "").strip():
+            return False
+        if provider.get("base_url") not in {
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/v1",
+        }:
+            return False
+        if provider.get("models") != ["deepseek-v4-flash", "deepseek-v4-pro"]:
+            return False
+        if provider.get("name") not in {None, "DeepSeek"}:
+            return False
+        if provider.get("provider_type") != "deepseek":
+            return False
+        if provider.get("category") not in {None, "ds", "deepseek"}:
+            return False
+        if provider.get("maxContextTokens") not in {None, 128000}:
+            return False
+        hyperparameters = provider.get("hyperparameter_values", {})
+        if hyperparameters not in ({}, {"max_completion_tokens": 32768}):
+            return False
+        del providers["deepseek"]
+        logger.info("已移除未确认的旧版 DeepSeek 默认占位 Provider")
+        return True
 
     def _infer_provider_type(
         self,

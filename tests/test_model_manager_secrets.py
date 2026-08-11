@@ -14,22 +14,12 @@ from src.core.model_manager import DEFAULT_MAX_CONTEXT_TOKENS, ModelManager
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_example_model_config_uses_one_api_key_field() -> None:
+def test_example_model_config_starts_without_a_provider() -> None:
     document = json.loads(
         (REPO_ROOT / "config/models_config.example.json").read_text(encoding="utf-8")
     )
 
-    assert document["providers"]["deepseek"]["api_key"] == "${DEEPSEEK_API_KEY}"
-    assert document["providers"]["deepseek"]["base_url"] == (
-        "https://api.deepseek.com/v1"
-    )
-    assert document["providers"]["deepseek"]["maxContextTokens"] == 128000
-    assert document["providers"]["deepseek"]["provider_type"] == "deepseek"
-    assert "category" not in document["providers"]["deepseek"]
-    assert all(
-        "api_key_env" not in provider
-        for provider in document["providers"].values()
-    )
+    assert document["providers"] == {}
 
 
 def test_provider_api_key_is_resolved_without_mutating_config(
@@ -84,6 +74,66 @@ def test_provider_base_url_is_normalized_on_load(tmp_path: Path) -> None:
     assert persisted["providers"]["demo"]["base_url"] == (
         "https://models.example.test/v1"
     )
+
+
+def test_old_unconfirmed_deepseek_placeholder_is_removed(tmp_path: Path) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "deepseek": {
+                    "category": "ds",
+                    "name": "DeepSeek",
+                    "base_url": "https://api.deepseek.com",
+                    "api_key": "${DEEPSEEK_API_KEY}",
+                    "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+                    "hyperparameter_values": {"max_completion_tokens": 32768},
+                },
+                "determinflow-public": {
+                    "provider_type": "openai_compatible",
+                    "base_url": "https://public.example.test/v1",
+                    "api_key": "public-key",
+                    "models": ["deepseek-v4-flash"],
+                    "managed_by": "public-api",
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    manager = ModelManager(str(config_path))
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert set(manager.get_all_providers()) == {"determinflow-public"}
+    assert set(persisted["providers"]) == {"determinflow-public"}
+
+
+def test_old_deepseek_placeholder_with_a_configured_env_key_is_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "models_config.json"
+    config_path.write_text(
+        json.dumps({
+            "providers": {
+                "deepseek": {
+                    "name": "DeepSeek",
+                    "provider_type": "deepseek",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "${DEEPSEEK_API_KEY}",
+                    "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+                    "maxContextTokens": 128000,
+                    "hyperparameter_values": {"max_completion_tokens": 32768},
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "confirmed-key")
+
+    manager = ModelManager(str(config_path))
+
+    assert manager.get_provider("deepseek")["api_key"] == "confirmed-key"
 
 
 def test_provider_base_url_is_normalized_when_updated(tmp_path: Path) -> None:
@@ -351,7 +401,7 @@ def test_custom_openai_provider_gets_an_explicit_compatible_type(
     }
 
 
-def test_missing_config_uses_the_default_expression_instead_of_env_migration(
+def test_missing_config_starts_without_a_provider_or_legacy_env_migration(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -364,9 +414,7 @@ def test_missing_config_uses_the_default_expression_instead_of_env_migration(
 
     manager = ModelManager(str(config_path))
 
-    provider = manager.get_all_providers()["deepseek"]
-    assert provider["api_key"] == "${DEEPSEEK_API_KEY}"
-    assert provider["models"] == ["deepseek-v4-flash", "deepseek-v4-pro"]
+    assert manager.get_all_providers() == {}
     assert manager.config == json.loads(
         (REPO_ROOT / "config/models_config.example.json").read_text(encoding="utf-8")
     )

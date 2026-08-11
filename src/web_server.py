@@ -398,8 +398,9 @@ async def lifespan(app: FastAPI):
                 model_params=main_session.model_params,
             )
             main_session.setup_graph(llm=main_llm, tools=all_tools)
-            # 设置会话的模型标识（用于子会话继承）
-            main_session.model_id = model_manager.get_default_model()
+            # 只保存显式模型；null 表示调用时跟随当前默认 Provider。
+            # Provider 可能在桌面引导确认后才由用户或 Plugin 创建。
+            main_session.model_id = agent_def.model if agent_def else None
             main_session.start_consumer()
             session_mgr.register_main(main_session)
             logger.info("Main Session 已创建，Graph 已编译，消费循环已启动")

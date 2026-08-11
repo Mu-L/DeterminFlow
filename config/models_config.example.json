@@ -7,20 +7,5 @@
     "presence_penalty": 0.0,
     "thinking_budget": null
   },
-  "providers": {
-    "deepseek": {
-      "provider_type": "deepseek",
-      "name": "DeepSeek",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_key": "${DEEPSEEK_API_KEY}",
-      "models": [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro"
-      ],
-      "maxContextTokens": 128000,
-      "hyperparameter_values": {
-        "max_completion_tokens": 32768
-      }
-    }
-  }
+  "providers": {}
 }

@@ -269,15 +269,9 @@ class SessionManager(SessionLifecycleMixin):
             model_params=agent_params,
         )
 
-        # 记录模型标识到 session
-        if agent_def and agent_def.model:
-            new_session.model_id = agent_def.model
-        elif model:
-            new_session.model_id = model
-        else:
-            # 如果没有明确配置，通过 get_default_model 获取
-            from src.core.model_manager import get_model_manager
-            new_session.model_id = get_model_manager().get_default_model()
+        # 只记录用户或 Agent 明确选择的模型。null 表示调用时跟随当前默认模型，
+        # 避免把 Provider 尚未确认时的临时回退固化给后续 Sub Session。
+        new_session.model_id = model
 
         # 2. 分配 workspace（必须在 prompt 构建前，因为 session_meta 需要 workspace_path）
         if self._workspace_manager:
