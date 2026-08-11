@@ -156,6 +156,21 @@ def test_tauri_release_shell_uses_the_windows_gui_subsystem() -> None:
     )
 
 
+def test_desktop_external_links_open_in_the_system_browser() -> None:
+    main_source = (REPO_ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text(
+        encoding="utf-8"
+    )
+    cargo = (REPO_ROOT / "desktop" / "src-tauri" / "Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'tauri-plugin-opener = "2.5.4"' in cargo
+    assert ".on_new_window(" in main_source
+    assert "is_allowed_external_url(&url)" in main_source
+    assert "tauri_plugin_opener::open_url(" in main_source
+    assert "tauri::webview::NewWindowResponse::Deny" in main_source
+
+
 def test_desktop_lifecycle_cleans_up_the_backend_before_every_exit() -> None:
     main_source = (REPO_ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text(
         encoding="utf-8"

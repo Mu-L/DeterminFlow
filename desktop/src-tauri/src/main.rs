@@ -9,6 +9,22 @@ use std::sync::Arc;
 use backend::{BackendState, LaunchedBackend};
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
+fn is_allowed_external_url(url: &tauri::Url) -> bool {
+    let has_safe_authority =
+        url.host_str().is_some() && url.username().is_empty() && url.password().is_none();
+    match url.scheme() {
+        "https" => has_safe_authority,
+        "http" => {
+            has_safe_authority
+                && matches!(
+                    url.host_str(),
+                    Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+                )
+        }
+        _ => false,
+    }
+}
+
 fn show_startup_error(window: &tauri::WebviewWindow, message: &str) {
     let encoded = serde_json::to_string(message).unwrap_or_else(|_| "\"未知启动错误\"".to_string());
     let _ = window.eval(format!("window.showBackendError({encoded})"));
@@ -70,6 +86,12 @@ fn main() {
                     .resizable(true)
                     .center()
                     .initialization_script(include_str!("../../ui/desktop-adapter.js"))
+                    .on_new_window(|url, _features| {
+                        if is_allowed_external_url(&url) {
+                            let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+                        }
+                        tauri::webview::NewWindowResponse::Deny
+                    })
                     .build()?;
             match backend::launch(app.handle()) {
                 Ok(LaunchedBackend { child, url }) => {
@@ -88,4 +110,33 @@ fn main() {
             app_handle.state::<Arc<BackendState>>().stop();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_external_url;
+
+    fn url(value: &str) -> tauri::Url {
+        value.parse().expect("test URL should parse")
+    }
+
+    #[test]
+    fn external_links_allow_https_and_development_loopback_http() {
+        assert!(is_allowed_external_url(&url("https://bishuxiezuo.cn/")));
+        assert!(is_allowed_external_url(&url(
+            "http://127.0.0.1:5173/site/public-api-top-up.html"
+        )));
+        assert!(is_allowed_external_url(&url("http://localhost:5173/")));
+        assert!(is_allowed_external_url(&url("http://[::1]:5173/")));
+    }
+
+    #[test]
+    fn external_links_reject_insecure_remote_and_unsafe_schemes() {
+        assert!(!is_allowed_external_url(&url("http://example.com/")));
+        assert!(!is_allowed_external_url(&url(
+            "https://user:password@example.com/"
+        )));
+        assert!(!is_allowed_external_url(&url("file:///tmp/example")));
+        assert!(!is_allowed_external_url(&url("javascript:alert(1)")));
+    }
 }
