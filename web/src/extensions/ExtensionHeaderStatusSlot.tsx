@@ -173,29 +173,48 @@ function HeaderStatusItem({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
+  const suppressFocusOpenRef = useRef(false);
   const open = hovered || focused || pinned;
   const popoverId = `extension-header-status-${entry.source.id}`;
+
+  const dismiss = useCallback((restoreTriggerFocus: boolean) => {
+    setPinned(false);
+    setHovered(false);
+    setFocused(false);
+
+    const root = rootRef.current;
+    const trigger = root?.querySelector<HTMLButtonElement>("[data-status-trigger]");
+    if (restoreTriggerFocus && trigger) {
+      suppressFocusOpenRef.current = true;
+      trigger.focus({ preventScroll: true });
+      window.queueMicrotask(() => {
+        suppressFocusOpenRef.current = false;
+      });
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && root?.contains(activeElement)) {
+      activeElement.blur();
+    }
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setPinned(false);
-        setHovered(false);
-        setFocused(false);
-        rootRef.current?.querySelector<HTMLButtonElement>("[data-status-trigger]")?.focus();
+        dismiss(true);
       }
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (pinned && !rootRef.current?.contains(event.target as Node)) setPinned(false);
+      if (!rootRef.current?.contains(event.target as Node)) dismiss(false);
     };
     document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown, true);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("pointerdown", onPointerDown, true);
     };
-  }, [open, pinned]);
+  }, [dismiss, open]);
 
   useEffect(() => {
     if (!payload.refresh_after_ms) return;
@@ -243,7 +262,9 @@ function HeaderStatusItem({
       className="relative"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onFocusCapture={() => setFocused(true)}
+      onFocusCapture={() => {
+        if (!suppressFocusOpenRef.current) setFocused(true);
+      }}
       onBlurCapture={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
       }}
@@ -332,9 +353,7 @@ function HeaderStatusItem({
                   type="button"
                   className="inline-flex h-8 items-center rounded-md border border-slate-700 px-3 text-xs font-medium text-slate-200 hover:bg-slate-800"
                   onClick={() => {
-                    setPinned(false);
-                    setHovered(false);
-                    setFocused(false);
+                    dismiss(false);
                     onOpenPage(action.label);
                   }}
                 >
