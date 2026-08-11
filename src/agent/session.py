@@ -1055,6 +1055,8 @@ class AgentSession:
 
         attachments: list[dict[str, str]] | None = None,
 
+        invocation_context: dict[str, str] | None = None,
+
     ) -> str:
 
         """
@@ -1089,6 +1091,7 @@ class AgentSession:
                 source,
                 source_name,
                 attachments,
+                invocation_context,
             )
 
     async def retry_failed_turn(
@@ -1335,6 +1338,8 @@ class AgentSession:
 
         attachments: list[dict[str, str]] | None = None,
 
+        invocation_context: dict[str, str] | None = None,
+
         retry_attempt_count: int = 1,
 
     ) -> str:
@@ -1347,6 +1352,7 @@ class AgentSession:
                 source,
                 source_name,
                 attachments,
+                invocation_context,
             )
 
         record_checkpoint = deepcopy(self.record)
@@ -1365,17 +1371,22 @@ class AgentSession:
                 source,
                 source_name,
                 attachments,
+                invocation_context,
             )
         except Exception as error:
             self.record = record_checkpoint
             self.lc_messages = lc_checkpoint
             self.context = context_checkpoint
             error_message = self._record_terminal_error(error)
-            retryable = source == "human" and not self._active_turn_tool_started
+            retryable = (
+                source == "human"
+                and invocation_context is None
+                and not self._active_turn_tool_started
+            )
             retry_block_reason = None
             if self._active_turn_tool_started:
                 retry_block_reason = "tool_started"
-            elif source != "human":
+            elif source != "human" or invocation_context is not None:
                 retry_block_reason = "non_user_invocation"
             self.failed_turn = {
                 "failure_id": uuid.uuid4().hex,
@@ -1438,6 +1449,8 @@ class AgentSession:
 
         attachments: list[dict[str, str]] | None = None,
 
+        invocation_context: dict[str, str] | None = None,
+
     ) -> str:
 
         """内部：执行一轮 graph invoke。"""
@@ -1467,6 +1480,7 @@ class AgentSession:
             resource_owner=self.resource_owner,
             external_ref=self.external_ref,
             scope_hash=self.scope_hash,
+            invocation_context=dict(invocation_context or {}),
             on_node_complete=self._on_node_complete,
             on_reject_upstream=self._on_reject_upstream,
         )

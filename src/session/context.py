@@ -29,6 +29,7 @@ def get_session_context() -> dict:
             workspace_path: str  # 工作空间路径
             parent_id: str | None
             agent_type: str
+            invocation_context: dict[str, str]  # 模型不可见的单次调用元数据
             on_node_complete: callable | None  # 仅 workflow node 场景
     """
     return _session_ctx.get()

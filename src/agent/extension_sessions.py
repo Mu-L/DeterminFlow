@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -13,7 +13,11 @@ from src.agent.session import AgentSession, _persistence_manager
 from src.config import DETACHED_SESSION_MAX_CONCURRENT_INVOCATIONS
 
 _SAFE_REF = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_SAFE_CONTEXT_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,63}$")
 _PROFILE = "detached_conversation"
+_MAX_CONTEXT_ENTRIES = 16
+_MAX_CONTEXT_VALUE_BYTES = 4096
+_MAX_CONTEXT_BYTES = 8192
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,30 @@ class ExtensionSessionRuntime:
             ):
                 return metadata
         return None
+
+    @staticmethod
+    def _validate_invocation_context(
+        context: Mapping[str, str] | None,
+    ) -> dict[str, str]:
+        if context is None:
+            return {}
+        if not isinstance(context, Mapping) or len(context) > _MAX_CONTEXT_ENTRIES:
+            raise ValueError("invocation_context 必须是有界字符串映射")
+        normalized: dict[str, str] = {}
+        total_bytes = 0
+        for raw_key, raw_value in context.items():
+            if not isinstance(raw_key, str) or not _SAFE_CONTEXT_KEY.fullmatch(raw_key):
+                raise ValueError("invocation_context 包含无效键")
+            if not isinstance(raw_value, str) or not raw_value:
+                raise ValueError("invocation_context 值必须是非空字符串")
+            value_bytes = len(raw_value.encode("utf-8"))
+            if value_bytes > _MAX_CONTEXT_VALUE_BYTES:
+                raise ValueError("invocation_context 单值过大")
+            total_bytes += len(raw_key.encode("utf-8")) + value_bytes
+            if total_bytes > _MAX_CONTEXT_BYTES:
+                raise ValueError("invocation_context 总大小过大")
+            normalized[raw_key] = raw_value
+        return normalized
 
     @staticmethod
     def _assert_binding(
@@ -239,7 +267,9 @@ class ExtensionSessionRuntime:
         *,
         event_callback: Callable[[dict], Awaitable[None]] | None = None,
         max_rounds: int | None = None,
+        invocation_context: Mapping[str, str] | None = None,
     ) -> str:
+        trusted_context = self._validate_invocation_context(invocation_context)
         async with self._serialized_invocation(session_id), self._semaphore:
             session = self._load_owned(session_id)
             try:
@@ -247,6 +277,7 @@ class ExtensionSessionRuntime:
                     content=message,
                     event_callback=event_callback,
                     max_rounds=max_rounds,
+                    invocation_context=trusted_context,
                 )
             finally:
                 await self._deactivate(session)

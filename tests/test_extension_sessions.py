@@ -80,6 +80,56 @@ async def _test_detached_session_is_parentless(detached_runtime, monkeypatch):
     assert persisted.record[-1]["content"] == "reply"
 
 
+def test_detached_invocation_passes_bounded_opaque_context(
+    detached_runtime,
+    monkeypatch,
+):
+    asyncio.run(_test_detached_invocation_context(detached_runtime, monkeypatch))
+
+
+async def _test_detached_invocation_context(detached_runtime, monkeypatch):
+    _, runtime = detached_runtime
+    ref = await runtime.ensure_detached(
+        external_ref="portal-session-context",
+        agent_type="plugin-page-assistant",
+        scope_hash="scope-context",
+    )
+
+    async def send_message(self, content, **kwargs):
+        assert kwargs["invocation_context"] == {
+            "grant_id": "grant-1",
+            "request_id": "request-1",
+        }
+        return "reply"
+
+    monkeypatch.setattr(AgentSession, "send_message", send_message)
+    assert await runtime.invoke(
+        ref.session_id,
+        "hello",
+        invocation_context={"grant_id": "grant-1", "request_id": "request-1"},
+    ) == "reply"
+
+
+def test_detached_invocation_rejects_invalid_opaque_context(detached_runtime):
+    asyncio.run(_test_detached_invocation_rejects_context(detached_runtime))
+
+
+async def _test_detached_invocation_rejects_context(detached_runtime):
+    _, runtime = detached_runtime
+    with pytest.raises(ValueError, match="无效键"):
+        await runtime.invoke(
+            "missing-session",
+            "hello",
+            invocation_context={"invalid key": "value"},
+        )
+    with pytest.raises(ValueError, match="单值过大"):
+        await runtime.invoke(
+            "missing-session",
+            "hello",
+            invocation_context={"grant_id": "x" * 4097},
+        )
+
+
 def test_detached_session_reuses_persisted_conversation_after_restart(
     detached_runtime,
     monkeypatch,
