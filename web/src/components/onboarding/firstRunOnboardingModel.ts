@@ -47,6 +47,18 @@ export function shouldStartFirstRun({
   return desktopRuntime && onboardingStatus !== DESKTOP_ONBOARDING_COMPLETE_VALUE;
 }
 
+export function shouldConfirmManagedModelSelection({
+  currentSelectionManaged,
+  signedIn,
+  confirmationAccepted,
+}: {
+  currentSelectionManaged: boolean;
+  signedIn: boolean;
+  confirmationAccepted: boolean;
+}): boolean {
+  return !currentSelectionManaged && !signedIn && !confirmationAccepted;
+}
+
 export function buildProviderChoices(
   providers: ProviderMap,
   schemas: Record<string, ProviderSchema>,

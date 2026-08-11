@@ -9,6 +9,7 @@ import {
   Loader2,
   LogIn,
   RefreshCw,
+  ShieldAlert,
   Sparkles,
 } from "lucide-react";
 import {
@@ -19,13 +20,14 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 import type { ExtensionStatus } from "@/extensions/types";
 import {
   addModelProvider,
   discoverProviderModels,
-  updateAgentDefinition,
   updateModelProvider,
+  updateSessionModel,
 } from "@/lib/api";
 import type { ModelProvider, ProviderSchema } from "@/types";
 import {
@@ -37,6 +39,7 @@ import {
   normalizeApiError,
   parseManagedModelStatus,
   type ProviderChoice,
+  shouldConfirmManagedModelSelection,
 } from "./firstRunOnboardingModel";
 
 type ProviderMap = Record<string, Omit<ModelProvider, "id">>;
@@ -50,6 +53,7 @@ interface FirstRunModelScreenProps {
   extensions: ExtensionStatus[];
   preferredModel: string | null;
   currentMainModel: string | null;
+  currentMainSessionId: string | null;
   onBack: () => void;
   onNext: () => void;
   onManagedProviderChange: (pluginId: string | null) => void;
@@ -121,6 +125,7 @@ export function FirstRunModelScreen({
   extensions,
   preferredModel,
   currentMainModel,
+  currentMainSessionId,
   onBack,
   onNext,
   onManagedProviderChange,
@@ -160,7 +165,10 @@ export function FirstRunModelScreen({
   const [selectedPublicModel, setSelectedPublicModel] = useState(ANONYMOUS_PUBLIC_MODEL);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [managedConfirmationOpen, setManagedConfirmationOpen] = useState(false);
+  const [managedConfirmationAccepted, setManagedConfirmationAccepted] = useState(currentProviderManaged);
   const modelSelectRef = useRef<HTMLSelectElement>(null);
+  const managedConfirmRef = useRef<HTMLButtonElement>(null);
 
   const selectedChoice = standardChoices.find((choice) => choice.id === providerId);
   const credentialSignature = buildCredentialSignature(
@@ -224,6 +232,16 @@ export function FirstRunModelScreen({
     onManagedProviderChange(source === "public" ? managedExtension?.id || null : null);
   }, [active, managedExtension?.id, onManagedProviderChange, source]);
 
+  useEffect(() => {
+    if (!managedConfirmationOpen) return;
+    managedConfirmRef.current?.focus();
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setManagedConfirmationOpen(false);
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [managedConfirmationOpen]);
+
   const selectOwnedProvider = (choice: ProviderChoice) => {
     setProviderId(choice.id);
     setBaseUrl(choice.baseUrl);
@@ -280,10 +298,14 @@ export function FirstRunModelScreen({
     }
   };
 
-  const saveModel = async () => {
+  const persistModel = async () => {
     setSaving(true);
     setError("");
     try {
+      if (!currentMainSessionId) {
+        throw new Error("Main 会话尚未准备好，请重试");
+      }
+      let modelId = "";
       if (source === "public") {
         let status = managedStatus;
         if (!status?.signedIn) {
@@ -299,9 +321,7 @@ export function FirstRunModelScreen({
         ) {
           throw new Error("所选公益模型暂时不可用，请重试");
         }
-        await updateAgentDefinition("main", {
-          model: `${status.providerId}:${selectedPublicModel}`,
-        });
+        modelId = `${status.providerId}:${selectedPublicModel}`;
       } else {
         if (!ownedValidated || !selectedModel || !selectedChoice) return;
         const existing = providers[providerId];
@@ -321,14 +341,27 @@ export function FirstRunModelScreen({
             models,
           });
         }
-        await updateAgentDefinition("main", { model: `${providerId}:${selectedModel}` });
+        modelId = `${providerId}:${selectedModel}`;
       }
+      await updateSessionModel(currentMainSessionId, modelId, null);
       onNext();
     } catch (reason) {
       setError(normalizeApiError(reason, "保存模型配置失败"));
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveModel = () => {
+    if (source === "public" && shouldConfirmManagedModelSelection({
+      currentSelectionManaged: currentProviderManaged,
+      signedIn: Boolean(managedStatus?.signedIn),
+      confirmationAccepted: managedConfirmationAccepted,
+    })) {
+      setManagedConfirmationOpen(true);
+      return;
+    }
+    void persistModel();
   };
 
   const loginBusy = loginLoading || Boolean(managedStatus?.loginPending);
@@ -546,7 +579,7 @@ export function FirstRunModelScreen({
             type="button"
             className="first-run-primary-button"
             disabled={nextDisabled}
-            onClick={() => void saveModel()}
+            onClick={saveModel}
           >
             {saving ? <Loader2 className="first-run-spinner" size={16} /> : null}
             {saving ? (source === "public" ? "正在准备模型" : "正在保存") : "使用此模型并继续"}
@@ -554,6 +587,50 @@ export function FirstRunModelScreen({
           </button>
         </div>
       </div>
+      {managedConfirmationOpen ? createPortal((
+        <div
+          className="first-run-risk-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setManagedConfirmationOpen(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="first-run-public-model-title"
+            className="first-run-risk-dialog first-run-public-model-dialog"
+          >
+            <span className="first-run-risk-dialog__icon"><ShieldAlert size={21} /></span>
+            <div>
+              <small>服务说明</small>
+              <h3 id="first-run-public-model-title">使用公益模型？</h3>
+              <p>{managedStatus?.serviceNotice || "公益模型由笔枢提供，确认后将为本机申请使用凭据。"}</p>
+            </div>
+            <div className="first-run-risk-dialog__actions">
+              <button
+                type="button"
+                className="first-run-secondary-button"
+                onClick={() => setManagedConfirmationOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                ref={managedConfirmRef}
+                type="button"
+                className="first-run-risk-confirm"
+                onClick={() => {
+                  setManagedConfirmationAccepted(true);
+                  setManagedConfirmationOpen(false);
+                  void persistModel();
+                }}
+              >
+                我已了解，使用公益模型
+              </button>
+            </div>
+          </div>
+        </div>
+      ), document.body) : null}
     </section>
   );
 }

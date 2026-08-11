@@ -30,6 +30,7 @@ import type { ExtensionStatus } from "@/extensions/types";
 import {
   fetchAgentDefinitions,
   fetchExtensions,
+  fetchSessions,
   getModelProviders,
   getProviderSchemas,
 } from "@/lib/api";
@@ -61,6 +62,7 @@ interface FirstRunData {
   pluginError: string;
   preferredModel: string | null;
   currentMainModel: string | null;
+  currentMainSessionId: string | null;
 }
 
 interface OnboardingProps extends FirstRunData {
@@ -450,6 +452,7 @@ function FirstRunExperience({
   pluginError,
   preferredModel,
   currentMainModel,
+  currentMainSessionId,
   onComplete,
   completionError = "",
   initialStep = 0,
@@ -512,6 +515,7 @@ function FirstRunExperience({
           extensions={extensions}
           preferredModel={preferredModel}
           currentMainModel={currentMainModel}
+          currentMainSessionId={currentMainSessionId}
           onBack={() => goTo(0)}
           onNext={() => goTo(2)}
           onManagedProviderChange={setRequiredPluginId}
@@ -570,10 +574,11 @@ export default function FirstRunOnboarding({ children }: { children: ReactNode }
           return;
         }
 
-        const [providerResult, schemaResult, agentResult, extensionResult, pluginResult] = await Promise.all([
+        const [providerResult, schemaResult, agentResult, sessionResult, extensionResult, pluginResult] = await Promise.all([
           getModelProviders(),
           getProviderSchemas(),
           fetchAgentDefinitions().catch(() => ({ agent_types: [] })),
+          fetchSessions().catch(() => ({ sessions: [], active_sub_count: 0, main_session_id: null })),
           fetchExtensions().catch(() => ({ extensions: [], enabled: [] })),
           fetchPlugins()
             .then((value) => ({ value, error: "" }))
@@ -592,6 +597,7 @@ export default function FirstRunOnboarding({ children }: { children: ReactNode }
           pluginError: pluginResult.error,
           preferredModel: mainModel || providerResult.default_model,
           currentMainModel: mainModel || null,
+          currentMainSessionId: sessionResult.main_session_id,
         });
         setMode("onboarding");
       } catch {

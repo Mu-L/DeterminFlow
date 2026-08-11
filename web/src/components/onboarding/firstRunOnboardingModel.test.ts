@@ -16,6 +16,7 @@ import {
   normalizeApiError,
   parseManagedModelStatus,
   requiresPluginRiskConfirmation,
+  shouldConfirmManagedModelSelection,
   shouldStartFirstRun,
 } from "./firstRunOnboardingModel";
 
@@ -105,6 +106,29 @@ test("development preview remains available without changing desktop state", () 
     onboardingStatus: null,
     previewRequested: true,
   }), true);
+});
+
+test("anonymous managed models require an explicit confirmation before first use", () => {
+  assert.equal(shouldConfirmManagedModelSelection({
+    currentSelectionManaged: false,
+    signedIn: false,
+    confirmationAccepted: false,
+  }), true);
+  assert.equal(shouldConfirmManagedModelSelection({
+    currentSelectionManaged: false,
+    signedIn: false,
+    confirmationAccepted: true,
+  }), false);
+  assert.equal(shouldConfirmManagedModelSelection({
+    currentSelectionManaged: true,
+    signedIn: false,
+    confirmationAccepted: false,
+  }), false);
+  assert.equal(shouldConfirmManagedModelSelection({
+    currentSelectionManaged: false,
+    signedIn: true,
+    confirmationAccepted: false,
+  }), false);
 });
 
 test("provider choices combine schemas and installed providers without duplicates", () => {

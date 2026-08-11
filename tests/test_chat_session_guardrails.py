@@ -160,7 +160,7 @@ def test_chat_ws_resync_returns_a_fresh_authoritative_snapshot(monkeypatch):
     assert fake_bus.snapshots[-1]["revision"] == 7
 
 
-def test_interactive_main_model_switch_is_persisted(monkeypatch):
+def test_first_main_model_selection_updates_existing_session_and_default(monkeypatch):
     async def scenario():
         session = AgentSession(
             session_id="main-model-switch",
@@ -168,7 +168,7 @@ def test_interactive_main_model_switch_is_persisted(monkeypatch):
             agent_type="reviewer",
             model_params={"reasoning_effort": "high"},
         )
-        session.model_id = "first:model-a"
+        session.model_id = None
         session.tools = ["tool-a"]
         saved = False
         compiled_with = None
@@ -199,7 +199,7 @@ def test_interactive_main_model_switch_is_persisted(monkeypatch):
             def get_agent_config(agent_type):
                 assert agent_type == "main"
                 return {
-                    "model": "first:model-a",
+                    "model": None,
                     "model_params": {"temperature": 0.2, "reasoning_effort": "high"},
                 }
 
