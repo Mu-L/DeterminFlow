@@ -176,6 +176,7 @@ class SessionManager(SessionLifecycleMixin):
         agent_type: str,
         *,
         model_override: str | None = None,
+        model_params_override: dict | None = None,
     ) -> dict | None:
         """Return the current execution identity through public dependencies."""
         builder = getattr(self, "_prompt_builder", None)
@@ -192,6 +193,7 @@ class SessionManager(SessionLifecycleMixin):
             prompt_manager=prompt_manager,
             prompt_builder=builder,
             model_override=model_override,
+            model_params_override=model_params_override,
         )
 
     def verify_effective_agent_definition(
@@ -200,6 +202,7 @@ class SessionManager(SessionLifecycleMixin):
         *,
         expected_sha256: str,
         model_override: str | None = None,
+        model_params_override: dict | None = None,
     ) -> None:
         """Fail closed when Agent prompt/model semantics changed after Task creation."""
         from src.workflow.runtime import effective_agent_definition_sha256
@@ -207,6 +210,7 @@ class SessionManager(SessionLifecycleMixin):
         current = self.get_effective_agent_definition(
             agent_type,
             model_override=model_override,
+            model_params_override=model_params_override,
         )
         if current is None:
             raise RuntimeError(f"Workflow Agent 定义不存在: {agent_type}")
@@ -621,6 +625,7 @@ class SessionManager(SessionLifecycleMixin):
 
     async def create_sub_session(self, task_description: str, custom_prompt: str = "",
                                   llm_client=None, agent_type: str = "default", model_override: str | None = None,
+                                  model_params_override: dict | None = None,
                                   workspace_path: str | None = None, is_workflow_node: bool = False,
                                   on_node_complete=None, parent_id: str | None = None,
                                   workflow_id: str | None = None,
@@ -750,8 +755,13 @@ class SessionManager(SessionLifecycleMixin):
                 )
         else:
             final_model = None
-        agent_params = agent_def.model_params if agent_def else None
-        sub_llm = create_llm(model_override=final_model, streaming=True, model_params=agent_params)
+        agent_params = dict(agent_def.model_params or {}) if agent_def else {}
+        agent_params.update(model_params_override or {})
+        sub_llm = create_llm(
+            model_override=final_model,
+            streaming=True,
+            model_params=agent_params,
+        )
         session.model_id = final_model  # 记录模型标识到 session
         session.model_params = dict(agent_params or {})
         session.setup_graph(llm=sub_llm, tools=sub_tools)

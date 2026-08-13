@@ -248,6 +248,13 @@ class AgentNode(BaseNodePlugin):
         )
         model_override_raw = getattr(node_def, "model_override", "")
         model_override = (await resolve_placeholders(model_override_raw, pv, variables, shared_ws)) if model_override_raw else None
+        from ..task_overrides import MODEL_PARAMS_OVERRIDE_KEY
+
+        model_params_override = (node_def.node_params or {}).get(
+            MODEL_PARAMS_OVERRIDE_KEY
+        )
+        if not isinstance(model_params_override, dict):
+            model_params_override = {}
 
         # 新 Task 在快照中冻结 Agent prompt/model 运行身份。每次创建新的
         # sub session 前重新核验，防止长任务中途配置漂移。
@@ -267,9 +274,21 @@ class AgentNode(BaseNodePlugin):
             expected_sha256 = runtime_guard.get(
                 "effective_agent_definition_sha256"
             )
+            expected_model_params_sha256 = runtime_guard.get(
+                "model_params_override_sha256"
+            )
+            from ..runtime import effective_agent_definition_sha256
+
+            model_params_guard_mismatch = (
+                expected_model_params_sha256
+                != effective_agent_definition_sha256(model_params_override)
+                if expected_model_params_sha256 is not None
+                else bool(model_params_override)
+            )
             if (
                 expected_agent_type != resolved_agent_type
                 or expected_model_override != (model_override or "")
+                or model_params_guard_mismatch
                 or not expected_sha256
             ):
                 return NodeResult(
@@ -290,6 +309,7 @@ class AgentNode(BaseNodePlugin):
                     resolved_agent_type,
                     expected_sha256=expected_sha256,
                     model_override=model_override,
+                    model_params_override=model_params_override,
                 )
             except Exception as exc:
                 logger.error(
@@ -422,6 +442,7 @@ class AgentNode(BaseNodePlugin):
                         ctx.on_reject_upstream if enable_reject_upstream else None
                     ),
                     model_override=model_override,
+                    model_params_override=model_params_override,
                 )
             except Exception as e:
                 logger.exception(f"Agent 节点 {node_def.id} 创建子会话失败")

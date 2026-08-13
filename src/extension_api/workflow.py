@@ -26,6 +26,7 @@ class WorkflowRuntime(Protocol):
         *,
         parameter_values: dict[str, Any] | None = None,
         node_model_overrides: dict[str, str] | None = None,
+        node_model_params_overrides: dict[str, dict[str, Any]] | None = None,
         disabled_node_ids: list[str] | None = None,
         workspace_override: str | None = None,
         scheme_id: str | None = None,

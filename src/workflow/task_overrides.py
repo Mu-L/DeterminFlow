@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 
@@ -9,11 +10,16 @@ TASK_OVERRIDE_ERROR_CODES = frozenset({
     "workflow_node_model_overrides_invalid",
     "workflow_node_model_override_unknown_node",
     "workflow_node_model_override_not_agent",
+    "workflow_node_model_params_overrides_invalid",
+    "workflow_node_model_params_override_unknown_node",
+    "workflow_node_model_params_override_not_agent",
     "workflow_model_reference_invalid",
     "workflow_model_provider_not_found",
     "workflow_model_not_found",
     "workflow_model_provider_invalid",
 })
+
+MODEL_PARAMS_OVERRIDE_KEY = "_model_params_override"
 
 
 class TaskOverrideValidationError(ValueError):
@@ -132,3 +138,58 @@ def apply_node_model_overrides(
             node_id=node_id,
             model_manager=model_manager,
         )
+
+
+def apply_node_model_params_overrides(
+    definition: dict[str, Any],
+    node_model_params_overrides: dict[str, dict[str, Any]] | None,
+) -> None:
+    """Attach opaque Agent ``model_params`` overlays to a private Task snapshot.
+
+    Core validates only the generic Workflow shape. Parameter ownership and
+    semantic validation belong to the trusted caller; the selected Provider
+    Adapter will claim the fields it supports when the model request is built.
+    """
+    if node_model_params_overrides is None:
+        return
+    if not isinstance(node_model_params_overrides, dict):
+        raise TaskOverrideValidationError(
+            "workflow_node_model_params_overrides_invalid",
+            "node_model_params_overrides 必须是 object",
+        )
+    if not all(isinstance(node_id, str) for node_id in node_model_params_overrides):
+        raise TaskOverrideValidationError(
+            "workflow_node_model_params_overrides_invalid",
+            "node_model_params_overrides 的节点 ID 必须是字符串",
+        )
+    if not all(
+        isinstance(params, dict)
+        for params in node_model_params_overrides.values()
+    ):
+        raise TaskOverrideValidationError(
+            "workflow_node_model_params_overrides_invalid",
+            "node_model_params_overrides 的参数必须是 object",
+        )
+    if not node_model_params_overrides:
+        return
+
+    nodes = {
+        str(node.get("id")): node
+        for node in definition.get("nodes", [])
+        if isinstance(node, dict) and node.get("id")
+    }
+    unknown = sorted(set(node_model_params_overrides) - set(nodes))
+    if unknown:
+        raise TaskOverrideValidationError(
+            "workflow_node_model_params_override_unknown_node",
+            "模型参数覆盖包含不存在的节点: " + ", ".join(unknown),
+        )
+
+    for node_id, params in node_model_params_overrides.items():
+        node = nodes[node_id]
+        if node.get("node_type", "agent") != "agent":
+            raise TaskOverrideValidationError(
+                "workflow_node_model_params_override_not_agent",
+                f"模型参数覆盖只能用于 Agent 节点: {node_id}",
+            )
+        node.setdefault("node_params", {})[MODEL_PARAMS_OVERRIDE_KEY] = deepcopy(params)

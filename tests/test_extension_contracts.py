@@ -120,12 +120,16 @@ def test_workflow_runtime_facade_exposes_execution_operations():
         "wf-demo",
         parameter_values={"topic": "demo"},
         node_model_overrides={"writer": "demo:model"},
+        node_model_params_overrides={"writer": {"temperature": 0.4}},
     ) == {
         "task_id": "task-1"
     }
     assert manager.created == ("wf-demo", {"parameter_values": {"topic": "demo"},
                                            "node_model_overrides": {
                                                "writer": "demo:model",
+                                           },
+                                           "node_model_params_overrides": {
+                                               "writer": {"temperature": 0.4},
                                            },
                                            "disabled_node_ids": None,
                                            "workspace_override": None,

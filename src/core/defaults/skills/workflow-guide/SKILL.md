@@ -64,19 +64,28 @@ Main 所有权与逐节点审批是两个独立契约。`create_and_attach_task`
 Approval 节点不受该参数影响。
 
 HTTP 创建 Task 时可用 `node_model_overrides` 为指定 Agent 节点选择 Core 已配置的
-Provider 与预定义模型：
+Provider 与预定义模型，并用 `node_model_params_overrides` 叠加本次 Task 的临时
+Agent `model_params`：
 
 ```json
 {
   "node_model_overrides": {
     "writer": "provider_id:model_name"
+  },
+  "node_model_params_overrides": {
+    "writer": {
+      "temperature": 0.4,
+      "reasoning_effort": "high"
+    }
   }
 }
 ```
 
 节点 ID 必须存在且 `node_type=agent`，模型引用必须出现在 Core 当前模型列表中。选择结果会
 写入 Task 的定义快照和运行身份守卫，因此重试与恢复继续使用同一模型；Workflow 模板不会
-被修改。该接口不接收 API Key、Base URL、Provider 类型、模型参数或回退模型。
+被修改。Core 只校验参数覆盖的外层结构，不校验参数名、类型或取值；调用方负责语义校验，
+Provider Adapter 继续按现有声明认领支持的字段。该接口不接收 API Key、Base URL、
+Provider 类型或回退模型。
 
 `get_task_status` 和 `get_task_result` 支持事件驱动等待：
 

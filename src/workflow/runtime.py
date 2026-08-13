@@ -99,11 +99,13 @@ def build_effective_agent_definition(
     prompt_manager,
     prompt_builder=None,
     model_override: str | None = None,
+    model_params_override: dict[str, Any] | None = None,
 ) -> dict | None:
     """Build the execution-sensitive Agent identity used by runtime guards.
 
-    ``model_override`` is part of the effective identity because Workflow Agent
-    nodes may select a model independently from the Agent definition.
+    Task-scoped model and model-parameter overlays are part of the effective
+    identity because Workflow Agent nodes may select them independently from
+    the Agent definition.
     """
     from src.agent.definition import get_agent_definition
     from src.core.model_manager import get_model_manager
@@ -146,6 +148,8 @@ def build_effective_agent_definition(
             model_manager.get_retry_config()
         ),
     }
+    effective_model_params = dict(definition.model_params or {})
+    effective_model_params.update(model_params_override or {})
     return {
         "schema_version": "effective_agent_definition.v3",
         "agent_type": definition.agent_type,
@@ -160,9 +164,9 @@ def build_effective_agent_definition(
         "include_skills": definition.include_skills,
         "include_rules": definition.include_rules,
         "available_for_sub_session": definition.available_for_sub_session,
-        "model_params": _redact_sensitive_values(definition.model_params),
+        "model_params": _redact_sensitive_values(effective_model_params),
         "model_params_semantic_sha256": _canonical_sha256(
-            _semantic_identity_values(definition.model_params)
+            _semantic_identity_values(effective_model_params)
         ),
         "prompt_template_sections_sha256": _canonical_sha256(prompt_sections),
         "static_base_system_prompt_sha256": _canonical_sha256(
@@ -216,6 +220,7 @@ class WorkflowRuntimeFacade:
         *,
         parameter_values: dict[str, Any] | None = None,
         node_model_overrides: dict[str, str] | None = None,
+        node_model_params_overrides: dict[str, dict[str, Any]] | None = None,
         disabled_node_ids: list[str] | None = None,
         workspace_override: str | None = None,
         scheme_id: str | None = None,
@@ -225,6 +230,7 @@ class WorkflowRuntimeFacade:
             workflow_id,
             parameter_values=parameter_values,
             node_model_overrides=node_model_overrides,
+            node_model_params_overrides=node_model_params_overrides,
             disabled_node_ids=disabled_node_ids,
             workspace_override=workspace_override,
             scheme_id=scheme_id,

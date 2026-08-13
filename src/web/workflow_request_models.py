@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,6 +34,7 @@ class TaskCreateRequest(BaseModel):
     from_node_id: str | None = Field(default=None)
     parameter_values: dict[str, str] | None = Field(default=None)
     node_model_overrides: dict[str, str] | None = Field(default=None)
+    node_model_params_overrides: dict[str, dict[str, Any]] | None = Field(default=None)
     disabled_node_ids: list[str] | None = Field(default=None)
     scheme_id: str | None = Field(default=None)
     selected_node_ids: list[str] | None = Field(default=None)

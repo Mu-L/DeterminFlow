@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .runtime import effective_agent_definition_sha256
+from .task_overrides import MODEL_PARAMS_OVERRIDE_KEY
 
 
 RUNTIME_GUARD_KEY = "_runtime_guard"
@@ -214,9 +215,15 @@ def _freeze_agent_identity(
         if raw_model_override
         else ""
     )
+    model_params_override = (node.get("node_params") or {}).get(
+        MODEL_PARAMS_OVERRIDE_KEY
+    )
+    if not isinstance(model_params_override, dict):
+        model_params_override = {}
     effective = effective_agent_resolver(
         agent_type,
         model_override=model_override or None,
+        model_params_override=model_params_override,
     )
     if effective is None:
         raise WorkflowRuntimeGuardError(
@@ -225,6 +232,9 @@ def _freeze_agent_identity(
     guard.update({
         "agent_type": agent_type,
         "model_override": model_override,
+        "model_params_override_sha256": effective_agent_definition_sha256(
+            model_params_override
+        ),
         "effective_agent_definition_sha256": (
             effective_agent_definition_sha256(effective)
         ),

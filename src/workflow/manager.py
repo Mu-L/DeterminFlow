@@ -33,6 +33,7 @@ from .task_persistence import write_task_state_file
 from .task_overrides import (
     TaskOverrideValidationError,
     apply_node_model_overrides,
+    apply_node_model_params_overrides,
 )
 from .task_recovery import WorkflowTaskRecoveryMixin
 from .workflow_compat import WorkflowCompatibilityMixin
@@ -464,6 +465,7 @@ class WorkflowManager(
     def create_task(self, workflow_id: str, from_node_id: str | None = None,
                     parameter_values: dict[str, str] | None = None,
                     node_model_overrides: dict[str, str] | None = None,
+                    node_model_params_overrides: dict[str, dict] | None = None,
                     disabled_node_ids: list[str] | None = None,
                     workspace_override: str | None = None,
                     scheme_id: str | None = None,
@@ -503,6 +505,10 @@ class WorkflowManager(
             apply_node_model_overrides(
                 def_dict,
                 node_model_overrides,
+            )
+            apply_node_model_params_overrides(
+                def_dict,
+                node_model_params_overrides,
             )
             self._freeze_snapshot_definition(
                 workflow_id,

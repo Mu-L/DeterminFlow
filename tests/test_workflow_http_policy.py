@@ -129,6 +129,9 @@ def test_create_task_forwards_predefined_node_model_overrides():
         request,
         TaskCreateRequest(
             node_model_overrides={"writer": "provider-a:model-a"},
+            node_model_params_overrides={
+                "writer": {"temperature": 0.4, "provider_owned": {"x": 1}},
+            },
         ),
     ))
 
@@ -137,6 +140,9 @@ def test_create_task_forwards_predefined_node_model_overrides():
         "from_node_id": None,
         "parameter_values": None,
         "node_model_overrides": {"writer": "provider-a:model-a"},
+        "node_model_params_overrides": {
+            "writer": {"temperature": 0.4, "provider_owned": {"x": 1}},
+        },
         "disabled_node_ids": None,
         "scheme_id": None,
         "selected_node_ids": None,

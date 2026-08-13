@@ -25,8 +25,10 @@ from src.workflow.nodes.base import NodeContext
 from src.workflow.nodes.script import ScriptNode
 from src.workflow.runtime_guards import RUNTIME_GUARD_KEY, RUNTIME_GUARD_SCHEMA
 from src.workflow.task_overrides import (
+    MODEL_PARAMS_OVERRIDE_KEY,
     TaskOverrideValidationError,
     apply_node_model_overrides,
+    apply_node_model_params_overrides,
 )
 from src.workflow.script_library import (
     ScriptLibraryCatalog,
@@ -95,6 +97,7 @@ def test_task_node_model_override_is_snapshot_only_and_guarded(
         prompt_template="test-writer",
         tools=[],
         model="openai:default-model",
+        model_params={"temperature": 0.8, "reasoning_effort": "medium"},
     )
     monkeypatch.setattr(
         "src.agent.definition.get_agent_definition",
@@ -123,17 +126,29 @@ def test_task_node_model_override_is_snapshot_only_and_guarded(
     created = manager.create_task(
         workflow_id,
         node_model_overrides={"writer": "openai:candidate-model"},
+        node_model_params_overrides={
+            "writer": {
+                "temperature": 0.4,
+                "provider_owned": {"opaque": True},
+            }
+        },
     )
 
     assert created is not None
     live = manager.get_workflow(workflow_id)["definition"]
     assert "model_override" not in live["nodes"][0]
+    assert MODEL_PARAMS_OVERRIDE_KEY not in live["nodes"][0].get("node_params", {})
     task = manager._load_task(workflow_id, created["task_id"])
     frozen_node = WorkflowDef.from_dict(task.snapshot_definition).get_node("writer")
     assert frozen_node.model_override == "openai:candidate-model"
+    assert frozen_node.node_params[MODEL_PARAMS_OVERRIDE_KEY] == {
+        "temperature": 0.4,
+        "provider_owned": {"opaque": True},
+    }
     assert "private-test-value" not in json.dumps(task.snapshot_definition)
     guard = frozen_node.node_params[RUNTIME_GUARD_KEY]
     assert guard["model_override"] == "openai:candidate-model"
+    assert len(guard["model_params_override_sha256"]) == 64
     assert len(guard["effective_agent_definition_sha256"]) == 64
 
     rejected = manager.create_task(
@@ -208,6 +223,50 @@ def test_task_node_model_override_accepts_configured_provider_model() -> None:
     )
 
     assert definition["nodes"][0]["model_override"] == "provider-a:model-a"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_code"),
+    [
+        ({"missing": {"temperature": 0.2}},
+         "workflow_node_model_params_override_unknown_node"),
+        ({"persist": {"temperature": 0.2}},
+         "workflow_node_model_params_override_not_agent"),
+        ({"writer": "opaque"},
+         "workflow_node_model_params_overrides_invalid"),
+    ],
+)
+def test_task_node_model_params_override_validates_only_generic_shape(
+    overrides,
+    error_code,
+) -> None:
+    definition = {
+        "nodes": [
+            {"id": "writer", "node_type": "agent"},
+            {"id": "persist", "node_type": "script"},
+        ]
+    }
+
+    with pytest.raises(TaskOverrideValidationError) as captured:
+        apply_node_model_params_overrides(definition, overrides)
+
+    assert captured.value.code == error_code
+
+
+def test_task_node_model_params_override_keeps_opaque_provider_fields() -> None:
+    definition = {"nodes": [{"id": "writer", "node_type": "agent"}]}
+    params = {
+        "temperature": 0.25,
+        "future_provider_option": {"mode": "custom"},
+    }
+
+    apply_node_model_params_overrides(definition, {"writer": params})
+
+    assert definition["nodes"][0]["node_params"][MODEL_PARAMS_OVERRIDE_KEY] == params
+    assert (
+        definition["nodes"][0]["node_params"][MODEL_PARAMS_OVERRIDE_KEY]
+        is not params
+    )
 
 
 def test_task_freezes_actual_inline_script_and_script_node_rejects_drift(
