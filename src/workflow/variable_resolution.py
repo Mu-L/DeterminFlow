@@ -34,6 +34,21 @@ def _try_parse_json(value: str) -> tuple[bool, object]:
     return False, value
 
 
+def _placeholder_text(value: object) -> str:
+    """Convert JSON-compatible Workflow values to deterministic text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, bool, int, float)):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return str(value)
+
+
 def parse_loop_expression(expression: str) -> dict:
     """解析循环网关出边表达式，返回迭代元信息。"""
     expr = expression.strip()
@@ -136,7 +151,7 @@ def resolve_workspace_file_path(shared_ws: str | Path, target: str) -> Path:
 
 async def resolve_placeholders(
     content: str,
-    values: dict[str, str],
+    values: dict[str, object],
     variables: list | None = None,
     shared_ws: str = "",
 ) -> str:
@@ -144,13 +159,17 @@ async def resolve_placeholders(
     if not content or not values:
         return content
 
+    string_values = {
+        key: _placeholder_text(value)
+        for key, value in values.items()
+    }
     resolved_values: dict[str, str] = {}
-    for key, value in values.items():
+    for key, value in string_values.items():
         try:
-            resolved_values[key] = _resolve_nested_value(value or "", values)
+            resolved_values[key] = _resolve_nested_value(value, string_values)
         except ValueError as exc:
             logger.warning(f"变量 {key} 嵌套展开失败: {exc}")
-            resolved_values[key] = value or ""
+            resolved_values[key] = value
 
     if variables and shared_ws:
         for variable in variables:
@@ -190,7 +209,7 @@ async def resolve_placeholders(
         for variable in (variables or [])
         if _variable_attribute(variable, "type", "text") == "file"
     }
-    for key, original_value in values.items():
+    for key, original_value in string_values.items():
         if key in file_var_keys or not original_value or "{{" not in original_value:
             continue
         try:

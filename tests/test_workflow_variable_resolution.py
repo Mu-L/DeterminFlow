@@ -28,6 +28,28 @@ def test_file_variable_reads_only_inside_workflow_workspace(tmp_path):
     assert resolved == "内容：合法输入"
 
 
+def test_scalar_workflow_values_are_safe_placeholder_text():
+    resolved = asyncio.run(
+        resolve_placeholders(
+            "版本={{base_version}}，启用={{enabled}}，备注={{note}}",
+            {"base_version": 17, "enabled": False, "note": None},
+        )
+    )
+
+    assert resolved == "版本=17，启用=false，备注="
+
+
+def test_scalar_workflow_values_support_nested_references():
+    resolved = asyncio.run(
+        resolve_placeholders(
+            "{{label}}",
+            {"base_version": 17, "label": "版本 {{base_version}}"},
+        )
+    )
+
+    assert resolved == "版本 17"
+
+
 @pytest.mark.parametrize("target", ("../secret.txt", "/etc/passwd"))
 def test_workflow_file_path_rejects_workspace_escape(tmp_path, target):
     workspace = tmp_path / "workspace"
