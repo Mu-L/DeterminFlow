@@ -219,6 +219,54 @@ def test_public_workflow_agent_actions_keep_reaching_manager():
     }]
 
 
+def test_list_tasks_returns_lightweight_task_references():
+    class _HeavyTaskManager(_ToolPolicyManager):
+        def list_all_tasks(self, *args, **kwargs):
+            return {
+                "tasks": [
+                    {
+                        "workflow_id": "wf-public",
+                        "workflow_name": "Public workflow",
+                        "task_id": "task-1",
+                        "name": "Heavy task",
+                        "status": "running",
+                        "current_node_id": "node-1",
+                        "created_at": "2026-08-15T00:00:00Z",
+                        "updated_at": "2026-08-15T00:01:00Z",
+                        "progress": {"completed": 1, "total": 3},
+                        "node_states": {"node-1": {"outputs": {"body": "x" * 10000}}},
+                        "parameter_values": {"source": "x" * 10000},
+                    }
+                ],
+                "total": 1,
+            }
+
+    manager = _HeavyTaskManager({"wf-public": "public"})
+    sessions = _session_manager("wf-public")
+    set_session_context(session_id="session-1")
+
+    result = _invoke(
+        create_list_tasks_tool(manager, sessions),
+        workflow_id="wf-public",
+        status="",
+        limit=20,
+    )
+
+    assert result["tasks"] == [
+        {
+            "workflow_id": "wf-public",
+            "workflow_name": "Public workflow",
+            "task_id": "task-1",
+            "name": "Heavy task",
+            "status": "running",
+            "current_node_id": "node-1",
+            "created_at": "2026-08-15T00:00:00Z",
+            "updated_at": "2026-08-15T00:01:00Z",
+            "progress": {"completed": 1, "total": 3},
+        }
+    ]
+
+
 def test_policy_lookup_failure_denies_action_before_manager_call():
     class _UnavailablePolicyManager(_ToolPolicyManager):
         def get_workflow(self, workflow_id: str):

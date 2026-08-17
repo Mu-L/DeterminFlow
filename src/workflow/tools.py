@@ -851,6 +851,20 @@ def create_list_tasks_tool(
             )
             tasks = result["tasks"] if isinstance(result, dict) else (result or [])
             visible_tasks = []
+            summary_fields = (
+                "workflow_id",
+                "workflow_name",
+                "task_id",
+                "name",
+                "status",
+                "current_node_id",
+                "run_id",
+                "created_at",
+                "updated_at",
+                "started_at",
+                "completed_at",
+                "progress",
+            )
             for task in tasks:
                 task_workflow_id = task.get("workflow_id", "")
                 if not task_workflow_id:
@@ -860,7 +874,13 @@ def create_list_tasks_tool(
                 )
                 if task_policy_error:
                     continue
-                visible_tasks.append(task)
+                # list_tasks 只用于发现 TaskRef 和查看概况。节点输出、参数快照、
+                # 尝试历史等大字段由 get_task_status/get_task_result 按需获取。
+                visible_tasks.append({
+                    key: task[key]
+                    for key in summary_fields
+                    if key in task
+                })
             return _ok(
                 workflow_id=workflow_id,
                 tasks=visible_tasks,
