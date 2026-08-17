@@ -98,8 +98,11 @@ export default function WorkflowMainDrawer({
     isStreaming: chatIsStreaming,
     connected: chatConnected,
     error: chatError,
+    failedTurn: chatFailedTurn,
+    retryingFailedTurn: chatRetryingFailedTurn,
     sendMessage,
     retry: retryChat,
+    retryFailedTurn: retryFailedChatTurn,
     abortStream,
   } = useStreamingSession({
     sessionId: isChatConnected ? mainSessionId : null,
@@ -345,6 +348,9 @@ export default function WorkflowMainDrawer({
             loading={chatPhase === "loading" || chatPhase === "reconnecting"}
             error={chatError}
             onRetry={retryChat}
+            failedTurn={chatFailedTurn}
+            retryingFailedTurn={chatRetryingFailedTurn}
+            onRetryFailedTurn={retryFailedChatTurn}
           />
         )}
       </div>
@@ -409,6 +415,9 @@ export default function WorkflowMainDrawer({
         loading={chatPhase === "loading" || chatPhase === "reconnecting"}
         error={chatError}
         onRetry={retryChat}
+        failedTurn={chatFailedTurn}
+        retryingFailedTurn={chatRetryingFailedTurn}
+        onRetryFailedTurn={retryFailedChatTurn}
       />
     </div>
   );

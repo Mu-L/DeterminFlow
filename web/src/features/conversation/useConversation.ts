@@ -7,7 +7,7 @@ import {
   createConversationState,
 } from "./conversationReducer";
 import { normalizeConversationEvent } from "./normalizeConversationEvent";
-import type { ConversationState } from "./conversationTypes";
+import type { ConversationState, FailedTurnState } from "./conversationTypes";
 import { publishContentSafetyDiagnosticControlEvent } from "./contentSafetyDiagnosticProtocol";
 
 export interface UseConversationOptions {
@@ -21,10 +21,15 @@ export interface UseConversationResult extends ConversationState {
   sendMessage: (content: string, attachments?: MessageAttachment[]) => boolean;
   sendCommand: (payload: { type: string; [key: string]: unknown }) => boolean;
   editMessageAndResend: (messageId: string, content: string) => boolean;
+  retryFailedTurn: () => boolean;
   resync: () => boolean;
   replaceMessages: (
     messages: Message[],
-    state?: { status?: string | null; error?: string | null },
+    state?: {
+      status?: string | null;
+      error?: string | null;
+      failedTurn?: FailedTurnState | null;
+    },
   ) => void;
   clearError: () => void;
 }
@@ -162,10 +167,45 @@ export function useConversation({
     [sendCommand, sessionId, state.messages, state.phase, state.sessionId],
   );
 
+  const retryFailedTurn = useCallback((): boolean => {
+    const failedTurn = state.failedTurn;
+    if (
+      !sessionId ||
+      state.sessionId !== sessionId ||
+      state.phase !== "ready" ||
+      !failedTurn?.retryable ||
+      state.retryingFailureId === failedTurn.failureId
+    ) {
+      return false;
+    }
+    const sent = sendCommand({
+      type: "retry_turn",
+      failure_id: failedTurn.failureId,
+    });
+    if (!sent) return false;
+    dispatch({
+      type: "retry_requested",
+      sessionId,
+      failureId: failedTurn.failureId,
+    });
+    return true;
+  }, [
+    sendCommand,
+    sessionId,
+    state.failedTurn,
+    state.phase,
+    state.retryingFailureId,
+    state.sessionId,
+  ]);
+
   const replaceMessages = useCallback(
     (
       messages: Message[],
-      restoredState?: { status?: string | null; error?: string | null },
+      restoredState?: {
+        status?: string | null;
+        error?: string | null;
+        failedTurn?: FailedTurnState | null;
+      },
     ) => {
       if (!sessionId) return;
       dispatch({
@@ -174,6 +214,7 @@ export function useConversation({
         messages,
         status: restoredState?.status,
         error: restoredState?.error,
+        failedTurn: restoredState?.failedTurn,
       });
     },
     [sessionId],
@@ -193,6 +234,7 @@ export function useConversation({
     sendMessage,
     sendCommand,
     editMessageAndResend,
+    retryFailedTurn,
     resync,
     replaceMessages,
     clearError,

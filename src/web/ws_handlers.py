@@ -8,6 +8,7 @@ WebSocket 处理模块 - 实现对话流式推送和系统事件广播
 消息处理改为后台任务 + event_bus 推送，支持多 session 并发通信。
 """
 import asyncio
+from copy import deepcopy
 import json
 import logging
 import uuid
@@ -85,8 +86,14 @@ def _build_session_snapshot(session, *, bus=event_bus) -> dict:
     if token_usage:
         snapshot["token_usage"] = token_usage
     last_error = getattr(session, "last_error", None)
-    if snapshot["status"] == "error" and isinstance(last_error, dict):
+    failed_turn = getattr(session, "failed_turn", None)
+    if (
+        (snapshot["status"] == "error" or isinstance(failed_turn, dict))
+        and isinstance(last_error, dict)
+    ):
         snapshot["last_error"] = dict(last_error)
+    if isinstance(failed_turn, dict):
+        snapshot["failed_turn"] = deepcopy(failed_turn)
     return snapshot
 
 
@@ -154,6 +161,11 @@ def _make_stream_callback(session_id: str, session):
                 "type": "session_update", "action": "status_changed",
                 "session_id": session_id, "status": session.status,
             })
+        elif event_type == "error" and event.get("terminal") is not False:
+            await event_bus.emit_event({
+                "type": "session_update", "action": "status_changed",
+                "session_id": session_id, "status": session.status,
+            })
     return callback
 
 
@@ -186,6 +198,20 @@ async def _execute_with_events(session, session_id: str, action_coro, action_lab
             })
     except Exception as e:
         logger.error(f"会话 {session_id} {action_label}失败: {e}", exc_info=True)
+        if getattr(session, "_handled_invocation_error", None) is e:
+            return
+        if (
+            getattr(session, "session_type", "") == "main"
+            and getattr(session, "runtime_scope", "interactive") == "interactive"
+        ):
+            session.status = "running"
+            await event_bus.emit_chat({
+                "type": "error",
+                "message": str(e) if isinstance(e, ValueError) else f"{action_label}失败，请重试",
+                "session_id": session_id,
+                "terminal": False,
+            })
+            return
         terminal_already_emitted = session.status == "error"
         session.status = "error"
         if not terminal_already_emitted:
@@ -244,6 +270,24 @@ async def _process_edit_message(session_mgr, session_id: str, message_id: str, n
             event_callback=callback,
         ),
         action_label="编辑消息",
+    )
+
+
+async def _process_retry_turn(session_mgr, session_id: str, failure_id: str):
+    """Retry one persisted, side-effect-safe failed Main turn."""
+    session, err = await _validate_session(session_mgr, session_id, "重试本轮")
+    if err:
+        await event_bus.emit_chat(err)
+        return
+    callback = _make_stream_callback(session_id, session)
+    await _execute_with_events(
+        session,
+        session_id,
+        session.retry_failed_turn(
+            failure_id=failure_id,
+            event_callback=callback,
+        ),
+        action_label="重试本轮",
     )
 
 
@@ -349,7 +393,7 @@ async def handle_chat_ws(ws: WebSocket, app_state):
                 await _safe_send(ws, {"type": "error", "message": "type 必须是字符串", "terminal": False})
                 continue
             if roundtable_only and msg_type in {
-                "message", "edit_message", "resync", "diagnose_content_safety",
+                "message", "edit_message", "retry_turn", "resync", "diagnose_content_safety",
             }:
                 await _safe_send(ws, {
                     "type": "error",
@@ -366,7 +410,7 @@ async def handle_chat_ws(ws: WebSocket, app_state):
                 target_session_id
                 and requested_session_id
                 and requested_session_id != target_session_id
-                and msg_type in {"message", "edit_message", "resync", "diagnose_content_safety"}
+                and msg_type in {"message", "edit_message", "retry_turn", "resync", "diagnose_content_safety"}
             ):
                 await _safe_send(ws, {
                     "type": "error",
@@ -447,6 +491,27 @@ async def handle_chat_ws(ws: WebSocket, app_state):
                     if main:
                         await _spawn_and_track(
                             _process_edit_message(session_mgr, main.session_id, message_id, edit_content)
+                        )
+
+            elif msg_type == "retry_turn":
+                failure_id = data.get("failure_id", "")
+                if not isinstance(failure_id, str) or not failure_id:
+                    await _safe_send(ws, {
+                        "type": "error",
+                        "message": "缺少有效的 failure_id",
+                        "terminal": False,
+                    })
+                    continue
+                retry_session_id = requested_session_id or target_session_id
+                if retry_session_id:
+                    await _spawn_and_track(
+                        _process_retry_turn(session_mgr, retry_session_id, failure_id)
+                    )
+                else:
+                    main = session_mgr.get_main_session()
+                    if main:
+                        await _spawn_and_track(
+                            _process_retry_turn(session_mgr, main.session_id, failure_id)
                         )
 
             elif msg_type == "ping":

@@ -27,6 +27,8 @@ export function createConversationState(
     needsResync: false,
     syncIssue: null,
     error: null,
+    failedTurn: null,
+    retryingFailureId: null,
     toolCallKeysByIndex: {},
   };
 }
@@ -262,6 +264,8 @@ function reduceServerEvent(
         event.status === "error"
           ? event.error || FALLBACK_TERMINAL_ERROR_MESSAGE
           : null,
+      failedTurn: event.failedTurn,
+      retryingFailureId: null,
       toolCallKeysByIndex,
     };
   }
@@ -297,6 +301,8 @@ function reduceServerEvent(
       needsResync: false,
       syncIssue: null,
       error: null,
+      failedTurn: null,
+      retryingFailureId: null,
       toolCallKeysByIndex: {},
     };
   }
@@ -335,6 +341,8 @@ function reduceServerEvent(
         needsResync: false,
         syncIssue: null,
         error: null,
+        failedTurn: null,
+        retryingFailureId: null,
         toolCallKeysByIndex: {},
       };
     case "text_delta":
@@ -387,6 +395,26 @@ function reduceServerEvent(
           error: event.message,
           needsResync: true,
           syncIssue: null,
+          retryingFailureId: null,
+        };
+      }
+      if (event.failedTurn && event.sessionStatus !== "error") {
+        return {
+          ...next,
+          generationId: null,
+          phase: "ready",
+          status: event.sessionStatus || "running",
+          messages: event.messages
+            ? normalizeMessages(event.messages)
+            : next.messages,
+          streamingSegments: [],
+          isStreaming: false,
+          error: null,
+          failedTurn: event.failedTurn,
+          retryingFailureId: null,
+          needsResync: event.messages === null,
+          syncIssue: null,
+          toolCallKeysByIndex: {},
         };
       }
       return {
@@ -397,6 +425,8 @@ function reduceServerEvent(
         streamingSegments: [],
         isStreaming: false,
         error: event.message,
+        failedTurn: null,
+        retryingFailureId: null,
         needsResync: true,
         syncIssue: null,
         toolCallKeysByIndex: {},
@@ -437,6 +467,8 @@ export function conversationReducer(
               action.status === "error"
                 ? action.error || FALLBACK_TERMINAL_ERROR_MESSAGE
                 : null,
+            failedTurn: action.failedTurn ?? null,
+            retryingFailureId: null,
           }
         : state;
     case "append_optimistic_message":
@@ -471,6 +503,11 @@ export function conversationReducer(
         ]),
       };
     }
+    case "retry_requested":
+      return action.sessionId === state.sessionId &&
+        state.failedTurn?.failureId === action.failureId
+        ? { ...state, retryingFailureId: action.failureId }
+        : state;
     case "clear_error":
       return {
         ...state,

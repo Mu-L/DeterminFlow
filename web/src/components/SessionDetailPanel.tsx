@@ -5,6 +5,7 @@ import { MessageSquare, Wrench, Bot } from "lucide-react";
 import { SessionDetail, Message, StreamingSegment } from "../types";
 import { getStatusConfig, safeJsonParse, prettyJson } from "../lib/utils-helpers";
 import ConversationTimeline from "./conversation/ConversationTimeline";
+import type { FailedTurnState } from "../features/conversation/conversationTypes";
 
 // ============ Status icon mapping (lucide, not emoji) ============
 
@@ -16,7 +17,6 @@ const STATUS_ICON_MAP: Record<string, React.ReactNode> = {
   waiting: <span className="w-2 h-2 rounded-full bg-amber-400" />,
   idle: <span className="w-2 h-2 rounded-full bg-slate-400" />,
 };
-
 interface SessionDetailPanelProps {
   session: SessionDetail;
   messages?: Message[];
@@ -25,6 +25,9 @@ interface SessionDetailPanelProps {
   loading?: boolean;
   error?: Error | string | null;
   onRetry?: () => void;
+  failedTurn?: FailedTurnState | null;
+  retryingFailedTurn?: boolean;
+  onRetryFailedTurn?: () => void;
   liveStatus?: string | null;
 }
 
@@ -36,6 +39,9 @@ export default function SessionDetailPanel({
   loading = false,
   error = null,
   onRetry,
+  failedTurn = null,
+  retryingFailedTurn = false,
+  onRetryFailedTurn,
   liveStatus = null,
 }: SessionDetailPanelProps) {
   const status = liveStatus || session.status;
@@ -69,6 +75,9 @@ export default function SessionDetailPanel({
           loading={loading}
           error={error}
           onRetry={onRetry}
+          failedTurn={failedTurn}
+          retryingFailedTurn={retryingFailedTurn}
+          onRetryFailedTurn={onRetryFailedTurn}
           conversationId={session.session_id}
           ariaLabel={`${session.session_id} 的会话消息`}
           readonly

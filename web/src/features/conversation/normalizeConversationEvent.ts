@@ -4,6 +4,7 @@ import type {
   ToolCallState,
 } from "../../types";
 import type {
+  FailedTurnState,
   ConversationServerEvent,
   ConversationToolEndEvent,
 } from "./conversationTypes";
@@ -32,6 +33,48 @@ function asIndex(value: unknown): number | null {
 
 function asTokenUsage(value: unknown): TokenUsage | null {
   return asRecord(value) as TokenUsage | null;
+}
+
+export function normalizeFailedTurn(value: unknown): FailedTurnState | null {
+  const failedTurn = asRecord(value);
+  if (!failedTurn) return null;
+  const failureId = asString(failedTurn.failure_id);
+  const content = asString(failedTurn.content);
+  const attemptCount = asIndex(failedTurn.attempt_count);
+  if (
+    !failureId ||
+    content === null ||
+    typeof failedTurn.retryable !== "boolean" ||
+    typeof failedTurn.tool_started !== "boolean" ||
+    attemptCount === null ||
+    attemptCount < 1
+  ) {
+    return null;
+  }
+  const attachments = Array.isArray(failedTurn.attachments)
+    ? failedTurn.attachments.flatMap((value) => {
+        const attachment = asRecord(value);
+        const name = asString(attachment?.name);
+        const absolutePath = asString(attachment?.absolute_path);
+        return name && absolutePath
+          ? [{ name, absolute_path: absolutePath }]
+          : [];
+      })
+    : [];
+  const error = asRecord(failedTurn.error);
+  return {
+    failureId,
+    content,
+    attachments,
+    retryable: failedTurn.retryable,
+    retryBlockReason: asString(failedTurn.retry_block_reason),
+    toolStarted: failedTurn.tool_started,
+    attemptCount,
+    modelId: asString(failedTurn.model_id),
+    errorCode: asString(error?.code),
+    errorMessage: asString(error?.message) || "会话运行失败，请稍后再试",
+    occurredAt: asString(error?.occurred_at),
+  };
 }
 
 function normalizeToolState(value: unknown): ToolCallState | null {
@@ -110,6 +153,8 @@ export function normalizeConversationEvent(
     if (!Array.isArray(event.messages)) return null;
     const activeStream = asRecord(event.active_stream);
     const lastError = asRecord(event.last_error);
+    const status = asString(event.status);
+    const failedTurn = normalizeFailedTurn(event.failed_turn);
     const activeGenerationId = activeStream
       ? asString(activeStream.generation_id)
       : null;
@@ -118,7 +163,7 @@ export function normalizeConversationEvent(
       ...base,
       generationId: activeGenerationId,
       messages: event.messages,
-      status: asString(event.status),
+      status,
       activeStream:
         activeStream && activeGenerationId
           ? {
@@ -128,7 +173,10 @@ export function normalizeConversationEvent(
             }
           : null,
       tokenUsage: asTokenUsage(event.token_usage),
-      error: asString(event.error) || asString(lastError?.message),
+      error:
+        asString(event.error) ||
+        (status === "error" ? asString(lastError?.message) : null),
+      failedTurn,
       legacy: wireType === "history",
     };
   }
@@ -207,6 +255,9 @@ export function normalizeConversationEvent(
             ...base,
             message,
             terminal: event.terminal !== false,
+            sessionStatus: asString(event.session_status),
+            messages: Array.isArray(event.messages) ? event.messages : null,
+            failedTurn: normalizeFailedTurn(event.failed_turn),
           };
     }
     case "llm_usage": {

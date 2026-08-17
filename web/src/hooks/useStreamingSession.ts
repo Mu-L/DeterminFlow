@@ -7,6 +7,7 @@ import { useCallback } from "react";
 import { useConversation } from "../features/conversation/useConversation";
 import type {
   ConversationPhase,
+  FailedTurnState,
 } from "../features/conversation/conversationTypes";
 import { abortSession } from "../lib/api";
 import type { Message, MessageAttachment, StreamingSegment } from "../types";
@@ -26,8 +27,11 @@ export interface UseStreamingSessionReturn {
   isStreaming: boolean;
   connected: boolean;
   error: string | null;
+  failedTurn: FailedTurnState | null;
+  retryingFailedTurn: boolean;
   sendMessage: (content: string, attachments?: MessageAttachment[]) => boolean;
   retry: () => boolean;
+  retryFailedTurn: () => boolean;
   abortStream: () => Promise<void>;
 }
 
@@ -60,8 +64,12 @@ export function useStreamingSession({
     isStreaming: conversation.isStreaming,
     connected: conversation.connected,
     error: conversation.error,
+    failedTurn: conversation.failedTurn,
+    retryingFailedTurn:
+      conversation.retryingFailureId === conversation.failedTurn?.failureId,
     sendMessage: conversation.sendMessage,
     retry: resync,
+    retryFailedTurn: conversation.retryFailedTurn,
     abortStream,
   };
 }

@@ -28,6 +28,23 @@ export interface SessionDetail extends Session {
     message: string;
     occurred_at: string;
   };
+  failed_turn?: SessionFailedTurn;
+}
+
+export interface SessionFailedTurn {
+  failure_id: string;
+  content: string;
+  attachments: MessageAttachment[];
+  retryable: boolean;
+  retry_block_reason?: string | null;
+  tool_started: boolean;
+  attempt_count: number;
+  model_id?: string | null;
+  error?: {
+    code?: string;
+    message?: string;
+    occurred_at?: string;
+  } | null;
 }
 
 export interface ModelProvider {

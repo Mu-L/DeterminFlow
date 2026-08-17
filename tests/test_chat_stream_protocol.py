@@ -223,6 +223,41 @@ def test_terminal_snapshot_and_session_restore_keep_user_safe_error():
     assert restored.last_error == session.last_error
 
 
+def test_recoverable_main_snapshot_and_restore_keep_failed_turn():
+    session = AgentSession(
+        session_type="main",
+        task_description="test",
+        session_id="recoverable-session",
+    )
+    session.last_error = {
+        "code": "service_unavailable",
+        "message": "模型服务暂时不可用，请稍后再试",
+        "occurred_at": "2026-08-15T12:00:00+00:00",
+    }
+    session.failed_turn = {
+        "failure_id": "failure-1",
+        "content": "retry me",
+        "attachments": [{"name": "a.txt", "absolute_path": "/tmp/a.txt"}],
+        "source": "human",
+        "source_name": "",
+        "max_rounds": None,
+        "retryable": True,
+        "retry_block_reason": None,
+        "tool_started": False,
+        "attempt_count": 1,
+        "model_id": "provider:model",
+        "error": dict(session.last_error),
+    }
+
+    snapshot = ws_handlers._build_session_snapshot(session, bus=EventBus())
+    restored = AgentSession.from_dict(session.to_dict())
+
+    assert snapshot["status"] == "running"
+    assert snapshot["last_error"] == session.last_error
+    assert snapshot["failed_turn"] == session.failed_turn
+    assert restored.failed_turn == session.failed_turn
+
+
 def test_chain_end_clears_active_draft_and_keeps_monotonic_revision():
     async def scenario():
         bus = EventBus()
@@ -1018,7 +1053,7 @@ def test_terminal_errors_emit_authoritative_history_after_rollback():
         emitted: list[dict] = []
         record_when_error_emitted: list[list[dict]] = []
 
-        async def no_save():
+        async def no_save(*_args, **_kwargs):
             return None
 
         async def no_compress(*_args, **_kwargs):
@@ -1062,7 +1097,339 @@ def test_terminal_errors_emit_authoritative_history_after_rollback():
             {"id": "system", "type": "system_prompt", "content": "hidden"},
             *expected_history,
         ]
-        assert session.status == "error"
+        assert session.status == "running"
+        assert session.failed_turn["content"] == "new question"
+        assert session.failed_turn["retryable"] is True
+        assert session.failed_turn["tool_started"] is False
+        assert terminal["session_status"] == "running"
+        assert terminal["failed_turn"] == session.failed_turn
+
+
+def test_interactive_main_failure_after_tool_start_is_not_retryable():
+    async def scenario():
+        graph = _EventGraph([
+            {
+                "event": "on_tool_start",
+                "run_id": "tool-run",
+                "name": "write_file",
+                "data": {"input": {"path": "/tmp/result.txt"}},
+            },
+        ], error=RuntimeError("provider failed after tool"))
+        session = AgentSession(session_type="main", agent_type="test")
+        session.compiled_graph = graph
+        emitted: list[dict] = []
+
+        async def no_save(*_args, **_kwargs):
+            return None
+
+        async def no_compress(*_args, **_kwargs):
+            return None
+
+        async def capture(event: dict):
+            emitted.append(event)
+
+        session.async_save = no_save
+        session._check_and_compress_messages = no_compress
+        try:
+            await session.send_message("write it", capture, max_rounds=2)
+        except RuntimeError:
+            pass
+        return session, emitted
+
+    session, emitted = asyncio.run(scenario())
+    terminal = next(event for event in emitted if event["type"] == "error")
+    assert session.status == "running"
+    assert session.record == []
+    assert session.failed_turn["retryable"] is False
+    assert session.failed_turn["tool_started"] is True
+    assert session.failed_turn["retry_block_reason"] == "tool_started"
+    assert terminal["failed_turn"] == session.failed_turn
+
+
+def test_tool_started_failed_turn_rejects_direct_retry():
+    async def scenario():
+        session = AgentSession(session_type="main", agent_type="test")
+        session.compiled_graph = _EventGraph([])
+        session.failed_turn = {
+            "failure_id": "failure-with-tool",
+            "content": "write it",
+            "attachments": [],
+            "source": "human",
+            "source_name": "",
+            "max_rounds": 1,
+            "retryable": False,
+            "retry_block_reason": "tool_started",
+            "tool_started": True,
+            "attempt_count": 1,
+            "model_id": None,
+            "error": None,
+        }
+        try:
+            await session.retry_failed_turn("failure-with-tool")
+        except ValueError as error:
+            return str(error)
+        return ""
+
+    assert "重复副作用" in asyncio.run(scenario())
+
+
+def test_workflow_main_failure_keeps_terminal_error_behavior():
+    async def scenario():
+        session = AgentSession(
+            session_type="main",
+            agent_type="test",
+            runtime_scope="workflow",
+        )
+        session.compiled_graph = _EventGraph([], error=RuntimeError("workflow failed"))
+        emitted: list[dict] = []
+
+        async def no_save():
+            return None
+
+        async def no_compress(*_args, **_kwargs):
+            return None
+
+        async def capture(event: dict):
+            emitted.append(event)
+
+        session.async_save = no_save
+        session._check_and_compress_messages = no_compress
+        try:
+            await session.send_message("run workflow", capture)
+        except RuntimeError:
+            pass
+        return session, emitted
+
+    session, emitted = asyncio.run(scenario())
+    terminal = next(event for event in emitted if event["type"] == "error")
+    assert session.status == "error"
+    assert session.failed_turn is None
+    assert terminal["terminal"] is True
+
+
+def test_interactive_main_retry_replays_persisted_turn_and_clears_failure():
+    async def scenario():
+        session = AgentSession(session_type="main", agent_type="test")
+        session.record = [
+            {"id": "old-user", "type": "user", "content": "old question"},
+            {"id": "old-answer", "type": "assistant", "content": "old answer"},
+        ]
+        session.lc_messages = [
+            HumanMessage(content="old question"),
+            AIMessage(content="old answer"),
+        ]
+        session.failed_turn = {
+            "failure_id": "failure-1",
+            "content": "retry this",
+            "attachments": [],
+            "source": "human",
+            "source_name": "",
+            "max_rounds": 1,
+            "retryable": True,
+            "retry_block_reason": None,
+            "tool_started": False,
+            "attempt_count": 1,
+            "model_id": "provider:model",
+            "error": {
+                "code": "service_unavailable",
+                "message": "模型服务暂时不可用，请稍后再试",
+                "occurred_at": "2026-08-15T10:00:00+00:00",
+            },
+        }
+        session.last_error = dict(session.failed_turn["error"])
+        final_messages = [
+            *session.lc_messages,
+            HumanMessage(content="retry this"),
+            AIMessage(content="recovered answer"),
+        ]
+        session.compiled_graph = _EventGraph([
+            {
+                "event": "on_chat_model_end",
+                "run_id": "model-retry",
+                "data": {"output": final_messages[-1]},
+            },
+            {
+                "event": "on_chain_end",
+                "data": {"output": {"messages": final_messages}},
+            },
+        ])
+        saves: list[tuple[bool, dict | None]] = []
+
+        async def no_save(*_args, **_kwargs):
+            saves.append((
+                _kwargs.get("force") is True,
+                dict(session.failed_turn) if session.failed_turn else None,
+            ))
+            return None
+
+        async def no_compress(*_args, **_kwargs):
+            return None
+
+        session.async_save = no_save
+        session._check_and_compress_messages = no_compress
+        await session.retry_failed_turn("failure-1")
+        return session, saves
+
+    session, saves = asyncio.run(scenario())
+    assert session.status == "running"
+    assert session.failed_turn is None
+    assert session.last_error is None
+    assert [message["content"] for message in session.record[:2]] == [
+        "old question",
+        "old answer",
+    ]
+    assert session.record[2]["content"].endswith("<USER_MESSAGE>\nretry this")
+    assert session.record[3]["content"] == "recovered answer"
+    assert saves[0][0] is True
+    assert saves[0][1]["retryable"] is False
+    assert saves[0][1]["retry_block_reason"] == "retry_in_progress"
+    assert saves[-1] == (True, None)
+
+
+def test_interactive_main_pre_stream_failure_is_persisted_for_retry():
+    async def scenario():
+        session = AgentSession(session_type="main", agent_type="test")
+        graph = _EventGraph([])
+        session.compiled_graph = graph
+        emitted: list[dict] = []
+
+        async def no_save(*_args, **_kwargs):
+            return None
+
+        async def fail_compression(*_args, **_kwargs):
+            raise RuntimeError("compression failed")
+
+        async def capture(event: dict):
+            emitted.append(event)
+
+        session.async_save = no_save
+        session._check_and_compress_messages = fail_compression
+        try:
+            await session.send_message("too large", capture)
+        except RuntimeError:
+            pass
+        return session, graph, emitted
+
+    session, graph, emitted = asyncio.run(scenario())
+    assert graph.called is False
+    assert session.status == "running"
+    assert session.record == []
+    assert session.failed_turn["content"] == "too large"
+    assert session.failed_turn["retryable"] is True
+    assert next(event for event in emitted if event["type"] == "error")["terminal"] is True
+
+
+def test_failed_retry_rotates_failure_id_and_rejects_stale_duplicate():
+    async def scenario():
+        session = AgentSession(session_type="main", agent_type="test")
+        session.failed_turn = {
+            "failure_id": "failure-old",
+            "content": "retry this",
+            "attachments": [],
+            "source": "human",
+            "source_name": "",
+            "max_rounds": 1,
+            "retryable": True,
+            "retry_block_reason": None,
+            "tool_started": False,
+            "attempt_count": 1,
+            "model_id": "provider:model",
+            "error": None,
+        }
+        session.compiled_graph = _EventGraph([], error=RuntimeError("still unavailable"))
+
+        async def no_save(*_args, **_kwargs):
+            return None
+
+        async def no_compress(*_args, **_kwargs):
+            return None
+
+        session.async_save = no_save
+        session._check_and_compress_messages = no_compress
+        try:
+            await session.retry_failed_turn("failure-old")
+        except RuntimeError:
+            pass
+        new_failure_id = session.failed_turn["failure_id"]
+        try:
+            await session.retry_failed_turn("failure-old")
+        except ValueError as error:
+            stale_error = str(error)
+        else:
+            stale_error = ""
+        return session, new_failure_id, stale_error
+
+    session, new_failure_id, stale_error = asyncio.run(scenario())
+    assert new_failure_id != "failure-old"
+    assert session.failed_turn["attempt_count"] == 2
+    assert session.status == "running"
+    assert "已更新" in stale_error
+
+
+def test_retry_processor_uses_the_normal_stream_protocol(monkeypatch):
+    async def scenario():
+        session = AgentSession(
+            session_id="main-retry",
+            session_type="main",
+            agent_type="test",
+        )
+        session.compiled_graph = _EventGraph([])
+        session.failed_turn = {
+            "failure_id": "failure-1",
+            "content": "retry this",
+            "attachments": [],
+            "source": "human",
+            "source_name": "",
+            "max_rounds": 1,
+            "retryable": True,
+            "retry_block_reason": None,
+            "tool_started": False,
+            "attempt_count": 1,
+            "model_id": None,
+            "error": None,
+        }
+        emitted_chat: list[dict] = []
+        emitted_events: list[dict] = []
+
+        async def no_save(*_args, **_kwargs):
+            return None
+
+        async def no_compress(*_args, **_kwargs):
+            return None
+
+        async def emit_chat(event: dict):
+            emitted_chat.append(event)
+
+        async def emit_event(event: dict):
+            emitted_events.append(event)
+
+        session.async_save = no_save
+        session._check_and_compress_messages = no_compress
+        monkeypatch.setattr(ws_handlers.event_bus, "emit_chat", emit_chat)
+        monkeypatch.setattr(ws_handlers.event_bus, "emit_event", emit_event)
+        manager = SimpleNamespace(
+            get_session=lambda session_id: session
+            if session_id == session.session_id
+            else None,
+        )
+        await ws_handlers._process_retry_turn(
+            manager,
+            session.session_id,
+            "failure-1",
+        )
+        return session, emitted_chat, emitted_events
+
+    session, emitted_chat, emitted_events = asyncio.run(scenario())
+    assert session.failed_turn is None
+    assert [event["type"] for event in emitted_chat] == [
+        "stream_start",
+        "stream_end",
+        "chain_end",
+    ]
+    assert [event["status"] for event in emitted_events] == [
+        "streaming",
+        "running",
+    ]
 
 
 def test_execute_wrapper_does_not_duplicate_session_terminal_error(monkeypatch):

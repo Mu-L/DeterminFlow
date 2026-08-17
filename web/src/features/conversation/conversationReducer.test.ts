@@ -203,6 +203,107 @@ test("a legacy terminal snapshot without details uses generic copy", () => {
   assert.equal(state.error, "会话运行失败，请稍后再试");
 });
 
+test("a recoverable Main snapshot restores the failed turn without locking input", () => {
+  const state = dispatchWire(createConversationState("main-session"), {
+    type: "snapshot",
+    session_id: "main-session",
+    status: "running",
+    revision: 8,
+    active_stream: null,
+    messages: [{ type: "assistant", content: "stable answer" }],
+    last_error: {
+      code: "service_unavailable",
+      message: "模型服务暂时不可用，请稍后再试",
+      occurred_at: "2026-08-15T12:00:00+00:00",
+    },
+    failed_turn: {
+      failure_id: "failure-1",
+      content: "retry this question",
+      attachments: [],
+      retryable: true,
+      retry_block_reason: null,
+      tool_started: false,
+      attempt_count: 1,
+      model_id: "provider:model",
+      error: {
+        code: "service_unavailable",
+        message: "模型服务暂时不可用，请稍后再试",
+        occurred_at: "2026-08-15T12:00:00+00:00",
+      },
+    },
+  });
+
+  assert.equal(state.phase, "ready");
+  assert.equal(state.status, "running");
+  assert.equal(state.error, null);
+  assert.equal(state.failedTurn?.failureId, "failure-1");
+  assert.equal(state.failedTurn?.retryable, true);
+  assert.equal(state.failedTurn?.content, "retry this question");
+});
+
+test("a recoverable terminal error rolls back the draft and tracks retry progress", () => {
+  let state = createConversationState("main-session");
+  state = dispatchWire(state, {
+    type: "stream_start",
+    session_id: "main-session",
+    generation_id: "generation-1",
+    revision: 1,
+  });
+  state = dispatchWire(state, {
+    type: "token",
+    session_id: "main-session",
+    generation_id: "generation-1",
+    revision: 2,
+    content: "partial",
+  });
+  state = dispatchWire(state, {
+    type: "error",
+    session_id: "main-session",
+    generation_id: "generation-1",
+    revision: 3,
+    message: "模型服务暂时不可用，请稍后再试",
+    terminal: true,
+    session_status: "running",
+    messages: [{ type: "assistant", content: "stable answer" }],
+    failed_turn: {
+      failure_id: "failure-2",
+      content: "retry this question",
+      attachments: [],
+      retryable: true,
+      tool_started: false,
+      attempt_count: 2,
+      error: {
+        code: "service_unavailable",
+        message: "模型服务暂时不可用，请稍后再试",
+        occurred_at: "2026-08-15T12:01:00+00:00",
+      },
+    },
+  });
+
+  assert.equal(state.phase, "ready");
+  assert.equal(state.isStreaming, false);
+  assert.equal(state.needsResync, false);
+  assert.equal(state.messages[0]?.content, "stable answer");
+  assert.equal(state.failedTurn?.attemptCount, 2);
+
+  state = conversationReducer(state, {
+    type: "retry_requested",
+    sessionId: "main-session",
+    failureId: "failure-2",
+  });
+  assert.equal(state.retryingFailureId, "failure-2");
+
+  state = dispatchWire(state, {
+    type: "stream_start",
+    session_id: "main-session",
+    generation_id: "generation-2",
+    revision: 4,
+  });
+  assert.equal(state.phase, "streaming");
+  assert.equal(state.failedTurn, null);
+  assert.equal(state.retryingFailureId, null);
+});
+
 test("optimistic edit truncates later messages only after the command was accepted", () => {
   let state = createConversationState("session-a");
   state = dispatchWire(state, {

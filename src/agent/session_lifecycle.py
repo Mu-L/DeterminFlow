@@ -258,6 +258,13 @@ class SessionLifecycleMixin:
                         "messages": serialized,
                         "session_id": session_id,
                     })
+            elif event_type == "error" and event.get("terminal") is not False:
+                await event_bus.emit_event({
+                    "type": "session_update",
+                    "action": "status_changed",
+                    "session_id": session_id,
+                    "status": session.status if session else "error",
+                })
         return callback
 
     @staticmethod

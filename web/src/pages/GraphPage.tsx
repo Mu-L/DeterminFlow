@@ -9,6 +9,7 @@ import { fetchSessionDetail } from "../lib/api";
 import { GitBranch, Network, Loader2 } from "lucide-react";
 import { useUrlParam } from "../hooks/useUrlParam";
 import { useConversation } from "../features/conversation/useConversation";
+import { normalizeFailedTurn } from "../features/conversation/normalizeConversationEvent";
 
 export default function GraphPage() {
   const { sessions } = useSessions();
@@ -30,9 +31,12 @@ export default function GraphPage() {
     phase,
     status,
     error: conversationError,
+    failedTurn,
+    retryingFailureId,
     replaceMessages,
     clearError,
     resync,
+    retryFailedTurn,
   } = useConversation({ sessionId: selectedSessionId });
 
   const mainSession = sessions.find((s) => s.type === "main");
@@ -58,7 +62,11 @@ export default function GraphPage() {
       setSelectedDetail(detail);
       // REST is only a first-load fallback. The reducer ignores this hydration
       // once an authoritative WebSocket snapshot or stream event has arrived.
-      replaceMessages(detail.messages);
+      replaceMessages(detail.messages, {
+        status: detail.status,
+        error: detail.last_error?.message,
+        failedTurn: normalizeFailedTurn(detail.failed_turn),
+      });
     } catch {
       if (
         requestId !== detailRequestRef.current ||
@@ -215,6 +223,9 @@ export default function GraphPage() {
                   loading={timelineLoading}
                   error={timelineError}
                   onRetry={handleRetryDetail}
+                  failedTurn={failedTurn}
+                  retryingFailedTurn={retryingFailureId === failedTurn?.failureId}
+                  onRetryFailedTurn={retryFailedTurn}
                   liveStatus={status}
                 />
               </div>

@@ -1,5 +1,6 @@
 import type {
   Message,
+  MessageAttachment,
   StreamingSegment,
   TokenUsage,
 } from "../../types";
@@ -23,6 +24,20 @@ export interface RevisionGap {
   received: number;
 }
 
+export interface FailedTurnState {
+  failureId: string;
+  content: string;
+  attachments: MessageAttachment[];
+  retryable: boolean;
+  retryBlockReason: string | null;
+  toolStarted: boolean;
+  attemptCount: number;
+  modelId: string | null;
+  errorCode: string | null;
+  errorMessage: string;
+  occurredAt: string | null;
+}
+
 export interface ConversationState {
   sessionId: string | null;
   generationId: string | null;
@@ -37,6 +52,8 @@ export interface ConversationState {
   needsResync: boolean;
   syncIssue: RevisionGap | null;
   error: string | null;
+  failedTurn: FailedTurnState | null;
+  retryingFailureId: string | null;
   /** Internal correlation from a wire tool index to the current segment key. */
   toolCallKeysByIndex: Record<number, string>;
 }
@@ -58,6 +75,7 @@ export interface ConversationSnapshotEvent extends ConversationEventBase {
   } | null;
   tokenUsage: TokenUsage | null;
   error: string | null;
+  failedTurn: FailedTurnState | null;
   legacy: boolean;
 }
 
@@ -108,6 +126,9 @@ export interface ConversationErrorEvent extends ConversationEventBase {
   kind: "error";
   message: string;
   terminal: boolean;
+  sessionStatus: string | null;
+  messages: Message[] | null;
+  failedTurn: FailedTurnState | null;
 }
 
 export interface ConversationUsageEvent extends ConversationEventBase {
@@ -137,6 +158,7 @@ export type ConversationAction =
       messages: Message[];
       status?: string | null;
       error?: string | null;
+      failedTurn?: FailedTurnState | null;
     }
   | { type: "append_optimistic_message"; sessionId: string; message: Message }
   | {
@@ -145,4 +167,5 @@ export type ConversationAction =
       messageId: string;
       content: string;
     }
+  | { type: "retry_requested"; sessionId: string; failureId: string }
   | { type: "clear_error" };

@@ -340,6 +340,9 @@ async def get_session_detail(session_id: str, request: Request):
     last_error = getattr(session, "last_error", None)
     if last_error:
         result["last_error"] = last_error
+    failed_turn = getattr(session, "failed_turn", None)
+    if failed_turn:
+        result["failed_turn"] = failed_turn
 
     return result
 

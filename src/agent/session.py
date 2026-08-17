@@ -581,6 +581,10 @@ class AgentSession:
         # Last terminal failure is persisted for authoritative snapshot recovery.
         self.last_error: dict[str, str] | None = None
 
+        # Interactive Main keeps the failed user turn separately from the stable
+        # model context so the UI can offer an explicit, restart-safe retry.
+        self.failed_turn: dict[str, Any] | None = None
+
         # 累计 Token 使用数据（按 model_id 分组，用于工作流统计）
         # key = model_id (e.g. "deepseek:deepseek-v4-pro")
         # value = {"prompt_tokens": N, "completion_tokens": N, "total_tokens": N,
@@ -640,6 +644,8 @@ class AgentSession:
         self._invocation_done: asyncio.Event = asyncio.Event()
         self._invocation_done.set()
         self._termination_requested: bool = False
+        self._active_turn_tool_started: bool = False
+        self._handled_invocation_error: Exception | None = None
 
         # async_save 节流标志：避免高频保存占用线程池
         self._save_pending: bool = False
@@ -1085,6 +1091,63 @@ class AgentSession:
                 attachments,
             )
 
+    async def retry_failed_turn(
+        self,
+        failure_id: str,
+        event_callback: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> str:
+        """Explicitly retry the latest safe failed turn of an interactive Main."""
+        if not self._supports_interactive_main_recovery():
+            raise RuntimeError("仅交互式 Main 会话支持重试本轮")
+        if self.compiled_graph is None:
+            raise RuntimeError(f"Session {self.session_id} 的 Graph 未初始化")
+
+        callback = event_callback or self._default_event_callback
+        async with self._invocation_scope():
+            failed_turn = deepcopy(self.failed_turn)
+            if not failed_turn:
+                raise ValueError("当前没有可重试的失败轮次")
+            if failed_turn.get("failure_id") != failure_id:
+                raise ValueError("失败轮次已更新，请刷新会话后重试")
+            if failed_turn.get("retryable") is not True:
+                if failed_turn.get("retry_block_reason") == "tool_started":
+                    raise ValueError("本轮已启动工具，为避免重复副作用，不能直接重试")
+                raise ValueError("本轮重试状态未确认，为避免重复执行，不能直接重试")
+
+            content = failed_turn.get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("失败轮次缺少可重试的用户消息")
+            attachments = failed_turn.get("attachments")
+            if not isinstance(attachments, list):
+                attachments = []
+            max_rounds = failed_turn.get("max_rounds")
+            if not isinstance(max_rounds, int):
+                max_rounds = None
+            attempt_count = failed_turn.get("attempt_count")
+            if not isinstance(attempt_count, int) or attempt_count < 1:
+                attempt_count = 1
+
+            # Fail closed across a process crash between the retry click and
+            # the next terminal event. A cold restore must never expose the
+            # previous retry token again when a tool may already have run.
+            self.failed_turn = {
+                **failed_turn,
+                "retryable": False,
+                "retry_block_reason": "retry_in_progress",
+            }
+            self.updated_at = datetime.now(timezone.utc).isoformat()
+            await self.async_save(force=True)
+
+            return await self._invoke_graph(
+                content=content,
+                event_callback=callback,
+                max_rounds=max_rounds,
+                source="human",
+                source_name="",
+                attachments=deepcopy(attachments),
+                retry_attempt_count=attempt_count + 1,
+            )
+
 
 
     async def abort(self) -> dict:
@@ -1253,7 +1316,113 @@ class AgentSession:
         self._current_event_callback = None
         return self.get_last_assistant_message()
 
+    def _supports_interactive_main_recovery(self) -> bool:
+        return self.session_type == "main" and self.runtime_scope == "interactive"
+
     async def _invoke_graph(
+
+        self,
+
+        content: str,
+
+        event_callback: Callable[[dict], Awaitable[None]] | None,
+
+        max_rounds: int | None,
+
+        source: str = "human",
+
+        source_name: str = "",
+
+        attachments: list[dict[str, str]] | None = None,
+
+        retry_attempt_count: int = 1,
+
+    ) -> str:
+        """Run one turn and recover interactive Main to its stable checkpoint."""
+        if not self._supports_interactive_main_recovery():
+            return await self._invoke_graph_once(
+                content,
+                event_callback,
+                max_rounds,
+                source,
+                source_name,
+                attachments,
+            )
+
+        record_checkpoint = deepcopy(self.record)
+        lc_checkpoint = list(self.lc_messages)
+        context_checkpoint = deepcopy(self.context)
+        had_failed_turn = self.failed_turn is not None
+        self.failed_turn = None
+        self._active_turn_tool_started = False
+        self._handled_invocation_error = None
+
+        try:
+            result = await self._invoke_graph_once(
+                content,
+                event_callback,
+                max_rounds,
+                source,
+                source_name,
+                attachments,
+            )
+        except Exception as error:
+            self.record = record_checkpoint
+            self.lc_messages = lc_checkpoint
+            self.context = context_checkpoint
+            error_message = self._record_terminal_error(error)
+            retryable = source == "human" and not self._active_turn_tool_started
+            retry_block_reason = None
+            if self._active_turn_tool_started:
+                retry_block_reason = "tool_started"
+            elif source != "human":
+                retry_block_reason = "non_user_invocation"
+            self.failed_turn = {
+                "failure_id": uuid.uuid4().hex,
+                "content": content,
+                "attachments": deepcopy(attachments or []),
+                "source": source,
+                "source_name": source_name,
+                "max_rounds": max_rounds,
+                "retryable": retryable,
+                "retry_block_reason": retry_block_reason,
+                "tool_started": self._active_turn_tool_started,
+                "attempt_count": max(1, retry_attempt_count),
+                "model_id": self.model_id,
+                "error": deepcopy(self.last_error),
+            }
+            self.status = "running"
+            self._current_event_callback = None
+            self._handled_invocation_error = error
+            self.updated_at = datetime.now(timezone.utc).isoformat()
+            await self.async_save(force=True)
+
+            if event_callback:
+                try:
+                    await event_callback({
+                        "type": "error",
+                        "session_id": self.session_id,
+                        "message": error_message,
+                        "terminal": True,
+                        "session_status": self.status,
+                        "messages": self._visible_record(),
+                        "last_error": deepcopy(self.last_error),
+                        "failed_turn": deepcopy(self.failed_turn),
+                    })
+                except Exception:
+                    pass
+            raise
+        else:
+            self.failed_turn = None
+            self.last_error = None
+            if had_failed_turn:
+                self.updated_at = datetime.now(timezone.utc).isoformat()
+                await self.async_save(force=True)
+            return result
+        finally:
+            self._active_turn_tool_started = False
+
+    async def _invoke_graph_once(
 
         self,
 
@@ -1590,6 +1759,8 @@ class AgentSession:
 
                     tool_name = event.get("name", "unknown")
 
+                    self._active_turn_tool_started = True
+
                     node_run_id = str(event.get("run_id", "") or "")
                     slot = _resolve_tool_start_slot(
                         event,
@@ -1826,6 +1997,8 @@ class AgentSession:
                     self.session_id, type(e).__name__,
                 )
                 self._logger.error(f"Graph invoke BadRequestError: {e}", exc_info=True)
+                if self._supports_interactive_main_recovery():
+                    raise
                 error_message = self._record_terminal_error(e)
                 self.status = "error"
                 await self._rollback_on_error(sanitize_pairs=True, sync_snapshot=False)
@@ -1884,6 +2057,9 @@ class AgentSession:
                 self.session_id, type(e).__name__,
             )
             self._logger.error(f"Graph invoke 错误: {e}", exc_info=True)
+
+            if self._supports_interactive_main_recovery():
+                raise
 
             error_message = self._record_terminal_error(e)
             self.status = "error"
@@ -3023,6 +3199,9 @@ class AgentSession:
         if self.last_error:
             result["last_error"] = self.last_error
 
+        if self.failed_turn:
+            result["failed_turn"] = self.failed_turn
+
         # 持久化累计 token 使用数据（按 model_id 分组）
         if self._token_usage_cumulative:
             result["token_usage_cumulative"] = self._token_usage_cumulative
@@ -3088,6 +3267,72 @@ class AgentSession:
                     "code": code,
                     "message": message,
                     "occurred_at": occurred_at,
+                }
+        raw_failed_turn = data.get("failed_turn")
+        if isinstance(raw_failed_turn, dict):
+            failure_id = raw_failed_turn.get("failure_id")
+            content = raw_failed_turn.get("content")
+            retryable = raw_failed_turn.get("retryable")
+            tool_started = raw_failed_turn.get("tool_started")
+            attempt_count = raw_failed_turn.get("attempt_count")
+            if (
+                isinstance(failure_id, str)
+                and failure_id
+                and isinstance(content, str)
+                and isinstance(retryable, bool)
+                and isinstance(tool_started, bool)
+                and isinstance(attempt_count, int)
+                and attempt_count >= 1
+            ):
+                raw_attachments = raw_failed_turn.get("attachments", [])
+                attachments = [
+                    {
+                        "name": attachment["name"],
+                        "absolute_path": attachment["absolute_path"],
+                    }
+                    for attachment in raw_attachments
+                    if isinstance(attachment, dict)
+                    and isinstance(attachment.get("name"), str)
+                    and isinstance(attachment.get("absolute_path"), str)
+                ] if isinstance(raw_attachments, list) else []
+                raw_failed_error = raw_failed_turn.get("error")
+                failed_error = None
+                if isinstance(raw_failed_error, dict):
+                    failed_error_code = raw_failed_error.get("code")
+                    failed_error_message = raw_failed_error.get("message")
+                    failed_error_at = raw_failed_error.get("occurred_at")
+                    if all(
+                        isinstance(value, str) and value
+                        for value in (
+                            failed_error_code,
+                            failed_error_message,
+                            failed_error_at,
+                        )
+                    ):
+                        failed_error = {
+                            "code": failed_error_code,
+                            "message": failed_error_message,
+                            "occurred_at": failed_error_at,
+                        }
+                session.failed_turn = {
+                    "failure_id": failure_id,
+                    "content": content,
+                    "attachments": attachments,
+                    "source": str(raw_failed_turn.get("source") or "human"),
+                    "source_name": str(raw_failed_turn.get("source_name") or ""),
+                    "max_rounds": raw_failed_turn.get("max_rounds")
+                    if isinstance(raw_failed_turn.get("max_rounds"), int)
+                    else None,
+                    "retryable": retryable,
+                    "retry_block_reason": raw_failed_turn.get("retry_block_reason")
+                    if isinstance(raw_failed_turn.get("retry_block_reason"), str)
+                    else None,
+                    "tool_started": tool_started,
+                    "attempt_count": attempt_count,
+                    "model_id": raw_failed_turn.get("model_id")
+                    if isinstance(raw_failed_turn.get("model_id"), str)
+                    else None,
+                    "error": failed_error or deepcopy(session.last_error),
                 }
         session._llm_call_count = session.token_usage.get("llm_call_count", 0) if session.token_usage else 0
         # 恢复累计 token 数据（从磁盘恢复的 dict key 可能是 str，需要确保 int 类型）

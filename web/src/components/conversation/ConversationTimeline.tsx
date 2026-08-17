@@ -5,6 +5,8 @@ import ConversationAsyncState from "./ConversationAsyncState";
 import MessageBubble from "./MessageBubble";
 import ReasoningDisclosure from "./ReasoningDisclosure";
 import ToolInvocation from "./ToolInvocation";
+import FailedTurnCard from "./FailedTurnCard";
+import type { FailedTurnState } from "../../features/conversation/conversationTypes";
 import {
   getTimelineContentVersion,
   normalizeConversationTimeline,
@@ -18,6 +20,9 @@ export interface ConversationTimelineProps {
   loading?: boolean;
   error?: Error | string | null;
   onRetry?: () => void;
+  failedTurn?: FailedTurnState | null;
+  retryingFailedTurn?: boolean;
+  onRetryFailedTurn?: () => void;
   emptyState?: ReactNode;
   conversationId?: string | null;
   ariaLabel?: string;
@@ -42,6 +47,9 @@ export default function ConversationTimeline({
   loading = false,
   error = null,
   onRetry,
+  failedTurn = null,
+  retryingFailedTurn = false,
+  onRetryFailedTurn,
   emptyState,
   conversationId,
   ariaLabel = "会话消息",
@@ -74,7 +82,8 @@ export default function ConversationTimeline({
 
   const isInitialError = !!visibleError && entries.length === 0;
   const isInitialLoading = loading && !isInitialError && entries.length === 0;
-  const isEmpty = !loading && !error && entries.length === 0;
+  const isEmpty = !loading && !error && !failedTurn && entries.length === 0;
+  const hasTimelineContent = entries.length > 0 || Boolean(failedTurn);
 
   return (
     <div className={`flex min-h-0 flex-1 flex-col ${className}`} aria-busy={loading || isStreaming}>
@@ -84,12 +93,12 @@ export default function ConversationTimeline({
           <ConversationAsyncState
             kind="error"
             message={visibleError || undefined}
-            onRetry={loading ? onRetry : undefined}
+            onRetry={onRetry}
           />
         )}
         {isEmpty && (emptyState || <ConversationAsyncState kind="empty" />)}
 
-        {entries.length > 0 && (
+        {hasTimelineContent && (
           <div
             className={`space-y-3 px-4 py-3 ${contentClassName}`}
             role="log"
@@ -127,6 +136,13 @@ export default function ConversationTimeline({
                 <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 正在生成
               </div>
+            )}
+            {failedTurn && (
+              <FailedTurnCard
+                failedTurn={failedTurn}
+                retrying={retryingFailedTurn}
+                onRetry={onRetryFailedTurn}
+              />
             )}
             {visibleError && (
               <ConversationAsyncState

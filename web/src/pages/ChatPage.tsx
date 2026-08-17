@@ -40,6 +40,7 @@ import { useSessions } from "../hooks/useSessions";
 import { useApprovals } from "../hooks/useApprovals";
 import { useUrlParam } from "../hooks/useUrlParam";
 import { useConversation } from "../features/conversation/useConversation";
+import { normalizeFailedTurn } from "../features/conversation/normalizeConversationEvent";
 import { ConversationComposer, ConversationTimeline } from "../components/conversation";
 import ApprovalPanel from "../components/ApprovalPanel";
 import ResizableSidePanel from "../components/ResizableSidePanel";
@@ -111,11 +112,14 @@ export default function ChatPage() {
     connected,
     tokenUsage,
     error: conversationError,
+    failedTurn,
+    retryingFailureId,
     sendMessage,
     sendCommand,
     editMessageAndResend,
     replaceMessages,
     resync,
+    retryFailedTurn,
   } = useConversation({
     sessionId: targetSessionId,
     onExtraEvent: handleExtraConversationEvent,
@@ -238,6 +242,7 @@ export default function ChatPage() {
         replaceMessages(detail.messages || [], {
           status: detail.status,
           error: detail.last_error?.message,
+          failedTurn: normalizeFailedTurn(detail.failed_turn),
         });
       })
       .catch((error: unknown) => {
@@ -543,6 +548,9 @@ export default function ChatPage() {
           loading={phase === "loading" || (loadingSession && displayMessages.length === 0)}
           error={timelineError}
           onRetry={handleRetryHistory}
+          failedTurn={failedTurn}
+          retryingFailedTurn={retryingFailureId === failedTurn?.failureId}
+          onRetryFailedTurn={retryFailedTurn}
           conversationId={targetSessionId}
           readonly={isReadOnly}
           onEditMessage={handleEditDisplayedMessage}

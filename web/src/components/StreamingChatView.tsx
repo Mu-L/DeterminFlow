@@ -11,6 +11,7 @@
 import type { ReactNode } from "react";
 import type { Message, MessageAttachment, WSChatEvent } from "../types";
 import type { StreamingSegment } from "../hooks/useStreamingSession";
+import type { FailedTurnState } from "../features/conversation/conversationTypes";
 import { ConversationComposer, ConversationTimeline } from "./conversation";
 
 // ============ Props ============
@@ -51,6 +52,9 @@ export interface StreamingChatViewProps {
   error?: Error | string | null;
   /** 加载失败后的重试 */
   onRetry?: () => void;
+  failedTurn?: FailedTurnState | null;
+  retryingFailedTurn?: boolean;
+  onRetryFailedTurn?: () => void;
 }
 
 // ============ 组件 ============
@@ -71,6 +75,9 @@ export default function StreamingChatView({
   loading = false,
   error = null,
   onRetry,
+  failedTurn = null,
+  retryingFailedTurn = false,
+  onRetryFailedTurn,
 }: StreamingChatViewProps) {
   const showInput = inputEnabled && onSendMessage;
 
@@ -86,6 +93,9 @@ export default function StreamingChatView({
         loading={loading}
         error={error}
         onRetry={onRetry}
+        failedTurn={failedTurn}
+        retryingFailedTurn={retryingFailedTurn}
+        onRetryFailedTurn={onRetryFailedTurn}
         emptyState={emptyState}
         conversationId={conversationId}
         ariaLabel="聊天消息"
