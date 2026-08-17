@@ -68,7 +68,8 @@ class CompressionScheduler:
             # 执行压缩策略
             if decision.strategy == CompressionStrategy.MICRO:
                 compressed_messages = await self.execute_micro_compact(
-                    messages, session_id=session_id, agent_id=agent_id
+                    messages, session_id=session_id, agent_id=agent_id,
+                    model_override=model_override,
                 )
             elif decision.strategy == CompressionStrategy.FULL:
                 compressed_messages = await self.execute_full_compact(
@@ -119,10 +120,28 @@ class CompressionScheduler:
         messages: List[BaseMessage],
         session_id: str = "",
         agent_id: str = "",
+        model_override: str | None = None,
     ) -> List[BaseMessage]:
         """执行MicroCompact策略"""
+        async def _run(msgs):
+            return await self.micro_strategy.execute(
+                msgs,
+                model_override=model_override,
+            )
         return await self._execute_with_snapshots(
-            self.micro_strategy.execute, messages, "micro", session_id, agent_id
+            _run, messages, "micro", session_id, agent_id
+        )
+
+    def compact_tool_results_for_request(
+        self,
+        messages: List[BaseMessage],
+        *,
+        max_context_tokens: int,
+    ) -> List[BaseMessage]:
+        """仅构造当前 LLM 请求视图，不写压缩快照。"""
+        return self.micro_strategy.compact_for_request(
+            messages,
+            max_context_tokens=max_context_tokens,
         )
 
     async def execute_full_compact(

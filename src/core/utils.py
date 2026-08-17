@@ -2,6 +2,7 @@
 公共工具函数模块
 """
 from typing import Any
+import re
 
 from langchain_core.messages import BaseMessage, SystemMessage, AIMessage, ToolMessage
 
@@ -249,10 +250,31 @@ def trim_langchain_messages(messages: list[BaseMessage], max_tokens: int) -> lis
         return _sanitize_tool_pairs(list(messages))
 
     system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
-    non_system = [m for m in messages if not isinstance(m, SystemMessage)]
+
+    # FullCompact 产生的最新 summary 是可恢复上下文的 checkpoint。硬截断只能
+    # 丢弃 checkpoint 之后的旧增量，不能把 checkpoint 丢掉后重新暴露更早原文。
+    checkpoint_index = None
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        if not isinstance(msg, AIMessage):
+            continue
+        content = msg.content if isinstance(msg.content, str) else str(msg.content or "")
+        if re.search(r"<summary>.*?</summary>", content, re.DOTALL):
+            checkpoint_index = index
+            break
+
+    checkpoint = messages[checkpoint_index] if checkpoint_index is not None else None
+    candidate_start = checkpoint_index + 1 if checkpoint_index is not None else 0
+    non_system = [
+        msg
+        for msg in messages[candidate_start:]
+        if not isinstance(msg, SystemMessage)
+    ]
 
     kept = []
     current_tokens = sum(estimate_tokens(str(m.content or "")) for m in system_msgs)
+    if checkpoint is not None:
+        current_tokens += estimate_tokens(str(checkpoint.content or ""))
     for msg in reversed(non_system):
         msg_tokens = estimate_tokens(str(msg.content or ""))
         if current_tokens + msg_tokens > max_tokens:
@@ -261,7 +283,7 @@ def trim_langchain_messages(messages: list[BaseMessage], max_tokens: int) -> lis
         current_tokens += msg_tokens
     kept.reverse()  # append+reverse 比 insert(0) 性能更优（O(n) vs O(n²)）
 
-    result = system_msgs + kept
+    result = system_msgs + ([checkpoint] if checkpoint is not None else []) + kept
 
     # 截断后修复不完整的 tool_calls / tool 消息配对
     result = _sanitize_tool_pairs(result)

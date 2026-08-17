@@ -5,6 +5,7 @@ ReactiveCompact策略 - 渐进式丢弃压缩
 解决问题：无法预知的上下文超限错误。
 """
 import logging
+import re
 from typing import List, Dict, Any, Optional
 
 from langchain_core.messages import BaseMessage, SystemMessage, AIMessage, HumanMessage, ToolMessage
@@ -47,15 +48,71 @@ class ReactiveCompactStrategy:
         Returns:
             压缩后的消息列表
         """
-        # 获取配置
-        reactive_config = self.config_manager.get_reactive_compact_config()
-        max_retry_count = reactive_config.get("maxRetryCount", 5)
-
-        # 执行渐进式丢弃
-        compressed_messages = self._progressive_discard(messages, max_retry_count)
+        # 每次只丢弃一个完整轮次。是否继续重试由真正执行 LLM 请求的调用方
+        # 根据下一次错误决定，避免一次性盲删 maxRetryCount 轮历史。
+        compressed_messages = self.discard_oldest_round(messages)
 
         logger.info(f"ReactiveCompact完成: {len(messages)} -> {len(compressed_messages)} 条消息")
         return compressed_messages
+
+    def discard_oldest_round(
+        self,
+        messages: List[BaseMessage],
+    ) -> List[BaseMessage]:
+        """丢弃 checkpoint 之后最旧的一个完整轮次。"""
+        checkpoint_index = None
+        for index in range(len(messages) - 1, -1, -1):
+            if self._is_checkpoint(messages[index]):
+                checkpoint_index = index
+                break
+
+        if checkpoint_index is not None:
+            current_messages = [
+                msg for msg in messages if isinstance(msg, SystemMessage)
+            ] + [messages[checkpoint_index]] + [
+                msg
+                for msg in messages[checkpoint_index + 1:]
+                if not isinstance(msg, SystemMessage)
+            ]
+        else:
+            current_messages = list(messages)
+
+        start_index = self._protected_prefix_end(current_messages)
+        round_start = self._find_oldest_round_start(current_messages, start_index)
+        if round_start is None:
+            return current_messages
+        round_end = self._find_round_end(current_messages, round_start)
+        if round_end is None:
+            return current_messages
+        return (
+            list(current_messages[:round_start])
+            + list(current_messages[round_end + 1:])
+        )
+
+    @staticmethod
+    def _is_checkpoint(msg: BaseMessage) -> bool:
+        if not isinstance(msg, AIMessage):
+            return False
+        content = msg.content if isinstance(msg.content, str) else str(msg.content or "")
+        return bool(re.search(r"<summary>.*?</summary>", content, re.DOTALL))
+
+    def _protected_prefix_end(self, messages: List[BaseMessage]) -> int:
+        """返回首个可丢弃位置；system 和最新 checkpoint 永远位于其前。"""
+        checkpoint_index = None
+        for index in range(len(messages) - 1, -1, -1):
+            if self._is_checkpoint(messages[index]):
+                checkpoint_index = index
+                break
+        if checkpoint_index is not None:
+            return checkpoint_index + 1
+
+        start_index = 0
+        while (
+            start_index < len(messages)
+            and isinstance(messages[start_index], SystemMessage)
+        ):
+            start_index += 1
+        return start_index
 
     def _progressive_discard(
         self,
@@ -72,15 +129,7 @@ class ReactiveCompactStrategy:
         Returns:
             压缩后的消息列表
         """
-        # 找到system prompt的位置
-        system_index = -1
-        for i, msg in enumerate(messages):
-            if isinstance(msg, SystemMessage):
-                system_index = i
-                break
-
-        # 如果没有system prompt，从第一条消息开始
-        start_index = system_index + 1 if system_index >= 0 else 0
+        start_index = self._protected_prefix_end(messages)
 
         # 检查消息数量是否足够丢弃
         if len(messages) - start_index < 3:
@@ -92,27 +141,16 @@ class ReactiveCompactStrategy:
         discard_count = 0
 
         for round_num in range(max_discard_rounds):
-            # 找到最旧的完整轮次
-            round_start = self._find_oldest_round_start(current_messages, start_index)
-
-            if round_start is None:
+            next_messages = self.discard_oldest_round(current_messages)
+            if next_messages == current_messages:
                 logger.info(f"第 {round_num + 1} 轮: 没有找到完整轮次，停止丢弃")
                 break
 
-            # 找到该轮次的结束位置
-            round_end = self._find_round_end(current_messages, round_start)
-
-            if round_end is None:
-                logger.info(f"第 {round_num + 1} 轮: 轮次结束位置无效，停止丢弃")
-                break
-
-            # 丢弃该轮次（原地删除，避免 list[:start]+list[end+1:] 创建中间列表）
-            num_discarded = round_end - round_start + 1
-            del current_messages[round_start:round_end + 1]
+            num_discarded = len(current_messages) - len(next_messages)
+            current_messages = next_messages
 
             discard_count += num_discarded
-            logger.info(f"第 {round_num + 1} 轮: 丢弃了 {num_discarded} 条消息 "
-                       f"(索引 {round_start} 到 {round_end})")
+            logger.info(f"第 {round_num + 1} 轮: 丢弃了 {num_discarded} 条消息")
 
             # 检查是否还有足够的消息
             if len(current_messages) - start_index < 3:

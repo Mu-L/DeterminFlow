@@ -1372,8 +1372,13 @@ class AgentSession:
         if self._abort_requested:
             return await self._finish_pre_stream_abort("压缩阶段")
 
-        # 截断过长上下文（压缩后的兜底机制）
-        self.lc_messages = trim_langchain_messages(self.lc_messages, config.MAX_CONTEXT_TOKENS)
+        # 截断过长上下文（压缩后的兜底机制）。compressor 只能裁剪工具结果，
+        # 不允许倒序丢弃历史，否则会形成递归压缩语义。
+        if self.agent_type != "compressor":
+            self.lc_messages = trim_langchain_messages(
+                self.lc_messages,
+                config.MAX_CONTEXT_TOKENS,
+            )
 
         # 构建初始状态
 
@@ -1387,7 +1392,10 @@ class AgentSession:
 
             "remaining_rounds": rounds,
 
-            "metadata": {"max_rounds": rounds},
+            "metadata": {
+                "max_rounds": rounds,
+                "model_id": self.model_id,
+            },
 
             "agent_type": self.agent_type,
 
@@ -2318,56 +2326,120 @@ class AgentSession:
             # 获取压缩检查器和调度器
             checker = get_compression_checker()
             scheduler = get_compression_scheduler()
+            from src.compression.checker import (
+                CompressionDecision,
+                CompressionStrategy,
+            )
+            is_compressor = self.agent_type == "compressor"
+            original_count = len(self.lc_messages)
+            applied_strategies: list[str] = []
 
-            # 如果强制全量压缩（手动触发）
-            if force_full:
-                from src.compression.checker import CompressionStrategy, CompressionDecision
-                decision = CompressionDecision(
-                    strategy=CompressionStrategy.FULL,
-                    reason="手动触发全量压缩"
+            async def _apply(decision: CompressionDecision) -> bool:
+                if decision.strategy.value == CompressionStrategy.NONE.value:
+                    return False
+                self._logger.info(
+                    "触发压缩: %s, 原因: %s",
+                    decision.strategy.value,
+                    decision.reason,
                 )
+                before = self.lc_messages
+                after = await scheduler.execute(
+                    decision=decision,
+                    messages=before,
+                    session_id=self.session_id,
+                    agent_id=self.agent_type,
+                    model_override=self.model_id,
+                )
+                if after == before:
+                    return False
+                self.lc_messages = after
+                applied_strategies.append(decision.strategy.value)
+                return True
+
+            if force_full:
+                if is_compressor:
+                    self._logger.warning("compressor 不允许触发 FullCompact")
+                else:
+                    await _apply(CompressionDecision(
+                        strategy=CompressionStrategy.FULL,
+                        reason="手动触发全量压缩",
+                    ))
             else:
-                # 执行压缩检查
                 decision = checker.pre_check(
                     messages=self.lc_messages,
                     model_override=self.model_id,
                 )
+                if decision.strategy.value == CompressionStrategy.MICRO.value:
+                    await _apply(decision)
+                    if not is_compressor:
+                        decision = checker.full_check(
+                            messages=self.lc_messages,
+                            model_override=self.model_id,
+                        )
 
-            # 如果不需要压缩，直接返回
-            if decision.strategy.value == "none":
-                return
+                if (
+                    not is_compressor
+                    and decision.strategy.value == CompressionStrategy.FULL.value
+                ):
+                    await _apply(decision)
 
-            self._logger.info(f"触发压缩: {decision.strategy.value}, 原因: {decision.reason}")
-
-            # 保存压缩前消息数量
-            original_count = len(self.lc_messages)
-
-            # 执行压缩
-            compressed_messages = await scheduler.execute(
-                decision=decision,
+            # 硬窗口兜底：先允许最近工具结果做紧急保头保尾裁剪；普通 Agent
+            # 再逐轮丢弃 checkpoint 后最旧的完整轮次。compressor 到此为止，
+            # 绝不进入 Reactive/Full，防止递归压缩。
+            hard_limit_exceeded = getattr(checker, "hard_limit_exceeded", None)
+            if hard_limit_exceeded and hard_limit_exceeded(
                 messages=self.lc_messages,
-                session_id=self.session_id,
-                agent_id=self.agent_type,
-                model_override=self.model_id
-            )
-
-            # 更新消息列表
-            if compressed_messages != self.lc_messages:
-                self.lc_messages = compressed_messages
-                compressed_count = len(self.lc_messages)
-                self._logger.info(f"压缩完成: 消息数量从 {original_count} 更新为 {compressed_count}")
-
-                # 更新 context 快照（压缩后的 lc_messages，强制更新因为这是正常的缩短）
-                self._sync_context_snapshot(force=True)
-
-                # 在 record 末尾追加压缩标记（仅前端可见，不影响 LLM 上下文）
-                await self._insert_compression_marker(
-                    strategy=decision.strategy.value,
-                    original_count=original_count,
-                    compressed_count=compressed_count
+                model_override=self.model_id,
+            ):
+                stats = checker.get_context_stats(
+                    self.lc_messages,
+                    model_override=self.model_id,
                 )
+                request_messages = scheduler.compact_tool_results_for_request(
+                    self.lc_messages,
+                    max_context_tokens=stats["max_tokens"],
+                )
+                if request_messages != self.lc_messages:
+                    self.lc_messages = request_messages
+                    applied_strategies.append("micro")
 
-                # 实时落盘：压缩后 context + record 均已变更
+                if not is_compressor:
+                    max_retries = (
+                        scheduler.config_manager.get_reactive_compact_config().get(
+                            "maxRetryCount", 5
+                        )
+                    )
+                    for _ in range(max_retries):
+                        if not checker.hard_limit_exceeded(
+                            messages=self.lc_messages,
+                            model_override=self.model_id,
+                        ):
+                            break
+                        changed = await _apply(CompressionDecision(
+                            strategy=CompressionStrategy.REACTIVE,
+                            reason="摘要及工具裁剪后仍超过模型硬窗口",
+                        ))
+                        if not changed:
+                            break
+
+            if applied_strategies:
+                compressed_count = len(self.lc_messages)
+                self._logger.info(
+                    "渐进式压缩完成: 消息数量从 %s 更新为 %s, strategies=%s",
+                    original_count,
+                    compressed_count,
+                    applied_strategies,
+                )
+                self._sync_context_snapshot(force=True)
+                marker_strategy = (
+                    "full" if "full" in applied_strategies
+                    else applied_strategies[-1]
+                )
+                await self._insert_compression_marker(
+                    strategy=marker_strategy,
+                    original_count=original_count,
+                    compressed_count=compressed_count,
+                )
                 await self.async_save()
 
         except Exception as e:

@@ -81,69 +81,123 @@ class CompressionChecker:
                 reason="压缩功能已禁用"
             )
 
-        # 获取模型配置
+        micro_decision = self.micro_check(
+            messages=messages,
+            model_override=model_override,
+        )
+        if micro_decision.strategy == CompressionStrategy.MICRO:
+            return micro_decision
+
+        return self.full_check(
+            messages=messages,
+            model_override=model_override,
+        )
+
+    def micro_check(
+        self,
+        messages: List[BaseMessage],
+        model_override: str | None = None,
+    ) -> CompressionDecision:
+        """检查工具结果压缩；最近 keepRecentToolResults 条不参与常规裁剪。"""
+        if not self.config_manager.is_enabled():
+            return CompressionDecision(
+                strategy=CompressionStrategy.NONE,
+                reason="压缩功能已禁用",
+            )
+
         model_info = self.model_manager.get_model_info(model_override)
         max_context_tokens = model_info.get(
             "maxContextTokens", DEFAULT_MAX_CONTEXT_TOKENS
         )
-
-        # 计算当前上下文token数
-        current_tokens = self._estimate_messages_tokens(messages)
-        usage_ratio = current_tokens / max_context_tokens if max_context_tokens > 0 else 0
-
-        # 获取配置
-        general_config = self.config_manager.get_general_config()
         micro_config = self.config_manager.get_micro_compact_config()
 
-        compaction_threshold = general_config.get("compactionThreshold", 0.80)
-
-        # 检查是否需要FullCompact
-        if usage_ratio > compaction_threshold:
-            return CompressionDecision(
-                strategy=CompressionStrategy.FULL,
-                reason=f"上下文占用率 {usage_ratio:.2%} 超过阈值 {compaction_threshold:.2%}",
-                details={
-                    "current_tokens": current_tokens,
-                    "max_tokens": max_context_tokens,
-                    "usage_ratio": usage_ratio,
-                    "threshold": compaction_threshold,
-                }
-            )
-
-        # 检查是否需要MicroCompact
         tool_result_count = self._count_tool_results(messages)
         tool_result_tokens = self._estimate_tool_result_tokens(messages)
         tool_result_ratio = tool_result_tokens / max_context_tokens if max_context_tokens > 0 else 0
-
         max_tool_results = micro_config.get("maxToolResults", 15)
         tool_result_token_ratio = micro_config.get("toolResultTokenRatio", 0.40)
+        keep_recent = micro_config.get("keepRecentToolResults", 5)
+        tool_messages = [msg for msg in messages if isinstance(msg, ToolMessage)]
+        historical = tool_messages[:-keep_recent] if keep_recent > 0 else tool_messages
+        oversized_historical = sum(
+            1
+            for msg in historical
+            if estimate_tokens(
+                msg.content if isinstance(msg.content, str) else str(msg.content or "")
+            ) > max_context_tokens * tool_result_token_ratio
+        )
+        dense_tool_history = (
+            tool_result_count > max_tool_results
+            and tool_result_ratio > tool_result_token_ratio
+        )
 
-        if (tool_result_count > max_tool_results and
-            tool_result_ratio > tool_result_token_ratio):
+        if dense_tool_history or oversized_historical:
             return CompressionDecision(
                 strategy=CompressionStrategy.MICRO,
-                reason=f"工具结果数量 {tool_result_count} 超过阈值 {max_tool_results}，"
-                       f"且token占比 {tool_result_ratio:.2%} 超过阈值 {tool_result_token_ratio:.2%}",
+                reason=(
+                    f"工具结果需要裁剪: count={tool_result_count}, "
+                    f"ratio={tool_result_ratio:.2%}, "
+                    f"oversized_history={oversized_historical}"
+                ),
                 details={
                     "tool_result_count": tool_result_count,
                     "max_tool_results": max_tool_results,
                     "tool_result_tokens": tool_result_tokens,
                     "tool_result_ratio": tool_result_ratio,
                     "tool_result_token_ratio": tool_result_token_ratio,
+                    "oversized_historical_tool_results": oversized_historical,
                 }
             )
 
-        # 不需要压缩
         return CompressionDecision(
             strategy=CompressionStrategy.NONE,
-            reason="未达到压缩阈值",
+            reason="工具结果未达到压缩阈值",
             details={
-                "current_tokens": current_tokens,
-                "max_tokens": max_context_tokens,
-                "usage_ratio": usage_ratio,
                 "tool_result_count": tool_result_count,
+                "oversized_historical_tool_results": oversized_historical,
             }
         )
+
+    def full_check(
+        self,
+        messages: List[BaseMessage],
+        model_override: str | None = None,
+    ) -> CompressionDecision:
+        """检查是否需要摘要压缩，不再重复评估 MicroCompact。"""
+        if not self.config_manager.is_enabled():
+            return CompressionDecision(
+                strategy=CompressionStrategy.NONE,
+                reason="压缩功能已禁用",
+            )
+
+        stats = self.get_context_stats(messages, model_override)
+        compaction_threshold = self.config_manager.get_general_config().get(
+            "compactionThreshold", 0.80
+        )
+        if stats["usage_ratio"] > compaction_threshold:
+            return CompressionDecision(
+                strategy=CompressionStrategy.FULL,
+                reason=(
+                    f"上下文占用率 {stats['usage_ratio']:.2%} "
+                    f"超过阈值 {compaction_threshold:.2%}"
+                ),
+                details={**stats, "threshold": compaction_threshold},
+            )
+
+        return CompressionDecision(
+            strategy=CompressionStrategy.NONE,
+            reason="未达到摘要压缩阈值",
+            details={**stats, "threshold": compaction_threshold},
+        )
+
+    def hard_limit_exceeded(
+        self,
+        messages: List[BaseMessage],
+        model_override: str | None = None,
+    ) -> bool:
+        """按现有启发式判断请求是否仍超过模型声明的硬窗口。"""
+        stats = self.get_context_stats(messages, model_override)
+        return stats["current_tokens"] > stats["max_tokens"]
 
     def error_check(
         self,
@@ -163,7 +217,15 @@ class CompressionChecker:
         error_str = str(error).lower()
 
         # 检查是否是上下文超限错误
-        if any(keyword in error_str for keyword in ["413", "context overflow", "too large", "token limit"]):
+        if any(keyword in error_str for keyword in [
+            "413",
+            "context overflow",
+            "context_length_exceeded",
+            "maximum context length",
+            "request too large",
+            "too large",
+            "token limit",
+        ]):
             return CompressionDecision(
                 strategy=CompressionStrategy.REACTIVE,
                 reason=f"API错误触发ReactiveCompact: {error}",

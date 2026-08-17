@@ -113,7 +113,73 @@ def _make_llm_node(llm: BaseChatModel, tools: list[BaseTool]):
                     f"session_id={session_id} | agent_type={agent_type}"
                 )
 
-        response = await llm_with_tools.ainvoke(messages)
+        from src.compression.checker import CompressionStrategy, get_compression_checker
+        from src.compression.config import get_compression_config_manager
+        from src.compression.strategies.micro import MicroCompactStrategy
+        from src.compression.strategies.reactive import ReactiveCompactStrategy
+        from src.compression.utils import estimate_messages_tokens
+        from src.core.model_manager import DEFAULT_MAX_CONTEXT_TOKENS, get_model_manager
+
+        metadata = state.get("metadata", {})
+        model_override = metadata.get("model_id")
+        model_info = get_model_manager().get_model_info(model_override)
+        max_context_tokens = model_info.get(
+            "maxContextTokens", DEFAULT_MAX_CONTEXT_TOKENS
+        )
+        micro_strategy = MicroCompactStrategy()
+        reactive_strategy = ReactiveCompactStrategy()
+        checker = get_compression_checker()
+
+        is_compressor = agent_type == "compressor"
+
+        request_messages = list(messages)
+        if estimate_messages_tokens(request_messages) > max_context_tokens:
+            request_messages = micro_strategy.compact_for_request(
+                request_messages,
+                max_context_tokens=max_context_tokens,
+            )
+
+        max_retries = get_compression_config_manager().get_reactive_compact_config().get(
+            "maxRetryCount", 5
+        )
+        retry_count = 0
+        while True:
+            try:
+                response = await llm_with_tools.ainvoke(request_messages)
+                break
+            except Exception as exc:
+                decision = checker.error_check(exc, request_messages)
+                if (
+                    decision.strategy != CompressionStrategy.REACTIVE
+                    or is_compressor
+                    or retry_count >= max_retries
+                ):
+                    raise
+
+                # 错误后的第一优先级仍是工具结果裁剪；只有没有更多工具内容
+                # 可裁时，才从 checkpoint 后逐次丢弃一个完整历史轮次。
+                next_messages = micro_strategy.compact_for_request(
+                    request_messages,
+                    max_context_tokens=max_context_tokens,
+                )
+                if next_messages == request_messages:
+                    next_messages = reactive_strategy.discard_oldest_round(
+                        request_messages
+                    )
+                if next_messages == request_messages:
+                    raise
+
+                retry_count += 1
+                request_messages = next_messages
+                logger.warning(
+                    "LLM 上下文超限，仅重试当前请求: session_id=%s "
+                    "agent_type=%s retry=%s/%s messages=%s",
+                    session_id,
+                    agent_type,
+                    retry_count,
+                    max_retries,
+                    len(request_messages),
+                )
 
         remaining = state.get("remaining_rounds") or 0
         if isinstance(response, AIMessage) and response.tool_calls:
