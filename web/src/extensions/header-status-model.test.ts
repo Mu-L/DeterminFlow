@@ -4,6 +4,14 @@ import test from "node:test";
 import { parseHeaderStatusResponse } from "./header-status-model";
 
 const validPayload = {
+  announcements: [{
+    id: "announcement-1",
+    title: "模型维护通知",
+    body: "今晚将进行短时维护。",
+    level: "maintenance",
+    published_at: "2026-08-17T08:00:00+08:00",
+    expires_at: null,
+  }],
   header_status: {
     visible: true,
     label: "余",
@@ -37,6 +45,7 @@ test("parses a bounded generic header status payload", () => {
   assert.equal(parsed?.summary_href, "https://bishuxiezuo.cn/");
   assert.deepEqual(parsed?.actions.map((action) => action.kind), ["request", "page", "link"]);
   assert.equal(parsed?.refresh_after_ms, 1000);
+  assert.equal(parsed?.announcements[0]?.title, "模型维护通知");
 
   const withoutPolling = parseHeaderStatusResponse({
     ...validPayload,
@@ -60,6 +69,20 @@ test("parses a bounded generic header status payload", () => {
     withLocalPayment?.actions[0]?.href,
     "http://127.0.0.1:5173/site/public-api-top-up.html",
   );
+});
+
+test("ignores invalid announcements without hiding a valid status", () => {
+  const parsed = parseHeaderStatusResponse({
+    ...validPayload,
+    announcements: [
+      validPayload.announcements[0],
+      { ...validPayload.announcements[0], id: "announcement-1" },
+      { ...validPayload.announcements[0], id: "bad", published_at: "not-a-date" },
+    ],
+  });
+
+  assert.equal(parsed?.announcements.length, 1);
+  assert.equal(parsed?.announcements[0]?.id, "announcement-1");
 });
 
 test("rejects unsafe action links and malformed payloads", () => {

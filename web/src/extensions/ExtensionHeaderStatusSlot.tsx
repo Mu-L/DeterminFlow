@@ -9,7 +9,15 @@ import {
   type HeaderStatusAction,
   type HeaderStatusPayload,
 } from "./header-status-model";
+import { ExtensionAnnouncementDialog } from "./ExtensionAnnouncementDialog";
 import { ExtensionHeaderPagePanel } from "./ExtensionHeaderPagePanel";
+import {
+  browserStorage,
+  extensionAnnouncementKey,
+  readSeenAnnouncementKeys,
+  rememberAnnouncementKey,
+  type PendingExtensionAnnouncement,
+} from "./extension-announcement-state";
 import type { ExtensionStatus } from "./types";
 
 const POLL_INTERVAL_MS = 60_000;
@@ -65,6 +73,9 @@ export function ExtensionHeaderStatusSlot({ onManage }: ExtensionHeaderStatusSlo
   );
   const [entries, setEntries] = useState<Record<string, StatusEntry>>({});
   const [page, setPage] = useState<HeaderPageState | null>(null);
+  const [announcementQueue, setAnnouncementQueue] = useState<PendingExtensionAnnouncement[]>([]);
+  const queuedAnnouncementKeys = useRef(new Set<string>());
+  const seenThisSession = useRef(new Set<string>());
   const closePage = useCallback(() => setPage(null), []);
 
   const load = useCallback(async (source: ExtensionStatus, refresh = false) => {
@@ -122,6 +133,45 @@ export function ExtensionHeaderStatusSlot({ onManage }: ExtensionHeaderStatusSlo
     };
   }, [load, sources]);
 
+  useEffect(() => {
+    const storedSeen = readSeenAnnouncementKeys(browserStorage());
+    const additions: PendingExtensionAnnouncement[] = [];
+    for (const entry of Object.values(entries)) {
+      for (const announcement of entry.payload.announcements) {
+        const key = extensionAnnouncementKey(entry.source.id, announcement.id);
+        if (
+          storedSeen.has(key)
+          || seenThisSession.current.has(key)
+          || queuedAnnouncementKeys.current.has(key)
+        ) {
+          continue;
+        }
+        queuedAnnouncementKeys.current.add(key);
+        additions.push({
+          ...announcement,
+          extensionId: entry.source.id,
+          extensionName: entry.source.name,
+        });
+      }
+    }
+    if (additions.length > 0) {
+      additions.sort((left, right) => Date.parse(right.published_at) - Date.parse(left.published_at));
+      setAnnouncementQueue((current) => [...current, ...additions]);
+    }
+  }, [entries]);
+
+  const closeAnnouncement = useCallback(() => {
+    setAnnouncementQueue((current) => {
+      const active = current[0];
+      if (!active) return current;
+      const key = extensionAnnouncementKey(active.extensionId, active.id);
+      seenThisSession.current.add(key);
+      queuedAnnouncementKeys.current.delete(key);
+      rememberAnnouncementKey(browserStorage(), key);
+      return current.slice(1);
+    });
+  }, []);
+
   const visible = sources
     .map((source) => entries[source.id])
     .filter((entry): entry is StatusEntry => Boolean(entry));
@@ -146,6 +196,12 @@ export function ExtensionHeaderStatusSlot({ onManage }: ExtensionHeaderStatusSlo
           extensionId={page.extensionId}
           title={page.title}
           onClose={closePage}
+        />
+      ) : null}
+      {announcementQueue[0] ? (
+        <ExtensionAnnouncementDialog
+          announcement={announcementQueue[0]}
+          onClose={closeAnnouncement}
         />
       ) : null}
     </>

@@ -16,6 +16,17 @@ export interface HeaderStatusAction {
   method?: "POST" | "DELETE";
 }
 
+export type ExtensionAnnouncementLevel = "info" | "maintenance" | "warning";
+
+export interface ExtensionAnnouncement {
+  id: string;
+  title: string;
+  body: string;
+  level: ExtensionAnnouncementLevel;
+  published_at: string;
+  expires_at?: string;
+}
+
 export interface HeaderStatusPayload {
   visible: true;
   label: string;
@@ -27,8 +38,54 @@ export interface HeaderStatusPayload {
   metrics: HeaderStatusMetric[];
   metadata: HeaderStatusMetric[];
   actions: HeaderStatusAction[];
+  announcements: ExtensionAnnouncement[];
   refresh_after_ms?: number;
   updated_at: string;
+}
+
+const ANNOUNCEMENT_LEVELS = new Set<ExtensionAnnouncementLevel>([
+  "info",
+  "maintenance",
+  "warning",
+]);
+
+function parseAnnouncements(value: unknown): ExtensionAnnouncement[] {
+  if (!Array.isArray(value)) return [];
+  const result: ExtensionAnnouncement[] = [];
+  const ids = new Set<string>();
+  for (const item of value.slice(0, 10)) {
+    if (!isObject(item)) continue;
+    const id = readText(item.id, 64);
+    const title = readText(item.title, 255);
+    const body = readText(item.body, 4000);
+    const publishedAt = readText(item.published_at, 80);
+    const expiresAt = item.expires_at == null
+      ? undefined
+      : readText(item.expires_at, 80) ?? undefined;
+    if (
+      !id
+      || ids.has(id)
+      || !title
+      || !body
+      || !publishedAt
+      || Number.isNaN(Date.parse(publishedAt))
+      || (item.expires_at != null && (!expiresAt || Number.isNaN(Date.parse(expiresAt))))
+      || typeof item.level !== "string"
+      || !ANNOUNCEMENT_LEVELS.has(item.level as ExtensionAnnouncementLevel)
+    ) {
+      continue;
+    }
+    ids.add(id);
+    result.push({
+      id,
+      title,
+      body,
+      level: item.level as ExtensionAnnouncementLevel,
+      published_at: publishedAt,
+      expires_at: expiresAt,
+    });
+  }
+  return result;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -137,6 +194,7 @@ export function parseHeaderStatusResponse(value: unknown): HeaderStatusPayload |
   const metrics = parseMetrics(raw.metrics);
   const metadata = parseMetrics(raw.metadata);
   const actions = parseActions(raw.actions);
+  const announcements = parseAnnouncements(value.announcements);
   const refreshAfterMs = raw.refresh_after_ms == null
     ? undefined
     : raw.refresh_after_ms;
@@ -178,6 +236,7 @@ export function parseHeaderStatusResponse(value: unknown): HeaderStatusPayload |
     metrics,
     metadata,
     actions,
+    announcements,
     refresh_after_ms: refreshAfterMs,
     updated_at: updatedAt,
   };
