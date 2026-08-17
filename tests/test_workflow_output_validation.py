@@ -56,11 +56,13 @@ def test_agent_output_validation_definition_round_trip_and_validation() -> None:
         "id": "writer",
         "node_type": "agent",
         "require_non_empty_output": True,
+        "retry_empty_output_in_session": True,
         "json_output_field": "result.body",
         "json_output_field_min_chars": "1000",
     })
 
     assert node.require_non_empty_output is True
+    assert node.retry_empty_output_in_session is True
     assert node.json_output_field_min_chars == 1000
     assert node.to_dict()["json_output_field"] == "result.body"
 
@@ -74,3 +76,13 @@ def test_agent_output_validation_definition_round_trip_and_validation() -> None:
         )],
     ).validate()
     assert any("字段路径和最小字数必须同时配置" in error for error in invalid)
+
+    invalid_retry = WorkflowDef(
+        workflow_id="invalid-output-retry",
+        nodes=[WorkflowNode(
+            id="writer",
+            node_type="agent",
+            retry_empty_output_in_session=True,
+        )],
+    ).validate()
+    assert any("非空输出校验" in error for error in invalid_retry)

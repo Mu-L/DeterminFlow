@@ -12,6 +12,7 @@ import logging
 import time
 
 from src.config import WORKFLOW_NODE_TIMEOUT_SECONDS
+from src.core.utils import message_content_text
 from src.workflow.json_output import (
     build_json_retry_prompt,
     detect_output_format,
@@ -28,6 +29,10 @@ from ..failure_policy import RECOVERY_REISSUE_TRIGGER
 from ..variable_resolution import resolve_workspace_file_path
 
 logger = logging.getLogger(__name__)
+
+_EMPTY_OUTPUT_RETRY_PROMPT = (
+    "你上一条回复没有最终正文。请现在只输出最终正文，不要调用任何工具。"
+)
 
 MAX_REJECTION_COUNT = 3
 
@@ -119,6 +124,14 @@ class AgentNode(BaseNodePlugin):
                 "required": False,
                 "default": False,
                 "description": "开启后，最后一条 LLM 输出为空时节点失败，并进入节点自动重试策略",
+            },
+            {
+                "key": "retry_empty_output_in_session",
+                "label": "空输出时在原会话追问一次",
+                "type": "boolean",
+                "required": False,
+                "default": False,
+                "description": "仅在要求 LLM 输出非空时生效；追问禁用工具，仍为空才进入节点重试",
             },
             {
                 "key": "json_output_field",
@@ -225,6 +238,9 @@ class AgentNode(BaseNodePlugin):
         output_file_path_raw = getattr(node_def, "output_file_path", "")
         require_non_empty_output = getattr(
             node_def, "require_non_empty_output", False,
+        )
+        retry_empty_output_in_session = getattr(
+            node_def, "retry_empty_output_in_session", False,
         )
         json_output_field = getattr(node_def, "json_output_field", "")
         json_output_field_min_chars = getattr(
@@ -459,6 +475,25 @@ class AgentNode(BaseNodePlugin):
         validated_output = ""
         if completion_result["status"] == "success" and validation_enabled:
             validated_output = self._get_latest_ai_message(sm, session_id)
+            if (
+                require_non_empty_output
+                and retry_empty_output_in_session
+                and not validated_output.strip()
+            ):
+                retry_error = await self._retry_empty_output_in_session(
+                    sm, session_id,
+                )
+                node_token_usage = self._get_session_token_usage(sm, session_id)
+                if retry_error:
+                    return NodeResult(
+                        summary=completion_result["summary"],
+                        status="failed",
+                        error=retry_error,
+                        session_id=session_id,
+                        outputs={},
+                        token_usage=node_token_usage,
+                    )
+                validated_output = self._get_latest_ai_message(sm, session_id)
             validation = validate_agent_output(
                 validated_output,
                 require_non_empty=require_non_empty_output,
@@ -480,7 +515,7 @@ class AgentNode(BaseNodePlugin):
         if output_var_key and completion_result["status"] == "success":
             last_msg = (
                 validated_output if validation_enabled
-                else self._get_last_ai_message(sm, session_id)
+                else self._get_latest_ai_message(sm, session_id)
             )
             if last_msg:
                 outputs[output_var_key] = last_msg
@@ -490,7 +525,7 @@ class AgentNode(BaseNodePlugin):
             last_msg_for_file = outputs.get(output_var_key) if output_var_key else \
                 (
                     validated_output if validation_enabled
-                    else self._get_last_ai_message(sm, session_id)
+                    else self._get_latest_ai_message(sm, session_id)
                 )
             if last_msg_for_file:
                 try:
@@ -516,6 +551,9 @@ class AgentNode(BaseNodePlugin):
                             raw_output=last_msg_for_file,
                             node_params=node_def.node_params,
                             output_file_path=str(file_path),
+                        )
+                        node_token_usage = self._get_session_token_usage(
+                            sm, session_id,
                         )
                         if not json_result["success"]:
                             return NodeResult(
@@ -622,7 +660,7 @@ class AgentNode(BaseNodePlugin):
                 "meta": meta,
             }
 
-        session = sm.sessions.get(session_id) if hasattr(sm, "sessions") else None
+        session = self._resolve_session(sm, session_id)
         if not session or not hasattr(session, "send_message"):
             return {
                 "success": False,
@@ -632,6 +670,13 @@ class AgentNode(BaseNodePlugin):
 
         current_output = result.repaired_text or raw_output
         last_error = result.error
+        setup_error = self._configure_tool_free_retry_graph(session)
+        if setup_error:
+            return {
+                "success": False,
+                "error": f"JSON 输出校验失败，且无法安全重试: {setup_error}",
+                "meta": meta,
+            }
         for attempt in range(1, retry_count + 1):
             prompt = build_json_retry_prompt(
                 last_error,
@@ -652,7 +697,7 @@ class AgentNode(BaseNodePlugin):
                     "meta": meta,
                 }
 
-            retry_output = self._get_last_ai_message(sm, session_id)
+            retry_output = self._get_latest_ai_message(sm, session_id)
             retry_result = validate_and_format_json(
                 retry_output,
                 repair=policy == "safe_repair_then_retry",
@@ -683,26 +728,67 @@ class AgentNode(BaseNodePlugin):
         return f"{summary}\n\n{note}" if summary else note
 
     @staticmethod
-    def _get_last_ai_message(sm, session_id: str) -> str:
-        """从子会话 record 中提取最后一条 assistant 消息的文本。"""
-        session = sm.sessions.get(session_id) if hasattr(sm, "sessions") else None
-        if not session:
-            return ""
-        for msg in reversed(session.record):
-            if msg.get("type") == "assistant" and msg.get("content"):
-                return msg["content"]
+    async def _retry_empty_output_in_session(sm, session_id: str) -> str:
+        """在原子会话追问一次，并从 Graph 层禁用全部工具。"""
+        session = AgentNode._resolve_session(sm, session_id)
+        if not session or not hasattr(session, "send_message"):
+            return "LLM 最终输出为空，且无法复用原子会话追问"
+
+        try:
+            setup_error = AgentNode._configure_tool_free_retry_graph(session)
+            if setup_error:
+                return setup_error
+            await session.send_message(
+                _EMPTY_OUTPUT_RETRY_PROMPT,
+                max_rounds=1,
+                source="workflow_empty_output_retry",
+                source_name="workflow_output_validator",
+            )
+        except Exception as exc:
+            logger.exception("LLM 空输出原会话追问失败: session=%s", session_id)
+            return f"LLM 空输出原会话追问失败: {exc}"
         return ""
+
+    @staticmethod
+    def _configure_tool_free_retry_graph(session) -> str:
+        """为输出修正调用重建无工具 Graph，杜绝重复执行副作用。"""
+        if not hasattr(session, "setup_graph"):
+            return "原子会话无法禁用工具后重试"
+        model_id = getattr(session, "model_id", None)
+        if not model_id:
+            return "原子会话缺少已冻结模型，无法安全重试"
+        try:
+            from src.core.llm_client import create_llm
+
+            retry_llm = create_llm(
+                model_override=model_id,
+                streaming=True,
+                model_params=getattr(session, "model_params", None) or {},
+            )
+            session.setup_graph(llm=retry_llm, tools=[])
+        except Exception as exc:
+            logger.exception("输出修正无工具 Graph 创建失败: session=%s", session.session_id)
+            return f"输出修正无工具 Graph 创建失败: {exc}"
+        return ""
+
+    @staticmethod
+    def _resolve_session(sm, session_id: str):
+        """优先读取热会话，必要时使用 SessionManager 的统一查询入口。"""
+        session = sm.sessions.get(session_id) if hasattr(sm, "sessions") else None
+        if session is not None:
+            return session
+        getter = getattr(sm, "get_session", None)
+        return getter(session_id) if callable(getter) else None
 
     @staticmethod
     def _get_latest_ai_message(sm, session_id: str) -> str:
         """读取最新 assistant 消息；不得用更早的非空消息替代空输出。"""
-        session = sm.sessions.get(session_id) if hasattr(sm, "sessions") else None
+        session = AgentNode._resolve_session(sm, session_id)
         if not session:
             return ""
         for msg in reversed(session.record):
             if msg.get("type") == "assistant":
-                content = msg.get("content")
-                return content if isinstance(content, str) else ""
+                return message_content_text(msg.get("content"))
         return ""
 
     @staticmethod
@@ -712,7 +798,7 @@ class AgentNode(BaseNodePlugin):
         Returns:
             dict: 按 model_id 分组的累计 token 数据，无数据时返回 None
         """
-        session = sm.sessions.get(session_id) if hasattr(sm, "sessions") else None
+        session = AgentNode._resolve_session(sm, session_id)
         if not session or not hasattr(session, "get_cumulative_token_usage"):
             return None
         cumulative = session.get_cumulative_token_usage()

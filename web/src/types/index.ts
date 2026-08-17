@@ -18,6 +18,7 @@ export interface SessionDetail extends Session {
   system_prompt: string;
   messages: Message[];
   has_graph?: boolean;
+  can_rehydrate?: boolean;
   runtime_scope?: "interactive" | "workflow";
   model_id?: string | null;
   model_params?: Record<string, unknown>;
@@ -583,6 +584,7 @@ export interface WorkflowNodeDef {
   save_output_to_file?: boolean;    // 是否将LLM最后输出保存到文件
   output_file_path?: string;        // 保存路径（支持绝对/相对/{{key}}占位符）
   require_non_empty_output?: boolean; // 是否要求最后一条 LLM 输出非空
+  retry_empty_output_in_session?: boolean; // 空输出时是否在原会话追问一次
   json_output_field?: string;       // 要求最小字数的 JSON 字符串字段路径
   json_output_field_min_chars?: number; // JSON 字段字数必须严格大于此值
   model_override?: string;          // 模型覆盖（格式 "provider_id:model_name"，空则使用 agent 类型默认模型，支持 {{key}} 占位符）
@@ -794,6 +796,7 @@ export interface NodeMessageResponse {
   summary?: string;
   error?: string;
   agent_type?: string;
+  can_rehydrate?: boolean;
 }
 
 /** Agent 类型选项（从 API 动态加载） */

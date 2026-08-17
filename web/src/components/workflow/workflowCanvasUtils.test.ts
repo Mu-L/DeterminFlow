@@ -94,6 +94,7 @@ test("workflow save preserves Agent output validation gates", () => {
   const definition = createDefinition({
     node_type: "agent",
     require_non_empty_output: true,
+    retry_empty_output_in_session: true,
     json_output_field: "result.body",
     json_output_field_min_chars: 1000,
   });
@@ -110,6 +111,7 @@ test("workflow save preserves Agent output validation gates", () => {
 
   const saved = buildWorkflowSavePayload(definition, nodes, [], []).nodes[0];
   assert.equal(saved.require_non_empty_output, true);
+  assert.equal(saved.retry_empty_output_in_session, true);
   assert.equal(saved.json_output_field, "result.body");
   assert.equal(saved.json_output_field_min_chars, 1000);
 });

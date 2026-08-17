@@ -739,6 +739,7 @@ export default function WorkflowPage() {
             onRetry={() => {
               if (!nodeStreaming.retry()) nodeStreaming.reload();
             }}
+            onSendMessage={nodeStreaming.sendMessage}
             onClose={closeNodeDrawer}
           />
         )}

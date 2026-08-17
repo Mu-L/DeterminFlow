@@ -109,6 +109,7 @@ class SessionManager(SessionLifecycleMixin):
         self.notification_broadcaster: NotificationBroadcaster = NotificationBroadcaster()
         self._session_changes = ChangeBroadcaster()
         self._sub_tasks: dict[str, asyncio.Task] = {}
+        self._historical_runtime_locks: dict[str, asyncio.Lock] = {}
         # Workspace 管理器（延迟初始化，在 web_server lifespan 中设置）
         self._workspace_manager = None
         # 审批管理器（延迟初始化，在 web_server lifespan 中设置）
@@ -850,32 +851,25 @@ class SessionManager(SessionLifecycleMixin):
         Returns:
             {"success": bool, "message": str, "reply": str}
         """
-        session = self.sessions.get(session_id)
-        if not session:
-            return {"success": False, "message": f"未找到会话 {session_id}"}
-
-        if session.compiled_graph is None:
-            return {"success": False, "message": f"会话 {session_id} 的 Graph 未初始化"}
-
-        if session.status == "error":
-            return {"success": False, "message": f"会话 {session_id} 状态为 error，无法发送消息"}
-
-        # 如果当前正在 streaming，等待一下（或拒绝）
-        if session.status == "streaming":
-            return {"success": False, "message": f"会话 {session_id} 正在处理中，请稍后再试"}
-
         try:
-            # 按 session 类型分发默认 callback：
-            # - main session → chat 通道（前端 chat WS 可接收流式 token）
-            # - sub session → events 通道（sub_ 前缀，与 chat 通道隔离）
-            if event_callback is not None:
-                cb = event_callback
-            elif session.session_type == "main":
-                cb = self._make_event_callback(session_id)
-            else:
-                cb = self._make_event_callback(session_id)
-            reply = await session.send_message(content=message, event_callback=cb, max_rounds=max_rounds)
-            return {"success": True, "message": f"消息已处理", "reply": reply[:500]}
+            async with self.session_runtime(session_id) as session:
+                if not session:
+                    return {"success": False, "message": f"未找到会话 {session_id}"}
+                if session.compiled_graph is None:
+                    return {"success": False, "message": f"会话 {session_id} 的 Graph 未初始化"}
+                if session.status == "error":
+                    return {"success": False, "message": f"会话 {session_id} 状态为 error，无法发送消息"}
+                if session.status == "streaming":
+                    return {"success": False, "message": f"会话 {session_id} 正在处理中，请稍后再试"}
+
+                # 所有会话走同一事件回调协议。
+                cb = event_callback or self._make_event_callback(session_id)
+                reply = await session.send_message(
+                    content=message,
+                    event_callback=cb,
+                    max_rounds=max_rounds,
+                )
+                return {"success": True, "message": "消息已处理", "reply": reply[:500]}
         except Exception as e:
             logger.error(f"向会话 {session_id} 发送消息失败: {e}", exc_info=True)
             return {"success": False, "message": f"消息处理失败: {str(e)}"}
@@ -899,32 +893,27 @@ class SessionManager(SessionLifecycleMixin):
         Returns:
             {"success": bool, "message": str, "reply": str}
         """
-        session = self.sessions.get(session_id)
-        if not session:
-            return {"success": False, "message": f"未找到会话 {session_id}"}
-
-        if session.compiled_graph is None:
-            return {"success": False, "message": f"会话 {session_id} 的 Graph 未初始化"}
-
-        if session.status == "error":
-            return {"success": False, "message": f"会话 {session_id} 状态为 error，无法编辑消息"}
-
-        if session.status == "streaming":
-            return {"success": False, "message": f"会话 {session_id} 正在流式输出中，无法编辑消息"}
-
         try:
-            if event_callback is not None:
-                cb = event_callback
-            elif session.session_type == "main":
-                cb = self._make_event_callback(session_id)
-            else:
-                cb = self._make_event_callback(session_id)
-            reply = await session.edit_message_and_resend(
-                message_id=message_id,
-                new_content=new_content,
-                event_callback=cb,
-            )
-            return {"success": True, "message": "消息已编辑并重新处理", "reply": reply[:500] if reply else ""}
+            async with self.session_runtime(session_id) as session:
+                if not session:
+                    return {"success": False, "message": f"未找到会话 {session_id}"}
+                if session.compiled_graph is None:
+                    return {"success": False, "message": f"会话 {session_id} 的 Graph 未初始化"}
+                if session.status == "error":
+                    return {"success": False, "message": f"会话 {session_id} 状态为 error，无法编辑消息"}
+                if session.status == "streaming":
+                    return {"success": False, "message": f"会话 {session_id} 正在流式输出中，无法编辑消息"}
+                cb = event_callback or self._make_event_callback(session_id)
+                reply = await session.edit_message_and_resend(
+                    message_id=message_id,
+                    new_content=new_content,
+                    event_callback=cb,
+                )
+                return {
+                    "success": True,
+                    "message": "消息已编辑并重新处理",
+                    "reply": reply[:500] if reply else "",
+                }
         except Exception as e:
             logger.error(f"编辑会话 {session_id} 的消息 {message_id} 失败: {e}", exc_info=True)
             return {"success": False, "message": f"编辑消息失败: {str(e)}"}

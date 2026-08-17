@@ -44,6 +44,8 @@ interface NodeConfigAgentFieldsProps {
   setOutputFilePath: (value: string) => void;
   requireNonEmptyOutput: boolean;
   setRequireNonEmptyOutput: (value: boolean) => void;
+  retryEmptyOutputInSession: boolean;
+  setRetryEmptyOutputInSession: (value: boolean) => void;
   jsonOutputField: string;
   setJsonOutputField: (value: string) => void;
   jsonOutputFieldMinChars: string;
@@ -98,6 +100,8 @@ export default function NodeConfigAgentFields({
   setOutputFilePath,
   requireNonEmptyOutput,
   setRequireNonEmptyOutput,
+  retryEmptyOutputInSession,
+  setRetryEmptyOutputInSession,
   jsonOutputField,
   setJsonOutputField,
   jsonOutputFieldMinChars,
@@ -299,6 +303,9 @@ export default function NodeConfigAgentFields({
             checked={requireNonEmptyOutput}
             onChange={(event) => {
               setRequireNonEmptyOutput(event.target.checked);
+              if (!event.target.checked) {
+                setRetryEmptyOutputInSession(false);
+              }
               onMarkUnsaved();
             }}
             disabled={isReadOnly}
@@ -311,6 +318,27 @@ export default function NodeConfigAgentFields({
             </p>
           </div>
         </label>
+
+        {requireNonEmptyOutput && (
+          <label className="ml-7 flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={retryEmptyOutputInSession}
+              onChange={(event) => {
+                setRetryEmptyOutputInSession(event.target.checked);
+                onMarkUnsaved();
+              }}
+              disabled={isReadOnly}
+              className="mt-0.5 w-4 h-4 rounded border-indigo-500/30 bg-slate-950 text-indigo-500 focus:ring-indigo-500/30"
+            />
+            <div>
+              <span className="text-sm text-slate-100">空输出时在原会话追问一次</span>
+              <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                追问时禁用工具；仍无正文才交给节点自动重试。
+              </p>
+            </div>
+          </label>
+        )}
 
         <label className="flex items-start gap-3 cursor-pointer">
           <input

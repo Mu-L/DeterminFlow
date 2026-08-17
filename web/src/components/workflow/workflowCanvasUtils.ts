@@ -503,6 +503,7 @@ export function buildWorkflowSavePayload(
         save_output_to_file: original?.save_output_to_file || false,
         output_file_path: original?.output_file_path || "",
         require_non_empty_output: original?.require_non_empty_output || false,
+        retry_empty_output_in_session: original?.retry_empty_output_in_session || false,
         json_output_field: original?.json_output_field || "",
         json_output_field_min_chars: original?.json_output_field_min_chars ?? 0,
         model_override: original?.model_override || "",

@@ -4,12 +4,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from src.agent.session import AgentSession
+from src.agent.session_rehydration import (
+    SessionRehydrationMixin,
+    _HISTORICAL_CONVERSATION_PROFILE,
+    _SAFE_ID_PATTERN,
+    _TASK_TERMINAL_STATUSES,
+)
 from src.agent.session_catalog import SessionMetadata
 from src.config import SESSIONS_DIR, WORKFLOWS_DIR
 from src.core.utils import is_visible_to_frontend
@@ -19,10 +24,6 @@ logger = logging.getLogger(__name__)
 _ACTIVE_SUB_STATUSES = {"running", "streaming"}
 _SUB_TERMINAL_STATUSES = {"completed", "error", "stopped", "cancelled"}
 _SUB_RESULT_MAX_CHARS = 20_000
-_TASK_TERMINAL_STATUSES = {"completed", "failed", "stopped", "cancelled"}
-_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-
 def _try_emit_event(event: dict) -> None:
     try:
         from src.web.event_bus import event_bus
@@ -35,7 +36,7 @@ def _try_emit_event(event: dict) -> None:
         logger.debug("事件推送失败", exc_info=True)
 
 
-class SessionLifecycleMixin:
+class SessionLifecycleMixin(SessionRehydrationMixin):
     """把历史目录与热运行时分离，并管理可靠释放边界。"""
 
     sessions: dict[str, AgentSession]
@@ -105,7 +106,7 @@ class SessionLifecycleMixin:
     def _normalize_loaded_status(session: AgentSession) -> None:
         if (
             getattr(session, "lifecycle_profile", "task")
-            == "detached_conversation"
+            in {"detached_conversation", _HISTORICAL_CONVERSATION_PROFILE}
             and session.status in {"running", "streaming"}
         ):
             session.status = "completed"

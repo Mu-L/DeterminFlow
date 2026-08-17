@@ -8,6 +8,7 @@ WebSocket 处理模块 - 实现对话流式推送和系统事件广播
 消息处理改为后台任务 + event_bus 推送，支持多 session 并发通信。
 """
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 import json
 import logging
@@ -125,12 +126,18 @@ def _resolve_session_snapshot(session_mgr, session_id: str | None, *, bus=event_
         return _build_unavailable_snapshot("", bus=bus)
     return _build_session_snapshot(main_session, bus=bus)
 
-async def _validate_session(session_mgr, session_id: str, action_label: str):
+async def _validate_session(
+    session_mgr,
+    session_id: str,
+    action_label: str,
+    *,
+    session=None,
+):
     """通用会话前置校验：存在性、graph 初始化、状态检查。
 
     返回 (session, None) 校验通过；返回 (None, error_dict) 校验失败。
     """
-    session = session_mgr.get_session(session_id)
+    session = session or session_mgr.get_session(session_id)
     if not session:
         return None, {"type": "error", "message": f"未找到会话 {session_id}", "session_id": session_id, "terminal": False}
     if session.compiled_graph is None:
@@ -140,6 +147,17 @@ async def _validate_session(session_mgr, session_id: str, action_label: str):
     if session.status == "streaming" or session.invocation_active:
         return None, {"type": "error", "message": f"会话 {session_id} 正在处理中，请稍后再试", "session_id": session_id, "terminal": False}
     return session, None
+
+
+@asynccontextmanager
+async def _session_runtime(session_mgr, session_id: str):
+    """使用统一恢复边界；轻量测试替身继续走既有查询协议。"""
+    runtime = getattr(session_mgr, "session_runtime", None)
+    if callable(runtime):
+        async with runtime(session_id) as session:
+            yield session
+        return
+    yield session_mgr.get_session(session_id)
 
 
 def _make_stream_callback(session_id: str, session):
@@ -238,57 +256,102 @@ async def _process_session_message(
     attachments: list[dict[str, str]] | None = None,
 ):
     """后台任务：处理会话消息并通过 event_bus 推送所有事件。"""
-    session, err = await _validate_session(session_mgr, session_id, "发送消息")
-    if err:
-        await event_bus.emit_chat(err)
-        return
-    callback = _make_stream_callback(session_id, session)
-    await _execute_with_events(
-        session, session_id,
-        session.send_message(
-            content=content,
-            event_callback=callback,
-            source="human",
-            attachments=attachments,
-        ),
-        action_label="处理消息",
-    )
+    try:
+        async with _session_runtime(session_mgr, session_id) as runtime_session:
+            session, err = await _validate_session(
+                session_mgr,
+                session_id,
+                "发送消息",
+                session=runtime_session,
+            )
+            if err:
+                await event_bus.emit_chat(err)
+                return
+            callback = _make_stream_callback(session_id, session)
+            await _execute_with_events(
+                session, session_id,
+                session.send_message(
+                    content=content,
+                    event_callback=callback,
+                    source="human",
+                    attachments=attachments,
+                ),
+                action_label="处理消息",
+            )
+    except Exception as exc:
+        logger.error("会话 %s 按需恢复失败: %s", session_id, exc, exc_info=True)
+        await event_bus.emit_chat({
+            "type": "error",
+            "message": "会话恢复失败，请检查 Agent 和模型配置后重试",
+            "session_id": session_id,
+            "terminal": False,
+        })
 
 
 async def _process_edit_message(session_mgr, session_id: str, message_id: str, new_content: str):
     """后台任务：编辑消息后重新发送，通过 event_bus 推送所有事件。"""
-    session, err = await _validate_session(session_mgr, session_id, "编辑消息")
-    if err:
-        await event_bus.emit_chat(err)
-        return
-    callback = _make_stream_callback(session_id, session)
-    await _execute_with_events(
-        session, session_id,
-        session.edit_message_and_resend(
-            message_id=message_id,
-            new_content=new_content,
-            event_callback=callback,
-        ),
-        action_label="编辑消息",
-    )
+    try:
+        async with _session_runtime(session_mgr, session_id) as runtime_session:
+            session, err = await _validate_session(
+                session_mgr,
+                session_id,
+                "编辑消息",
+                session=runtime_session,
+            )
+            if err:
+                await event_bus.emit_chat(err)
+                return
+            callback = _make_stream_callback(session_id, session)
+            await _execute_with_events(
+                session, session_id,
+                session.edit_message_and_resend(
+                    message_id=message_id,
+                    new_content=new_content,
+                    event_callback=callback,
+                ),
+                action_label="编辑消息",
+            )
+    except Exception as exc:
+        logger.error("会话 %s 按需恢复失败: %s", session_id, exc, exc_info=True)
+        await event_bus.emit_chat({
+            "type": "error",
+            "message": "会话恢复失败，请检查 Agent 和模型配置后重试",
+            "session_id": session_id,
+            "terminal": False,
+        })
 
 
 async def _process_retry_turn(session_mgr, session_id: str, failure_id: str):
     """Retry one persisted, side-effect-safe failed Main turn."""
-    session, err = await _validate_session(session_mgr, session_id, "重试本轮")
-    if err:
-        await event_bus.emit_chat(err)
-        return
-    callback = _make_stream_callback(session_id, session)
-    await _execute_with_events(
-        session,
-        session_id,
-        session.retry_failed_turn(
-            failure_id=failure_id,
-            event_callback=callback,
-        ),
-        action_label="重试本轮",
-    )
+    try:
+        async with _session_runtime(session_mgr, session_id) as runtime_session:
+            session, err = await _validate_session(
+                session_mgr,
+                session_id,
+                "重试本轮",
+                session=runtime_session,
+            )
+            if err:
+                await event_bus.emit_chat(err)
+                return
+            callback = _make_stream_callback(session_id, session)
+            await _execute_with_events(
+                session,
+                session_id,
+                session.retry_failed_turn(
+                    failure_id=failure_id,
+                    event_callback=callback,
+                ),
+                action_label="重试本轮",
+            )
+    except Exception as exc:
+        logger.error("会话 %s 按需恢复失败: %s", session_id, exc, exc_info=True)
+        await event_bus.emit_chat({
+            "type": "error",
+            "message": "会话恢复失败，请检查 Agent 和模型配置后重试",
+            "session_id": session_id,
+            "terminal": False,
+        })
 
 
 # ============ 对话 WebSocket ============

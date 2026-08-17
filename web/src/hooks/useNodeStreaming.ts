@@ -7,6 +7,7 @@ import { resolveNodeSessionId } from "../features/conversation/resolveNodeSessio
 import { getNodeMessages, getTask } from "../lib/api";
 import type {
   Message,
+  MessageAttachment,
   NodeMessageResponse,
   StreamingSegment,
   WorkflowNodeDef,
@@ -103,6 +104,7 @@ export interface UseNodeStreamingReturn {
   loading: boolean;
   error: string | null;
   retry: () => boolean;
+  sendMessage: (content: string, attachments?: MessageAttachment[]) => boolean;
   reload: () => void;
 }
 
@@ -218,6 +220,7 @@ export function useNodeStreaming({
     loading: canonicalLoading || (!targetSessionId && historyLoading),
     error: conversation.error || fallbackError,
     retry: conversation.resync,
+    sendMessage: conversation.sendMessage,
     reload,
   };
 }

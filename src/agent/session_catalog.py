@@ -12,12 +12,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.core.utils import message_content_text
+
 if TYPE_CHECKING:
     from src.agent.session import AgentSession
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {"completed", "error", "stopped", "cancelled"}
+_COLD_CONVERSATION_PROFILES = {
+    "detached_conversation",
+    "historical_conversation",
+}
 
 
 def infer_runtime_scope(data: dict[str, Any]) -> str:
@@ -39,7 +45,7 @@ def _normalized_status(
     lifecycle_profile: str = "task",
 ) -> str:
     if (
-        lifecycle_profile == "detached_conversation"
+        lifecycle_profile in _COLD_CONVERSATION_PROFILES
         and status in {"running", "streaming"}
     ):
         return "completed"
@@ -48,7 +54,7 @@ def _normalized_status(
     if (
         session_type == "sub"
         and status in {"running", "streaming"}
-        and lifecycle_profile != "detached_conversation"
+        and lifecycle_profile not in _COLD_CONVERSATION_PROFILES
     ):
         return "error"
     return status
@@ -90,10 +96,8 @@ class SessionMetadata:
         for message in reversed(messages):
             if not isinstance(message, dict) or message.get("type") != "assistant":
                 continue
-            content = message.get("content")
-            if content:
-                last_message = str(content)[:200]
-                break
+            last_message = message_content_text(message.get("content"))[:200]
+            break
 
         session_type = str(data.get("session_type") or "sub")
         persisted_status = str(data.get("status") or "completed")

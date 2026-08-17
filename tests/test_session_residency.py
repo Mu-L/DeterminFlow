@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import src.agent.session as session_module
 import src.agent.session_lifecycle as session_lifecycle_module
+import src.agent.session_rehydration as session_rehydration_module
 import src.agent.session_retention as session_retention_module
 import src.workflow.manager as workflow_manager_module
 import src.workflow.task_queries as task_queries_module
@@ -255,6 +257,145 @@ def test_historical_session_load_is_bounded_by_lru(isolated_sessions):
     assert manager.get_session("cold-c") is not None
     assert set(manager.sessions) == {"cold-b", "cold-c"}
     assert list(manager._cold_session_lru) == ["cold-b", "cold-c"]
+
+
+def test_completed_workflow_node_rehydrates_as_bounded_interactive_history(
+    isolated_sessions,
+    tmp_path,
+    monkeypatch,
+):
+    workflows_dir = tmp_path / "workflows"
+    monkeypatch.setattr(session_rehydration_module, "WORKFLOWS_DIR", workflows_dir)
+    _write_task(
+        workflows_dir,
+        "wf-novel",
+        "task-finished",
+        status="completed",
+    )
+    task_path = workflows_dir / "wf-novel" / "tasks" / "task-finished.json"
+    original_task = task_path.read_bytes()
+    _write_session(
+        isolated_sessions,
+        "cold-node",
+        session_type="sub",
+        status="completed",
+        parent_id="workflow-main",
+        workflow_id="wf-novel",
+        task_id="task-finished",
+        runtime_scope="workflow",
+    )
+    persisted_path = isolated_sessions / "cold-node.json"
+    persisted = json.loads(persisted_path.read_text(encoding="utf-8"))
+    persisted.update({
+        "node_id": "writer",
+        "model_id": "provider:model",
+        "model_params": {"temperature": 0.1},
+        "workspace_path": "/tmp/workflow-space",
+    })
+    persisted_path.write_text(
+        json.dumps(persisted, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    manager = SessionManager(cold_cache_max_entries=2)
+    manager.load_sessions()
+    tool_builds: list[dict] = []
+    manager._tool_assembler = SimpleNamespace(
+        build=lambda agent_type, **kwargs: (
+            tool_builds.append({"agent_type": agent_type, **kwargs}) or ["safe-tool"]
+        )
+    )
+    agent_definition = SimpleNamespace(
+        model="provider:fallback",
+        model_params={"temperature": 0.5},
+    )
+    monkeypatch.setattr(
+        "src.agent.definition.get_agent_definition",
+        lambda _agent_type: agent_definition,
+    )
+
+    def fake_create_llm(**kwargs):
+        assert kwargs == {
+            "model_override": "provider:model",
+            "streaming": True,
+            "model_params": {"temperature": 0.1},
+        }
+        return "restored-llm"
+
+    monkeypatch.setattr("src.core.llm_client.create_llm", fake_create_llm)
+
+    def fake_setup_graph(session, *, llm, tools):
+        assert llm == "restored-llm"
+        session.tools = tools
+        session.compiled_graph = object()
+
+    monkeypatch.setattr(AgentSession, "setup_graph", fake_setup_graph)
+    monkeypatch.setattr(AgentSession, "start_consumer", lambda _session: None)
+
+    async def fake_stop_consumer(_session):
+        return None
+
+    monkeypatch.setattr(AgentSession, "stop_consumer", fake_stop_consumer)
+
+    async def scenario():
+        async with manager.session_runtime("cold-node") as session:
+            assert session is not None
+            assert session.system_prompt == "system"
+            assert session.runtime_scope == "interactive"
+            assert session.lifecycle_profile == "historical_conversation"
+            assert session.compiled_graph is not None
+            assert session.tools == ["safe-tool"]
+            await session.add_message("assistant", "continued")
+
+    asyncio.run(scenario())
+
+    assert "cold-node" not in manager.sessions
+    assert tool_builds == [{
+        "agent_type": "writer",
+        "is_workflow_node": False,
+        "agent_definition": agent_definition,
+        "workspace_path": "/tmp/workflow-space",
+        "enable_complete_node_task": False,
+        "enable_reject_upstream": False,
+    }]
+    updated = json.loads(persisted_path.read_text(encoding="utf-8"))
+    assert updated["runtime_scope"] == "interactive"
+    assert updated["lifecycle_profile"] == "historical_conversation"
+    assert updated["workflow_id"] == "wf-novel"
+    assert updated["task_id"] == "task-finished"
+    assert updated["record"][-1]["content"] == "continued"
+    assert task_path.read_bytes() == original_task
+
+    restored = manager.get_session("cold-node")
+    assert restored is not None
+    assert restored.compiled_graph is None
+    assert manager.can_rehydrate_session(restored) is True
+
+
+def test_workflow_node_cannot_rehydrate_before_task_is_terminal(
+    isolated_sessions,
+    tmp_path,
+    monkeypatch,
+):
+    workflows_dir = tmp_path / "workflows"
+    monkeypatch.setattr(session_rehydration_module, "WORKFLOWS_DIR", workflows_dir)
+    _write_task(workflows_dir, "wf-live", "task-running", status="running")
+    _write_session(
+        isolated_sessions,
+        "node-finished-first",
+        session_type="sub",
+        status="completed",
+        workflow_id="wf-live",
+        task_id="task-running",
+        runtime_scope="workflow",
+    )
+
+    manager = SessionManager(cold_cache_max_entries=2)
+    manager.load_sessions()
+    session = manager.get_session("node-finished-first")
+
+    assert session is not None
+    assert manager.can_rehydrate_session(session) is False
 
 
 def test_startup_caps_terminal_workflow_history_without_deleting_live_tasks(

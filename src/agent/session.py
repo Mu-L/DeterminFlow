@@ -2970,12 +2970,10 @@ class AgentSession:
 
 
     def get_last_assistant_message(self) -> str:
-
+        """返回最新一条 assistant 消息，不用更早的非空正文替代它。"""
         for msg in reversed(self.record):
-
-            if msg.get("type") == "assistant" and msg.get("content"):
-
-                return msg["content"]
+            if msg.get("type") == "assistant":
+                return message_content_text(msg.get("content"))
 
         return ""
 

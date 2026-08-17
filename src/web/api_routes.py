@@ -323,6 +323,8 @@ async def get_session_detail(session_id: str, request: Request):
 
         "has_graph": session.compiled_graph is not None,
 
+        "can_rehydrate": sm.can_rehydrate_session(session),
+
         "runtime_scope": session.runtime_scope,
 
         "model_id": session.model_id,

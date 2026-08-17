@@ -138,6 +138,9 @@ export default function NodeConfigPanel({
   const [requireNonEmptyOutput, setRequireNonEmptyOutput] = useState(
     node.require_non_empty_output || false,
   );
+  const [retryEmptyOutputInSession, setRetryEmptyOutputInSession] = useState(
+    node.retry_empty_output_in_session || false,
+  );
   const [jsonOutputField, setJsonOutputField] = useState(
     node.json_output_field || "",
   );
@@ -232,6 +235,7 @@ export default function NodeConfigPanel({
     setSaveOutputToFile(node.save_output_to_file || false);
     setOutputFilePath(node.output_file_path || "");
     setRequireNonEmptyOutput(node.require_non_empty_output || false);
+    setRetryEmptyOutputInSession(node.retry_empty_output_in_session || false);
     setJsonOutputField(node.json_output_field || "");
     setJsonOutputFieldMinChars(
       node.json_output_field_min_chars != null
@@ -412,6 +416,9 @@ export default function NodeConfigPanel({
       updates.save_output_to_file = saveOutputToFile;
       updates.output_file_path = outputFilePath;
       updates.require_non_empty_output = requireNonEmptyOutput;
+      updates.retry_empty_output_in_session = requireNonEmptyOutput
+        ? retryEmptyOutputInSession
+        : false;
       updates.json_output_field = jsonOutputField.trim();
       updates.json_output_field_min_chars = Number.parseInt(
         jsonOutputFieldMinChars,
@@ -666,6 +673,8 @@ export default function NodeConfigPanel({
             setOutputFilePath={setOutputFilePath}
             requireNonEmptyOutput={requireNonEmptyOutput}
             setRequireNonEmptyOutput={setRequireNonEmptyOutput}
+            retryEmptyOutputInSession={retryEmptyOutputInSession}
+            setRetryEmptyOutputInSession={setRetryEmptyOutputInSession}
             jsonOutputField={jsonOutputField}
             setJsonOutputField={setJsonOutputField}
             jsonOutputFieldMinChars={jsonOutputFieldMinChars}

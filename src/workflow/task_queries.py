@@ -474,4 +474,5 @@ class TaskQueryMixin:
             "summary": node_state.summary,
             "error": node_state.error,
             "agent_type": session.agent_type,
+            "can_rehydrate": self._session_manager.can_rehydrate_session(session),
         }

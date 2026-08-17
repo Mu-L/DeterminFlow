@@ -104,6 +104,7 @@ class WorkflowNode:
     save_output_to_file: bool = False           # 是否将LLM最后输出保存到文件
     output_file_path: str = ""                  # 保存路径（仅限 workspace 内，支持相对路径/{{key}}占位符）
     require_non_empty_output: bool = False      # 是否要求最后一条 LLM 输出非空
+    retry_empty_output_in_session: bool = False # 空输出时是否在原会话追问一次
     json_output_field: str = ""                 # 要求最小字数的 JSON 字符串字段路径
     json_output_field_min_chars: int = 0        # JSON 字段字数必须严格大于此值（0=关闭）
     model_override: str = ""                    # 模型覆盖（格式 "provider_id:model_name"，空则使用 agent 类型默认模型，支持 {{key}} 占位符）
@@ -154,6 +155,9 @@ class WorkflowNode:
             save_output_to_file=data.get("save_output_to_file", False),
             output_file_path=data.get("output_file_path", ""),
             require_non_empty_output=data.get("require_non_empty_output", False),
+            retry_empty_output_in_session=data.get(
+                "retry_empty_output_in_session", False,
+            ),
             json_output_field=data.get("json_output_field", ""),
             json_output_field_min_chars=_coerce_integer_setting(
                 data.get("json_output_field_min_chars", 0),
@@ -830,6 +834,7 @@ class WorkflowDef:
                 )
             if node_def.node_type != "agent" and (
                 node_def.require_non_empty_output
+                or node_def.retry_empty_output_in_session
                 or node_def.json_output_field
                 or node_def.json_output_field_min_chars
             ):
@@ -840,6 +845,18 @@ class WorkflowDef:
             if not isinstance(node_def.require_non_empty_output, bool):
                 errors.append(
                     f"节点 '{node_label}' 的 LLM 非空输出校验必须是布尔值"
+                )
+            if not isinstance(node_def.retry_empty_output_in_session, bool):
+                errors.append(
+                    f"节点 '{node_label}' 的空输出原会话追问必须是布尔值"
+                )
+            elif (
+                node_def.retry_empty_output_in_session
+                and node_def.require_non_empty_output is not True
+            ):
+                errors.append(
+                    f"节点 '{node_label}' 只有开启 LLM 非空输出校验后"
+                    "才能启用空输出原会话追问"
                 )
             has_json_field = bool(
                 isinstance(node_def.json_output_field, str)

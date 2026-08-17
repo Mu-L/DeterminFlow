@@ -4,7 +4,7 @@ description: >-
   创建、编辑、校验、运行或排查 DeterminFlow 工作流时必须先加载此技能；也适用于任务填参、节点审批、变量传递、网关、执行方案、子流程与工作区覆盖。涉及 Agent 定义、Prompt 模板或 Script Library 的专项设计时，继续加载对应 Core Skill。
 metadata:
   display_name: workflow-guide
-  version: 3.4.0
+  version: 3.5.0
   author: system
   category: workflow
   priority: 50
@@ -130,6 +130,9 @@ Agent 节点的常用输出控制：
 - `output_variable` 把最后回复写入运行时变量池。
 - `save_output_to_file` 与 `output_file_path` 把最后回复保存到共享 workspace；两者可同时用。
 - `require_non_empty_output=true` 要求最后一条 LLM 回复去除首尾空白后非空。
+- `retry_empty_output_in_session=true` 只能与 `require_non_empty_output=true` 同时使用：
+  最新回复为空时在原子会话追加一次固定追问，并用无工具 Graph 防止重复副作用；追问消耗
+  重新计入节点 token。追问后仍为空才进入 `auto_retry_count` 节点重试。
 - `json_output_field` 与 `json_output_field_min_chars` 必须同时配置；前者支持
   `body`、`data.chapters.0.body` 形式的字段路径，目标必须是字符串，字数必须严格大于阈值。
   校验发生在变量赋值和文件写入前；失败统一进入节点的 `auto_retry_count` 策略。
@@ -138,6 +141,14 @@ Agent 节点的常用输出控制：
 - `enable_reject_upstream` 与 `max_reject_count` 允许下游有限次打回上游。
 - `auto_retry_count`、`auto_retry_interval_seconds`、`fail_auto_skip` 是失败策略；必须显式评估
   重复副作用后再启用。
+
+所有最终输出消费者只读取最新一条 assistant 消息。最新消息为空时不得向前寻找旧正文；
+未启用非空门禁时节点可完成但不写输出变量，文件输出仍因无正文而失败。
+
+终态 Task 的 Workflow Agent 节点会话可在消息抽屉或会话页继续对话。首次续聊会按当前
+AgentDefinition 重建通用 Agent Graph，保留原 system prompt、上下文、模型与 workspace，
+但不提供 `complete_node_task` 或 `reject_upstream`。续聊只更新会话历史，不改变原 Task 的
+节点结果；每轮结束严格保存并重新冷却。运行中 Task 的节点会话不可升级。
 
 Script 节点新定义使用 `script_argv` 字符串数组，不使用兼容字段 `script_args`。脚本节点
 的详细目录、输出协议和身份冻结规则见 `script-library-guide`。

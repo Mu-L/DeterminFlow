@@ -9,8 +9,8 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { X, Loader, Bot, Wrench, MessageSquare, GripVertical, Play, Terminal, CheckCircle, XCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ConversationTimeline } from "../conversation";
-import type { NodeExecutionInfo, NodeMessageResponse, Message } from "../../types";
+import { ConversationComposer, ConversationTimeline } from "../conversation";
+import type { NodeExecutionInfo, NodeMessageResponse, Message, MessageAttachment } from "../../types";
 import type { StreamingSegment } from "../../hooks/useNodeStreaming";
 import NodeFailureRuntimePanel from "./NodeFailureRuntimePanel";
 
@@ -33,6 +33,7 @@ interface NodeMessageDrawerProps {
   connected?: boolean;
   error?: string | null;
   onRetry?: () => void;
+  onSendMessage?: (content: string, attachments?: MessageAttachment[]) => boolean;
 }
 
 export default function NodeMessageDrawer({
@@ -51,6 +52,7 @@ export default function NodeMessageDrawer({
   connected = true,
   error = null,
   onRetry,
+  onSendMessage,
 }: NodeMessageDrawerProps) {
   const [width, setWidth] = useState(560);
   const [isResizing, setIsResizing] = useState(false);
@@ -66,6 +68,9 @@ export default function NodeMessageDrawer({
   const isRunning = nodeState?.status === "running" || messages?.node_status === "running";
   const isScript = nodeType === "script";
   const showStreaming = isStreaming;
+  const canContinue = Boolean(
+    conversationId && messages?.can_rehydrate && onSendMessage,
+  );
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -225,6 +230,22 @@ export default function NodeMessageDrawer({
                 </div>
               )}
             />
+            {canContinue && (
+              <div className="shrink-0 border-t border-indigo-500/10 bg-slate-900/70 p-3">
+                <p className="mb-2 text-xs text-slate-500">
+                  这是独立历史续聊，不会改变原 Workflow Task 的节点结果。
+                </p>
+                <ConversationComposer
+                  sessionId={conversationId ?? null}
+                  onSendMessage={onSendMessage!}
+                  isStreaming={isStreaming}
+                  editable={connected && !isStreaming}
+                  sendEnabled={connected && !isStreaming}
+                  placeholder={connected ? "继续与此 Agent 对话..." : "连接已断开，正在重连..."}
+                  variant="compact"
+                />
+              </div>
+            )}
           </div>
 
           {/* Right: Reasoning Chain Timeline */}
