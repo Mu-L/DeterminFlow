@@ -92,6 +92,7 @@ class SessionManager(SessionLifecycleMixin):
         self.sessions: dict[str, AgentSession] = {}
         self._session_catalog = SessionCatalog()
         self._cold_session_lru: OrderedDict[str, None] = OrderedDict()
+        self._preserve_external_workflow_runtime = False
         self._cold_cache_max_entries = max(
             1,
             cold_cache_max_entries

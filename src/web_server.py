@@ -4,6 +4,7 @@ FastAPI Web 服务入口 - 初始化共享实例，注册路由和 WebSocket，�
 重构后：不再在 app_state 上挂 compiled_main 和 lc_messages，
 Graph 编译和消息累积已下沉到 AgentSession 内部。
 """
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from src.config import (
     AGENTS_CONFIG_FILE,
     BASE_DIR,
     CONFIG_DIR,
+    DATA_DIR,
     LOGS_DIR,
     PLUGINS_DIR,
     PRESET_PHRASES_FILE,
@@ -23,6 +25,8 @@ from src.config import (
     RULES_DIR,
     SKILLS_CONFIG_FILE,
     SKILLS_DIR,
+    WORKFLOW_EXECUTOR_COUNT,
+    WORKFLOW_EXECUTOR_MODE,
     WORKFLOWS_DIR,
     ensure_dirs,
 )
@@ -80,6 +84,11 @@ async def lifespan(app: FastAPI):
 
     setup_logging()
     ensure_dirs()
+    runtime_role = os.getenv("DETERMINFLOW_RUNTIME_ROLE", "controller")
+    is_workflow_executor = runtime_role == "workflow-executor"
+    split_controller = (
+        not is_workflow_executor and WORKFLOW_EXECUTOR_MODE == "process"
+    )
     extension_manager = app.state.extension_manager
 
     logger.info("正在初始化 Web 服务...")
@@ -91,16 +100,27 @@ async def lifespan(app: FastAPI):
     roundtable_mgr = None
     cron_scheduler = None
     workflow_mgr = None
+    workflow_executor_pool = None
+    inline_executor_leases = None
 
     async def _cleanup_on_failure():
         """初始化失败时按创建顺序的逆序清理已分配资源。"""
+        if workflow_executor_pool:
+            try:
+                await workflow_executor_pool.stop()
+            except Exception:
+                logger.debug("Workflow Executor 清理失败", exc_info=True)
         if workflow_mgr:
             try:
+                await workflow_mgr.shutdown_running_tasks()
                 await workflow_mgr.shutdown_task_recovery()
             except Exception:
                 logger.debug("workflow_mgr 恢复计时器清理失败", exc_info=True)
         try:
-            await extension_manager.stop()
+            if is_workflow_executor:
+                await extension_manager.stop_executor()
+            else:
+                await extension_manager.stop()
         except Exception:
             logger.debug("extension_manager 清理失败", exc_info=True)
         if cron_scheduler:
@@ -128,8 +148,17 @@ async def lifespan(app: FastAPI):
                 await mcp.close()
             except Exception:
                 logger.debug("mcp 清理失败", exc_info=True)
+        if inline_executor_leases:
+            inline_executor_leases.release()
 
     try:
+        if not is_workflow_executor and WORKFLOW_EXECUTOR_MODE == "inline":
+            from src.workflow.executor_pool import ExecutorLeaseGroup
+
+            inline_executor_leases = ExecutorLeaseGroup.for_inline(
+                DATA_DIR, WORKFLOW_EXECUTOR_COUNT,
+            )
+            await asyncio.to_thread(inline_executor_leases.acquire, 60.0)
         mcp = MCPClient()
         await mcp.connect_all()
         logger.info(f"MCP Server 已连接，加载了 {len(mcp.get_tools())} 个工具")
@@ -187,7 +216,8 @@ async def lifespan(app: FastAPI):
         logger.info(f"AgentConfigManager 已初始化，has_config={agent_config_mgr.has_config()}")
 
         # 启动 Agent 配置文件监听
-        agent_config_mgr.start_file_watcher(debounce_seconds=1.0)
+        if not is_workflow_executor:
+            agent_config_mgr.start_file_watcher(debounce_seconds=1.0)
 
         from src.config import PROMPTS_CONFIG_FILE
         prompt_config_store = LayeredJsonConfig(
@@ -226,7 +256,15 @@ async def lifespan(app: FastAPI):
             agent_config_manager=agent_config_mgr,
         )
 
-        session_mgr.load_sessions()
+        session_mgr.load_sessions(
+            hot_runtime_scope=(
+                "catalog"
+                if is_workflow_executor
+                else "interactive"
+                if split_controller
+                else None
+            )
+        )
 
         llm = create_startup_llm(streaming=True)
 
@@ -276,7 +314,10 @@ async def lifespan(app: FastAPI):
                 "llm": llm,
             },
         )
-        await extension_manager.start(runtime)
+        if is_workflow_executor:
+            await extension_manager.start_executor(runtime)
+        else:
+            await extension_manager.start(runtime)
         agent_config_mgr.reload()
         skill_mgr.reload()
         rule_mgr.reload()
@@ -304,14 +345,89 @@ async def lifespan(app: FastAPI):
         session_mgr.set_builders(prompt_builder, tool_assembler)
         logger.info("PromptBuilder 和 ToolAssembler 已注入到 SessionManager")
 
-        recovery_summary = await workflow_mgr.recover_workflow_tasks()
-        logger.info("Workflow 任务恢复完成: %s", recovery_summary)
+        if split_controller:
+            from src.workflow.executor_pool import WorkflowExecutorPool
+            from src.web.event_bus import event_bus
+
+            async def _handle_executor_event(channel, event):
+                if channel == "chat":
+                    await event_bus.emit_chat(event)
+                else:
+                    await event_bus.emit_event(event)
+                session_id = str(event.get("session_id") or "")
+                if session_id and event.get("type") in {
+                    "session_update", "stream_start", "chain_end", "error",
+                }:
+                    session_mgr.refresh_external_session(session_id)
+                if event.get("type") == "wf_task_update":
+                    workflow_id = str(event.get("workflow_id") or "")
+                    task_id = str(event.get("task_id") or "")
+                    if workflow_id and task_id:
+                        workflow_mgr.signal_remote_task_update(
+                            workflow_id, task_id,
+                        )
+
+            async def _recover_after_executor_restart(previous, current):
+                reassigned = workflow_mgr.reassign_dead_executor_generation(
+                    previous, current,
+                )
+                recovery = await workflow_executor_pool.client_for(
+                    current.executor_id,
+                ).call(
+                    "recover_owned_tasks",
+                )
+                logger.warning(
+                    "Workflow Executor 已完成死亡世代交接: old=%s new=%s "
+                    "reassigned=%s recovery=%s",
+                    previous.epoch,
+                    current.epoch,
+                    reassigned,
+                    recovery,
+                )
+
+            workflow_executor_pool = WorkflowExecutorPool(
+                WORKFLOW_EXECUTOR_COUNT,
+                on_restart=_recover_after_executor_restart,
+                event_handler=_handle_executor_event,
+            )
+            await workflow_executor_pool.start()
+            workflow_mgr.attach_execution_delegate(workflow_executor_pool)
+            stale_reassigned = workflow_mgr.reconcile_executor_pool(
+                workflow_executor_pool,
+            )
+            executor_recovery = {}
+            for identity in workflow_executor_pool.identities:
+                executor_recovery[identity.executor_id] = await (
+                    workflow_executor_pool.client_for(identity.executor_id).call(
+                        "recover_owned_tasks",
+                    )
+                )
+            logger.info(
+                "Workflow Executor Pool 已就绪: members=%s pids=%s "
+                "reassigned=%s recovery=%s",
+                [identity.executor_id for identity in workflow_executor_pool.identities],
+                workflow_executor_pool.member_pids,
+                stale_reassigned,
+                executor_recovery,
+            )
+
+        if not is_workflow_executor:
+            if split_controller:
+                from src.workflow.executor_protocol import ExecutorIdentity
+
+                recovery_summary = await workflow_mgr.recover_workflow_tasks(
+                    executor_identity=ExecutorIdentity("controller", "inline"),
+                )
+            else:
+                recovery_summary = await workflow_mgr.recover_workflow_tasks()
+            logger.info("Workflow 任务恢复完成: %s", recovery_summary)
 
         # 仅恢复热目录中的交互主会话和仍在运行的 Workflow Main。
         # 已完成的 Workflow 历史保持冷数据，详情由 SessionManager 按需加载。
-        recoverable_mains = [
+        recoverable_mains = [] if is_workflow_executor else [
             s for s in session_mgr.sessions.values()
             if s.session_type == "main" and s.status in ("running", "error", "completed")
+            and (not split_controller or s.runtime_scope == "interactive")
         ]
 
         from src.core.model_manager import get_model_manager
@@ -373,7 +489,7 @@ async def lifespan(app: FastAPI):
                 session.session_id for session in interactive_mains
             }:
                 session_mgr.main_session_id = interactive_mains[0].session_id
-        else:
+        elif not is_workflow_executor:
             # 创建新的 Main Session
             agent_def = get_agent_definition("main")
             main_session = AgentSession(
@@ -405,21 +521,23 @@ async def lifespan(app: FastAPI):
             session_mgr.register_main(main_session)
             logger.info("Main Session 已创建，Graph 已编译，消费循环已启动")
 
-        from src.roundtable.runner import RoundtableManager
-        roundtable_mgr = RoundtableManager()
-        roundtable_mgr.load_sessions()
+        cron_job_mgr = None
+        if not is_workflow_executor:
+            from src.roundtable.runner import RoundtableManager
+            roundtable_mgr = RoundtableManager()
+            roundtable_mgr.load_sessions()
 
-        # 初始化 CronScheduler
-        from src.cron.jobs import CronJobManager
-        from src.cron.scheduler import CronScheduler
-        cron_job_mgr = CronJobManager()
-        cron_scheduler = CronScheduler(session_mgr, cron_job_mgr)
-        session_mgr.inject_dependencies(
-            cron_scheduler=cron_scheduler,
-            cron_job_manager=cron_job_mgr,
-        )
-        await cron_scheduler.start()
-        logger.info("CronScheduler 已初始化并启动")
+            # 初始化 CronScheduler（Controller 独占）
+            from src.cron.jobs import CronJobManager
+            from src.cron.scheduler import CronScheduler
+            cron_job_mgr = CronJobManager()
+            cron_scheduler = CronScheduler(session_mgr, cron_job_mgr)
+            session_mgr.inject_dependencies(
+                cron_scheduler=cron_scheduler,
+                cron_job_manager=cron_job_mgr,
+            )
+            await cron_scheduler.start()
+            logger.info("CronScheduler 已初始化并启动")
 
         # 挂载到 app.state（移除了 compiled_main 和 lc_messages）
         app.state.mcp_client = mcp
@@ -439,13 +557,18 @@ async def lifespan(app: FastAPI):
         app.state.workflow_manager = workflow_mgr
         app.state.cron_scheduler = cron_scheduler
         app.state.cron_job_manager = cron_job_mgr
+        app.state.workflow_executor_pool = workflow_executor_pool
 
         # 将 skill_manager 和 rule_manager 注入到 session_manager（用于 create_main_session）
         session_mgr._skill_manager = skill_mgr
         session_mgr._rule_manager = rule_mgr
 
         main_session = session_mgr.get_main_session()
-        logger.info(f"Web 服务初始化完成，主会话: {main_session.session_id if main_session else '无'}")
+        logger.info(
+            "%s 初始化完成，主会话: %s",
+            "Workflow Executor" if is_workflow_executor else "Web 服务",
+            main_session.session_id if main_session else "无",
+        )
 
         # 启动全局 Session 定时刷盘管理器（内存缓存 + 5s 定时落盘）
         from src.agent.session import _persistence_manager
@@ -461,27 +584,44 @@ async def lifespan(app: FastAPI):
 
     logger.info("正在关闭 Web 服务...")
     try:
+        if workflow_executor_pool:
+            await workflow_executor_pool.stop()
+    except Exception:
+        logger.warning("关闭 Workflow Executor 时忽略异常", exc_info=True)
+    try:
         if workflow_mgr:
+            await workflow_mgr.shutdown_running_tasks()
             await workflow_mgr.shutdown_task_recovery()
     except Exception:
         logger.warning("关闭 Workflow 重试计时器时忽略异常", exc_info=True)
     try:
-        await extension_manager.stop()
+        if is_workflow_executor:
+            await extension_manager.stop_executor()
+        else:
+            await extension_manager.stop()
     except Exception:
         logger.warning("关闭 ExtensionManager 时忽略异常", exc_info=True)
-    for name, coro_fn in [
+    shutdown_steps = [
         ("AgentConfigManager.stop_file_watcher", lambda: agent_config_mgr.stop_file_watcher()),
-        ("CronScheduler.stop", lambda: cron_scheduler.stop()),
         ("SessionManager.shutdown", lambda: session_mgr.shutdown()),
-        ("RoundtableManager.shutdown", lambda: roundtable_mgr.shutdown()),
         ("MCPClient.close", lambda: mcp.close()),
-    ]:
+    ]
+    if cron_scheduler is not None:
+        shutdown_steps.insert(1, ("CronScheduler.stop", lambda: cron_scheduler.stop()))
+    if roundtable_mgr is not None:
+        shutdown_steps.insert(
+            -1,
+            ("RoundtableManager.shutdown", lambda: roundtable_mgr.shutdown()),
+        )
+    for name, coro_fn in shutdown_steps:
         try:
             result = coro_fn()
             if hasattr(result, "__await__"):
                 await result
         except Exception:
             logger.warning(f"关闭 {name} 时忽略异常", exc_info=True)
+    if inline_executor_leases:
+        inline_executor_leases.release()
     logger.info("Web 服务已关闭")
 
 

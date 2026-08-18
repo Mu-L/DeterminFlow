@@ -38,10 +38,7 @@ class WorkflowCompatibilityMixin:
                     )
                 except Exception:
                     continue
-                if task.status in {"retry_waiting", "resume_pending"} or (
-                    task.status == "running"
-                    and task.task_id in self._running_tasks
-                ):
+                if task.status in {"running", "retry_waiting", "resume_pending"}:
                     running_tasks.append(task)
 
         if not running_tasks:

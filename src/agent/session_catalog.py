@@ -202,6 +202,26 @@ class SessionCatalog:
                 logger.error("索引 session %s 失败: %s", file_path.stem, exc)
         return {"scanned": scanned, "errors": errors}
 
+    def refresh(self, sessions_dir: Path, session_id: str) -> bool:
+        """Refresh one externally-written Session without rescanning the catalog."""
+        if not session_id or Path(session_id).name != session_id:
+            return False
+        file_path = sessions_dir / f"{session_id}.json"
+        try:
+            with file_path.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+            metadata = SessionMetadata.from_data(data, fallback_id=session_id)
+            if metadata.session_id != session_id:
+                raise ValueError("session_id 与文件名不一致")
+            self._entries[session_id] = metadata
+            return True
+        except FileNotFoundError:
+            self._entries.pop(session_id, None)
+            return False
+        except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning("刷新外部 session %s 失败: %s", session_id, exc)
+            return False
+
     def upsert_session(self, session: "AgentSession") -> None:
         self._entries[session.session_id] = SessionMetadata.from_session(session)
 

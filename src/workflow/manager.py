@@ -27,6 +27,7 @@ from .definition import (
 )
 from .engine import WorkflowEngine
 from .execution_control import ExecutionControl
+from .execution_routing import WorkflowExecutionRoutingMixin
 from .main_task_creation import WorkflowMainTaskCreationMixin
 from .task_queries import TaskQueryMixin
 from .task_persistence import write_task_state_file
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowManager(
+    WorkflowExecutionRoutingMixin,
     WorkflowMainTaskCreationMixin,
     WorkflowTaskRecoveryMixin,
     WorkflowCompatibilityMixin,
@@ -70,6 +72,8 @@ class WorkflowManager(
         self._engine.set_task_update_listener(self._signal_task_update)
         self._engine.set_workspace_manager(self._ws_manager)
         self._running_tasks: dict[str, asyncio.Task] = {}  # key: task_id
+        self._execution_delegate = None
+        self._local_executor_identity = None
         self._execution_control = ExecutionControl(DATA_DIR, WORKFLOWS_DIR)
         self._init_task_recovery()
         WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
@@ -82,6 +86,9 @@ class WorkflowManager(
         broadcaster = getattr(self, "_task_changes", None)
         if broadcaster is not None:
             broadcaster.publish(self._task_change_key(workflow_id, task.task_id))
+
+    def signal_remote_task_update(self, workflow_id: str, task_id: str) -> None:
+        self._task_changes.publish(self._task_change_key(workflow_id, task_id))
 
     async def wait_for_task_update(
         self,
@@ -197,12 +204,14 @@ class WorkflowManager(
             try:
                 wf_def = WorkflowDef.from_dict(json.loads(def_file.read_text(encoding='utf-8')))
                 # 统计该工作流下运行中的任务数（预构建 running set，遍历目录）
-                running_ids = {tid for tid, t in self._running_tasks.items() if not t.done()}
                 tasks_dir = wf_dir / "tasks"
                 running_task_count = 0
                 if tasks_dir.exists():
                     for f in tasks_dir.iterdir():
-                        if f.stem in running_ids:
+                        task = self._load_task(wf_dir.name, f.stem)
+                        if task and task.status in {
+                            "running", "retry_waiting", "resume_pending",
+                        }:
                             running_task_count += 1
                 workflows.append({
                     "workflow_id": wf_def.workflow_id,
@@ -334,7 +343,7 @@ class WorkflowManager(
             logger.exception("校验工作流定义失败")
             return {"valid": False, "errors": [str(e)], "workflow_id": ""}
 
-    def delete_workflow(self, workflow_id: str) -> bool:
+    async def delete_workflow(self, workflow_id: str) -> bool:
         """删除工作流定义和 workspace。"""
         if not self.is_workflow_owner_enabled(workflow_id):
             return False
@@ -344,6 +353,23 @@ class WorkflowManager(
             return False
         if not wf_dir.exists():
             return False
+
+        tasks_dir = wf_dir / "tasks"
+        active_statuses = {"running", "retry_waiting", "resume_pending"}
+        if tasks_dir.exists():
+            for task_path in sorted(tasks_dir.glob("*.json")):
+                task = self._load_task(workflow_id, task_path.stem)
+                if task is None or task.status not in active_statuses:
+                    continue
+                stopped = await self.stop_task(workflow_id, task.task_id)
+                if not stopped.get("success", False):
+                    logger.error(
+                        "删除 Workflow 前停止 Task 失败: workflow=%s task=%s result=%s",
+                        workflow_id,
+                        task.task_id,
+                        stopped,
+                    )
+                    return False
 
         # 清理 workspace
         self._ws_manager.cleanup_workflow_workspace(workflow_id)
@@ -593,6 +619,23 @@ class WorkflowManager(
         if task is None:
             return {"success": False, "message": f"任务 {task_id} 不存在"}
 
+        routed = await self._route_async_task_operation(
+            "run_task",
+            task,
+            workflow_id=workflow_id,
+            task_id=task_id,
+            from_node_id=from_node_id,
+        )
+        if routed is not None:
+            return routed
+
+        if task.main_takeover:
+            self._assign_controller(task)
+
+        ownership_error = self._task_ownership_error(task)
+        if ownership_error is not None:
+            return ownership_error
+
         if task.status not in {"pending", "resume_pending"}:
             return {
                 "success": False,
@@ -701,6 +744,23 @@ class WorkflowManager(
         """停止正在运行的任务。"""
         if not self.is_workflow_owner_enabled(workflow_id):
             return self._workflow_read_only_result(workflow_id)
+        task = self._load_task(workflow_id, task_id)
+        if task is not None and self._should_delegate_task(task):
+            async with self._task_control_lock(task_id):
+                current = self._load_task(workflow_id, task_id)
+                if current is None:
+                    return {"success": False, "message": f"任务 {task_id} 不存在"}
+                routed = await self._route_async_task_operation(
+                    "stop_task", current,
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                )
+                assert routed is not None
+                return routed
+        if task is not None:
+            ownership_error = self._task_ownership_error(task)
+            if ownership_error is not None:
+                return ownership_error
         async with self._task_control_lock(task_id):
             coro = self._running_tasks.get(task_id)
             if coro is None:
@@ -814,6 +874,24 @@ class WorkflowManager(
     ) -> dict:
         """在 Main 会话级联删除期间停止并移除单个 Task 文件。"""
         async with self._task_control_lock(task_id):
+            task = self._load_task(workflow_id, task_id)
+            if task is not None and task.status in {
+                "running", "retry_waiting", "resume_pending",
+            }:
+                routed = await self._route_async_task_operation(
+                    "stop_task",
+                    task,
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                )
+                if routed is not None and not routed.get("success", False):
+                    return {
+                        "success": False,
+                        "message": (
+                            "停止关联工作流任务失败: "
+                            f"{task_id} ({routed.get('message', 'Executor 请求失败')})"
+                        ),
+                    }
             self._cancel_retry_timer(task_id)
             runner = self._running_tasks.get(task_id)
             if runner is not None and not runner.done():
@@ -1139,6 +1217,10 @@ class WorkflowManager(
         task = self._load_task(workflow_id, task_id)
         if task is None:
             return {"success": False, "message": f"任务 {task_id} 不存在"}
+        self._assign_controller(task)
+        ownership_error = self._task_ownership_error(task)
+        if ownership_error is not None:
+            return ownership_error
         if task.status != "pre_running":
             return {"success": False, "message": f"任务状态为 {task.status}，不是预启动状态"}
         if task.main_takeover and task.main_session_id not in self._session_manager.sessions:
@@ -1210,14 +1292,71 @@ class WorkflowManager(
             if result_task is not None and result_task.status == "retry_waiting":
                 self._schedule_retry_for_task(result_task)
 
+    async def approve_node_async(
+        self,
+        workflow_id: str,
+        task_id: str,
+        node_id: str,
+        approved: bool,
+        feedback: str = "",
+        expected_attempt_count: int | None = None,
+    ) -> dict:
+        task = self._load_task(workflow_id, task_id)
+        if task is not None and self._should_delegate_task(task):
+            async with self._task_control_lock(task_id):
+                current = self._load_task(workflow_id, task_id)
+                if current is None:
+                    return {
+                        "success": False,
+                        "error": "task_not_found",
+                        "message": f"任务 {task_id} 不存在",
+                    }
+                routed = await self._route_async_task_operation(
+                    "approve_node",
+                    current,
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                    node_id=node_id,
+                    approved=approved,
+                    feedback=feedback,
+                    expected_attempt_count=expected_attempt_count,
+                )
+                assert routed is not None
+                return routed
+        return self.approve_node(
+            workflow_id,
+            task_id,
+            node_id,
+            approved,
+            feedback,
+            expected_attempt_count,
+        )
+
     def approve_node(self, workflow_id: str, task_id: str,
                       node_id: str, approved: bool, feedback: str = "",
                       expected_attempt_count: int | None = None) -> dict:
         """审批节点完成结果。由 approve_node 工具调用。"""
         if not self.is_workflow_owner_enabled(workflow_id):
             return self._workflow_read_only_result(workflow_id)
+        task = self._load_task(workflow_id, task_id)
+        if task is not None:
+            routed = self._route_sync_task_operation(
+                "approve_node",
+                task,
+                workflow_id=workflow_id,
+                task_id=task_id,
+                node_id=node_id,
+                approved=approved,
+                feedback=feedback,
+                expected_attempt_count=expected_attempt_count,
+            )
+            if routed is not None:
+                return routed
+        if task is not None:
+            ownership_error = self._task_ownership_error(task)
+            if ownership_error is not None:
+                return ownership_error
         if expected_attempt_count is not None:
-            task = self._load_task(workflow_id, task_id)
             if task is None:
                 return {
                     "success": False,

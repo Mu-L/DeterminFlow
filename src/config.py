@@ -114,6 +114,29 @@ WORKFLOWS_DIR = DATA_DIR / "workflows"
 WORKFLOW_WORKSPACES_DIR = DATA_DIR / "workspaces"
 WORKFLOW_MAX_PARALLEL_NODES = _get_int_config("WORKFLOW_MAX_PARALLEL_NODES", 3)
 WORKFLOW_NODE_TIMEOUT_SECONDS = _get_int_config("WORKFLOW_NODE_TIMEOUT_SECONDS", 1800)
+WORKFLOW_EXECUTOR_MODE = str(
+    get_determinflow_env(
+        "WORKFLOW_EXECUTOR_MODE",
+        str(_get_config_value("WORKFLOW_EXECUTOR_MODE", "process")),
+    )
+).strip().lower()
+if WORKFLOW_EXECUTOR_MODE not in {"inline", "process"}:
+    raise ValueError(
+        "WORKFLOW_EXECUTOR_MODE 必须是 inline 或 process，当前为 "
+        f"{WORKFLOW_EXECUTOR_MODE!r}"
+    )
+try:
+    WORKFLOW_EXECUTOR_COUNT = int(get_determinflow_env(
+        "WORKFLOW_EXECUTOR_COUNT",
+        str(_get_config_value("WORKFLOW_EXECUTOR_COUNT", 4)),
+    ))
+except (TypeError, ValueError) as exc:
+    raise ValueError("WORKFLOW_EXECUTOR_COUNT 必须是整数") from exc
+if not 1 <= WORKFLOW_EXECUTOR_COUNT <= 32:
+    raise ValueError(
+        "WORKFLOW_EXECUTOR_COUNT 必须在 1 到 32 之间，当前为 "
+        f"{WORKFLOW_EXECUTOR_COUNT!r}"
+    )
 
 AGENT_MESSAGE_HEADER = _get_config_value(
     "AGENT_MESSAGE_HEADER",

@@ -308,6 +308,8 @@ class WorkflowTask:
     disabled_node_ids: list[str] = field(default_factory=list)
     scheme_id: str | None = None
     control_flow_state: dict[str, Any] = field(default_factory=dict)
+    executor_id: str | None = None
+    executor_epoch: str | None = None
 
     def to_dict(self) -> dict:
         actions_enabled = self.status in {"failed", "retry_waiting"}
@@ -340,6 +342,8 @@ class WorkflowTask:
             "workspace_mode": self.workspace_mode,
             "workspace_ref": self.workspace_ref,
             "control_flow_state": deepcopy(self.control_flow_state),
+            "executor_id": self.executor_id,
+            "executor_epoch": self.executor_epoch,
         }
 
     @classmethod
@@ -392,6 +396,8 @@ class WorkflowTask:
                 if isinstance(data.get("control_flow_state"), dict)
                 else {}
             ),
+            executor_id=data.get("executor_id"),
+            executor_epoch=data.get("executor_epoch"),
         )
 
     def get_execution_order(self, definition: WorkflowDef) -> list[str]:

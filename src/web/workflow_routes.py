@@ -206,7 +206,7 @@ async def validate_workflow(request: Request, body: WorkflowUpdateRequest):
 async def delete_workflow(workflow_id: str, request: Request):
     """删除工作流。"""
     mgr = _ensure_http_mutation_allowed(request, workflow_id)
-    success = mgr.delete_workflow(workflow_id)
+    success = await mgr.delete_workflow(workflow_id)
     if not success:
         raise HTTPException(status_code=404, detail="工作流不存在")
     return {"success": True}
@@ -668,7 +668,7 @@ async def resolve_approval(workflow_id: str, task_id: str, node_id: str,
                             request: Request, body: ResolveApprovalRequest):
     """人工审批节点决策（审批节点使用）。"""
     mgr = _ensure_http_mutation_allowed(request, workflow_id)
-    result = mgr.approve_node(
+    result = await mgr.approve_node_async(
         workflow_id=workflow_id, task_id=task_id,
         node_id=node_id, approved=body.approved, feedback=body.reason,
     )

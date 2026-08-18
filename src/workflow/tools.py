@@ -503,13 +503,19 @@ def create_approve_node_tool(
         if ownership_error:
             return ownership_error
 
-        result = workflow_manager.approve_node(
-            workflow_id=workflow_id,
-            task_id=task_id,
-            node_id=node_id,
-            approved=approved,
-            feedback=feedback,
-            expected_attempt_count=expected_attempt_count,
+        arguments = {
+            "workflow_id": workflow_id,
+            "task_id": task_id,
+            "node_id": node_id,
+            "approved": approved,
+            "feedback": feedback,
+            "expected_attempt_count": expected_attempt_count,
+        }
+        async_approve = getattr(workflow_manager, "approve_node_async", None)
+        result = (
+            await async_approve(**arguments)
+            if async_approve is not None
+            else workflow_manager.approve_node(**arguments)
         )
         return json.dumps(result, ensure_ascii=False)
 

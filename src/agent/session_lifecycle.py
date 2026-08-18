@@ -95,6 +95,25 @@ class SessionLifecycleMixin(SessionRehydrationMixin):
         self._evict_cold_sessions()
         return session
 
+    def refresh_external_session(self, session_id: str) -> bool:
+        """Invalidate a cold read replica and refresh its single catalog entry.
+
+        Hot runtime Sessions are never displaced; this is only for Sessions whose
+        authoritative writer lives in another local process.
+        """
+        if session_id in self.sessions and session_id not in self._cold_session_lru:
+            return False
+        from src.agent.session import _persistence_manager
+
+        cached = self.sessions.get(session_id)
+        if cached is not None and cached._save_dirty:
+            logger.warning("拒绝刷新仍有未落盘修改的冷 Session: %s", session_id)
+            return False
+        self.sessions.pop(session_id, None)
+        self._cold_session_lru.pop(session_id, None)
+        _persistence_manager.unregister(session_id)
+        return self._session_catalog.refresh(SESSIONS_DIR, session_id)
+
     def register_runtime_session(self, session: AgentSession) -> None:
         """注册需要 Graph/consumer 的热会话。"""
         self._cold_session_lru.pop(session.session_id, None)
@@ -102,14 +121,18 @@ class SessionLifecycleMixin(SessionRehydrationMixin):
         session._default_event_callback = self._make_event_callback(session.session_id)
         self._session_catalog.upsert_session(session)
 
-    @staticmethod
-    def _normalize_loaded_status(session: AgentSession) -> None:
+    def _normalize_loaded_status(self, session: AgentSession) -> None:
         if (
             getattr(session, "lifecycle_profile", "task")
             in {"detached_conversation", _HISTORICAL_CONVERSATION_PROFILE}
             and session.status in {"running", "streaming"}
         ):
             session.status = "completed"
+            return
+        if (
+            getattr(self, "_preserve_external_workflow_runtime", False)
+            and session.runtime_scope == "workflow"
+        ):
             return
         if session.session_type == "main" and session.status == "streaming":
             session.status = "running"
@@ -401,6 +424,17 @@ class SessionLifecycleMixin(SessionRehydrationMixin):
             return {"success": False, "message": f"未找到会话 {session_id}"}
         if session_id == self.main_session_id:
             return {"success": False, "message": "不能终止当前 Chat 活跃的主会话"}
+        if (
+            getattr(self, "_preserve_external_workflow_runtime", False)
+            and session.runtime_scope == "workflow"
+            and session.workflow_id
+            and session.task_id
+            and self._workflow_manager is not None
+        ):
+            return await self._workflow_manager.stop_task(
+                session.workflow_id,
+                session.task_id,
+            )
         if session.status not in {"running", "waiting", "completed", "streaming"}:
             return {
                 "success": False,
@@ -604,6 +638,15 @@ class SessionLifecycleMixin(SessionRehydrationMixin):
             return {"success": False, "message": f"未找到会话 {session_id}"}
         if session_id == self.main_session_id:
             return {"success": False, "message": "不能删除当前活跃的主会话"}
+        if (
+            getattr(self, "_preserve_external_workflow_runtime", False)
+            and session.runtime_scope == "workflow"
+            and session.status in {"running", "streaming", "waiting"}
+        ):
+            return {
+                "success": False,
+                "message": "Workflow Session 正由 Executor 执行，请先停止所属 Task",
+            }
         if session.session_type == "main":
             return await self._delete_main_session_tree(session_id)
 
@@ -687,15 +730,35 @@ class SessionLifecycleMixin(SessionRehydrationMixin):
         for session in self.sessions.values():
             session.save()
 
-    def load_sessions(self):
+    def load_sessions(self, *, hot_runtime_scope: str | None = None):
+        """Index all sessions and optionally restrict which Main sessions are hot.
+
+        ``None`` preserves the legacy single-process policy. ``interactive`` is
+        used by the Controller in split mode; ``workflow`` and ``catalog`` are
+        reserved for execution-plane hydration without stealing interactive
+        Session ownership.
+        """
+        if hot_runtime_scope not in {None, "interactive", "workflow", "catalog"}:
+            raise ValueError("unsupported hot_runtime_scope")
+        self._preserve_external_workflow_runtime = hot_runtime_scope == "interactive"
         scan_result = self._session_catalog.scan(SESSIONS_DIR)
-        prune_result = self._prune_terminal_workflow_history()
-        hot_metadata = [
+        prune_result = (
+            {"errors": 0, "deleted": [], "deleted_bytes": 0}
+            if hot_runtime_scope == "catalog"
+            else self._prune_terminal_workflow_history()
+        )
+        hot_metadata = [] if hot_runtime_scope == "catalog" else [
             metadata for metadata in self._session_catalog.values()
             if metadata.session_type == "main"
             and (
-                metadata.runtime_scope == "interactive"
-                or metadata.status == "running"
+                (
+                    hot_runtime_scope is None
+                    and (
+                        metadata.runtime_scope == "interactive"
+                        or metadata.status == "running"
+                    )
+                )
+                or metadata.runtime_scope == hot_runtime_scope
             )
         ]
         hot_metadata.sort(

@@ -206,6 +206,11 @@ class EventBus:
 
         # 周期性统计日志（每 30s）
         self._stats_task: asyncio.Task | None = None
+        self._process_forwarder = None
+
+    def set_process_forwarder(self, forwarder) -> None:
+        """Forward Executor events to the sole Controller EventBus."""
+        self._process_forwarder = forwarder
 
     def start_periodic_stats(self):
         """启动周期性统计日志（幂等）。"""
@@ -345,6 +350,9 @@ class EventBus:
 
     async def emit(self, channel: str, event: dict):
         """向指定通道的所有客户端广播事件（全局广播，非阻塞队列投递）。"""
+        if self._process_forwarder is not None:
+            await self._process_forwarder(channel, {**event})
+            return
         event = {**event}
         if "timestamp" not in event:
             event["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -365,6 +373,9 @@ class EventBus:
         带 session_id 的事件同时投递给该 session 的订阅者和全局 chat
         观察者。两组订阅使用集合合并，同一连接不会收到重复事件。
         """
+        if self._process_forwarder is not None:
+            await self._process_forwarder("chat", {**event})
+            return
         event = {**event}
         if "timestamp" not in event:
             event["timestamp"] = datetime.now(timezone.utc).isoformat()

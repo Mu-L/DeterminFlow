@@ -313,6 +313,32 @@ class WorkflowTaskRecoveryMixin:
         """原任务、原快照和原参数不变，手动重试一个失败节点。"""
         if not self.is_workflow_owner_enabled(workflow_id):
             return self._workflow_read_only_result(workflow_id)
+        routed_task = self._load_task(workflow_id, task_id)
+        if routed_task is not None and self._should_delegate_task(routed_task):
+            async with self._task_control_lock(task_id):
+                current = self._load_task(workflow_id, task_id)
+                if current is None:
+                    return _control_error(
+                        error="task_not_found",
+                        message=f"任务 {task_id} 不存在",
+                        workflow_id=workflow_id,
+                        task_id=task_id,
+                        node_id=node_id,
+                    )
+                routed = await self._route_async_task_operation(
+                    "retry_node",
+                    current,
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                    node_id=node_id,
+                    expected_attempt_count=expected_attempt_count,
+                )
+                assert routed is not None
+                return routed
+        if routed_task is not None:
+            ownership_error = self._task_ownership_error(routed_task)
+            if ownership_error is not None:
+                return ownership_error
         async with self._task_control_lock(task_id):
             task, error = self._validate_node_control(
                 workflow_id, task_id, node_id, expected_attempt_count
@@ -349,6 +375,32 @@ class WorkflowTaskRecoveryMixin:
         """清除失败节点产出并将其标记为 skipped 后继续原任务。"""
         if not self.is_workflow_owner_enabled(workflow_id):
             return self._workflow_read_only_result(workflow_id)
+        routed_task = self._load_task(workflow_id, task_id)
+        if routed_task is not None and self._should_delegate_task(routed_task):
+            async with self._task_control_lock(task_id):
+                current = self._load_task(workflow_id, task_id)
+                if current is None:
+                    return _control_error(
+                        error="task_not_found",
+                        message=f"任务 {task_id} 不存在",
+                        workflow_id=workflow_id,
+                        task_id=task_id,
+                        node_id=node_id,
+                    )
+                routed = await self._route_async_task_operation(
+                    "skip_node",
+                    current,
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                    node_id=node_id,
+                    expected_attempt_count=expected_attempt_count,
+                )
+                assert routed is not None
+                return routed
+        if routed_task is not None:
+            ownership_error = self._task_ownership_error(routed_task)
+            if ownership_error is not None:
+                return ownership_error
         async with self._task_control_lock(task_id):
             task, error = self._validate_node_control(
                 workflow_id, task_id, node_id, expected_attempt_count
@@ -574,8 +626,8 @@ class WorkflowTaskRecoveryMixin:
             recovered.append(node_id)
         return recovered
 
-    async def recover_workflow_tasks(self) -> dict[str, int]:
-        """恢复启用工作流中因进程退出而中断或等待重试的任务。"""
+    async def recover_workflow_tasks(self, *, executor_identity=None) -> dict[str, int]:
+        """恢复中断任务；成员换代时只扫描该 Executor 当前世代。"""
         summary = {
             "scanned": 0,
             "resumed": 0,
@@ -602,6 +654,11 @@ class WorkflowTaskRecoveryMixin:
                         json.loads(task_file.read_text(encoding="utf-8"))
                     )
                     if task.status not in _RECOVERABLE_TASK_STATUSES:
+                        continue
+                    if executor_identity is not None and (
+                        task.executor_id != executor_identity.executor_id
+                        or task.executor_epoch != executor_identity.epoch
+                    ):
                         continue
                     summary["scanned"] += 1
                     action = await self._recover_task(task)
