@@ -668,6 +668,10 @@ async def get_system_status(request: Request):
         if workflow_manager is not None
         else None
     )
+    from src.workflow.executor_observability import collect_workflow_executor_status
+    workflow_executor = await collect_workflow_executor_status(
+        getattr(request.app.state, "workflow_executor_pool", None),
+    )
 
 
 
@@ -700,6 +704,7 @@ async def get_system_status(request: Request):
         "mcp_tools_count": len(mcp.get_tools()),
         "event_bus_stats": bus_stats,
         "execution_control": execution_control,
+        "workflow_executor": workflow_executor,
     }
 
 
