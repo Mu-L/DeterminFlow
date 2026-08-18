@@ -11,10 +11,13 @@ def test_standard_container_supports_git_managed_plugins() -> None:
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
     assert "git \\" in dockerfile
+    assert "procps \\" in dockerfile
     assert "AI_COMPANY_EXTENSIONS" not in dockerfile
     assert "AI_COMPANY_EXTENSIONS" not in compose
     assert "./data:/app/data" in compose
     assert "./config:/app/config" in compose
+    assert "DETERMINFLOW_WORKFLOW_EXECUTOR_MODE" in compose
+    assert "DETERMINFLOW_WORKFLOW_EXECUTOR_COUNT" in compose
 
 
 def test_container_prunes_session_history_before_starting_runtime() -> None:

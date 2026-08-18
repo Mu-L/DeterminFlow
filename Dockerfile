@@ -24,6 +24,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装锁定后的 Python 依赖
