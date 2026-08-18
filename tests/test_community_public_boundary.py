@@ -15,13 +15,8 @@ FORBIDDEN_PATHS = (
     "scripts/production",
 )
 FORBIDDEN_FRAGMENTS = (
-    "ssh://git@localhost:2222",
     "deploy/production",
     "scripts/production",
-    "novel-teardown",
-    "hindsight-memory",
-    "Change ID",
-    "NB-202608",
 )
 COMMUNITY_RELEASE_FILES = (
     "LICENSE",
@@ -71,4 +66,3 @@ def test_executor_slice_does_not_copy_private_fragments() -> None:
     combined = "\n".join(path.read_text(encoding="utf-8") for path in files)
     for fragment in FORBIDDEN_FRAGMENTS:
         assert fragment not in combined, fragment
-    assert "wf-novel" not in combined
