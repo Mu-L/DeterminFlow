@@ -1084,6 +1084,17 @@ class AgentSession:
         callback = event_callback or self._default_event_callback
         async with self._invocation_scope():
 
+            if invocation_context is None:
+
+                return await self._invoke_graph(
+                    content,
+                    callback,
+                    max_rounds,
+                    source,
+                    source_name,
+                    attachments,
+                )
+
             return await self._invoke_graph(
                 content,
                 callback,
