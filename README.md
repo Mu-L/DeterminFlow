@@ -237,6 +237,9 @@ docker compose up --build
 
 新配置统一使用 `DETERMINFLOW_*` 前缀；已有的 `AI_COMPANY_*` 环境变量和
 `ai_company.extensions` Entry Point 继续作为兼容别名使用，新旧配置同时存在时以新名称为准。
+社区版默认以 4 个本机 Workflow Executor 进程执行普通 detached Workflow Task；
+若要回退到单进程，设置 `DETERMINFLOW_WORKFLOW_EXECUTOR_MODE=inline` 和
+`DETERMINFLOW_WORKFLOW_EXECUTOR_COUNT=1`。
 
 ## 文档
 

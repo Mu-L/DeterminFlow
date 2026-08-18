@@ -243,7 +243,9 @@ docker compose up --build
 
 New configuration uses the `DETERMINFLOW_*` prefix. Existing `AI_COMPANY_*` environment variables
 and the `ai_company.extensions` entry-point group remain supported as compatibility aliases; the new
-name wins when both are set.
+name wins when both are set. Community builds default to four local Workflow Executor processes for
+ordinary detached Workflow Tasks. Fall back to a single process with
+`DETERMINFLOW_WORKFLOW_EXECUTOR_MODE=inline` and `DETERMINFLOW_WORKFLOW_EXECUTOR_COUNT=1`.
 
 ## Documentation
 

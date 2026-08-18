@@ -76,6 +76,31 @@ Script Library 使用按 owner 合并的只读 Plugin 目录；重复 `(group, s
 启动时拒绝。Task 创建时冻结 owner、revision、entrypoint 与文件摘要，执行前再次
 核验，避免 Plugin 更新或文件漂移改变已创建 Task 的执行代码。
 
+### Workflow Executor Pool
+
+社区版默认以 Controller 加本机 Workflow Executor Pool 运行：
+`DETERMINFLOW_WORKFLOW_EXECUTOR_MODE=process`，
+`DETERMINFLOW_WORKFLOW_EXECUTOR_COUNT=4`。Controller 继续拥有 HTTP/WS、交互
+Chat Main、Cron、Roundtable、Plugin Controller 生命周期和 Task 创建/路由。普通
+detached Workflow Task 在活着且 `ready` 的成员之间轮询分配，并持久绑定
+`executor_id + executor_epoch`；节点重试、跳过、审批、取消和进程内恢复都回到
+同一 Executor 世代。`pre_running` 与 `main_takeover` 仍固定在 Controller。
+
+成员状态为 `starting`、`ready`、`restarting`、`stopping`、`stopped`。新 Task
+只路由到 `ready` 成员；sticky 控制仍按持久 `executor_id` 返回原成员，不因临时
+未就绪改绑。Executor 通过有版本、白名单和世代校验的本机 IPC 转发事件并接收
+控制命令。`/api/system/status` 的 `workflow_executor` 字段只公开模式、配置数、
+成员/ready/可达数、PID/epoch/uptime、活跃 Task 数、重启和 RPC/Event 计数；不
+暴露 socket、环境变量、凭据或 Task 正文。单成员不可达时返回降级快照，不把整
+个系统状态接口升级为 500。
+
+需要单进程回退时设置 `DETERMINFLOW_WORKFLOW_EXECUTOR_MODE=inline` 和
+`DETERMINFLOW_WORKFLOW_EXECUTOR_COUNT=1`。process/inline 切换前必须先证明上一
+执行所有者已经退出。当前不实现无状态迁移、跨主机执行或共享消息队列。Plugin
+可通过显式 `start_executor` / `stop_executor` hook 装载执行所需资源，但不得在
+Executor 进程重复启动 Cron、Roundtable、交互 Main、Plugin HTTP/lifecycle 或
+托管业务进程。
+
 ## 前端
 
 Core Web Shell 不打包官方 Plugin 的产品前端。可安装 Plugin 需要轻量可视化配置时，
