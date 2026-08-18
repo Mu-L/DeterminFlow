@@ -396,19 +396,24 @@ class SkillConfigManager:
             True 如果同步成功
         """
         try:
+            changed = False
+
             # 确保skills配置存在
             if "skills" not in self._config:
                 self._config["skills"] = {}
+                changed = True
 
             # 确保skill_configs配置存在
             if "skill_configs" not in self._config:
                 self._config["skill_configs"] = {}
+                changed = True
 
             # 为目录中存在但配置中缺少的skill添加默认配置
             for skill_id in skill_ids:
                 # 检查skills配置（不自动分配组，由管理员显式分配）
                 if skill_id not in self._config["skills"]:
                     self._config["skills"][skill_id] = {}
+                    changed = True
                     logger.info(f"为skill {skill_id} 添加默认skills配置（未分配组）")
 
                 # 检查skill_configs配置
@@ -419,6 +424,7 @@ class SkillConfigManager:
                         "auto_inject": False,
                         "workflow_only": False
                     }
+                    changed = True
                     logger.info(f"为skill {skill_id} 添加默认skill_configs配置")
 
             # 确保default组存在
@@ -431,9 +437,11 @@ class SkillConfigManager:
                     "description": "包含所有现有技能的默认组"
                 })
                 self._config["groups"] = groups
+                changed = True
                 logger.info("创建默认技能组")
 
-            self._save()
+            if changed:
+                self._save()
             logger.info(f"配置同步完成，共同步 {len(skill_ids)} 个skills")
             return True
         except Exception as e:

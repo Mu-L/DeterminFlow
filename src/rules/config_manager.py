@@ -386,23 +386,29 @@ class RuleConfigManager:
             True 如果同步成功
         """
         try:
+            changed = False
+
             # 确保rules配置存在
             if "rules" not in self._config:
                 self._config["rules"] = {}
+                changed = True
 
             # 确保rule_configs配置存在
             if "rule_configs" not in self._config:
                 self._config["rule_configs"] = {}
+                changed = True
 
             # 清理已从文件系统删除的 rule 的孤儿配置条目
             rule_id_set = set(rule_ids)
             for stale_id in list(self._config["rules"]):
                 if stale_id not in rule_id_set:
                     del self._config["rules"][stale_id]
+                    changed = True
                     logger.info(f"清理孤儿 rule 配置: {stale_id}")
             for stale_id in list(self._config.get("rule_configs", {})):
                 if stale_id not in rule_id_set:
                     del self._config["rule_configs"][stale_id]
+                    changed = True
                     logger.info(f"清理孤儿 rule_configs 配置: {stale_id}")
 
             # 为目录中存在但配置中缺少的rule添加默认配置
@@ -413,6 +419,7 @@ class RuleConfigManager:
                         "agent_types": [],  # 空列表表示匹配所有 agent
                         "group_ids": ["default"]  # 默认添加到default组
                     }
+                    changed = True
                     logger.info(f"为rule {rule_id} 添加默认rules配置")
 
                 # 检查rule_configs配置
@@ -421,6 +428,7 @@ class RuleConfigManager:
                         "enabled": True,
                         "workflow_only": False
                     }
+                    changed = True
                     logger.info(f"为rule {rule_id} 添加默认rule_configs配置")
 
             # 确保default组存在
@@ -433,9 +441,11 @@ class RuleConfigManager:
                     "description": "包含所有现有规则的默认组"
                 })
                 self._config["groups"] = groups
+                changed = True
                 logger.info("创建默认规则组")
 
-            self._save()
+            if changed:
+                self._save()
             logger.info(f"Rules配置同步完成，共同步 {len(rule_ids)} 个rules")
             return True
         except Exception as e:
