@@ -17,6 +17,7 @@ import hashlib
 import logging
 import re
 import os
+import signal
 import shlex
 import subprocess
 import sys
@@ -53,6 +54,94 @@ _INTERPRETER_MAP = {"shell": "bash", "python": sys.executable}
 
 # stdout/stderr 最大保留字节数
 _MAX_OUTPUT_BYTES = 50 * 1024  # 50KB
+
+
+def _descendant_pids(root_pid: int) -> list[int]:
+    """Return descendants deepest-first for an inherited Executor process group."""
+    try:
+        listing = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in listing.splitlines():
+        try:
+            pid_text, parent_text = line.split()
+            children.setdefault(int(parent_text), []).append(int(pid_text))
+        except (ValueError, TypeError):
+            continue
+    descendants: list[int] = []
+
+    def visit(parent: int) -> None:
+        for child in children.get(parent, []):
+            visit(child)
+            descendants.append(child)
+
+    visit(root_pid)
+    return descendants
+
+
+async def _terminate_process_tree(
+    process: asyncio.subprocess.Process,
+    *,
+    grace_seconds: float = 0.5,
+) -> None:
+    """Terminate a ScriptNode process and every descendant it created."""
+    if process.returncode is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(process.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        except (FileNotFoundError, OSError):
+            process.kill()
+    else:
+        inherited_executor_group = (
+            os.getenv("DETERMINFLOW_RUNTIME_ROLE") == "workflow-executor"
+        )
+        targets = (
+            [*_descendant_pids(process.pid), process.pid]
+            if inherited_executor_group
+            else []
+        )
+        try:
+            if inherited_executor_group:
+                for pid in targets:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+            else:
+                os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace_seconds)
+            return
+        except asyncio.TimeoutError:
+            if inherited_executor_group:
+                for pid in targets:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return
+    try:
+        await process.wait()
+    except ProcessLookupError:
+        pass
 
 
 def _truncate(text: str, max_bytes: int = _MAX_OUTPUT_BYTES) -> str:
@@ -424,12 +513,16 @@ class ScriptNode(BaseNodePlugin):
             f"cwd={working_dir})"
         )
 
+        process: asyncio.subprocess.Process | None = None
         try:
             subprocess_options = {}
             if sys.platform == "win32":
-                subprocess_options["creationflags"] = getattr(
-                    subprocess, "CREATE_NO_WINDOW", 0x08000000
+                subprocess_options["creationflags"] = (
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
                 )
+            elif os.getenv("DETERMINFLOW_RUNTIME_ROLE") != "workflow-executor":
+                subprocess_options["start_new_session"] = True
             process = await asyncio.create_subprocess_exec(
                 *cmd_line,
                 stdout=asyncio.subprocess.PIPE,
@@ -446,8 +539,11 @@ class ScriptNode(BaseNodePlugin):
             stdout_text = ""
             stderr_text = ""
             try:
-                process.kill()
-                partial_stdout, partial_stderr = await process.communicate()
+                if process is not None:
+                    await _terminate_process_tree(process)
+                    partial_stdout, partial_stderr = await process.communicate()
+                else:
+                    partial_stdout, partial_stderr = b"", b""
                 stdout_text = partial_stdout.decode("utf-8", errors="replace") if partial_stdout else ""
                 stderr_text = partial_stderr.decode("utf-8", errors="replace") if partial_stderr else ""
             except Exception:
@@ -458,7 +554,12 @@ class ScriptNode(BaseNodePlugin):
                 stdout_text=stdout_text, stderr_text=stderr_text,
                 exit_code=None,
             )
+        except asyncio.CancelledError:
+            if process is not None:
+                await _terminate_process_tree(process)
+            raise
 
+        assert process is not None
         exit_code = process.returncode
 
         stdout_text = stdout_bytes.decode("utf-8", errors="replace")
