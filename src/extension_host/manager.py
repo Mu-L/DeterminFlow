@@ -61,6 +61,7 @@ from .runtime_failure import (
 from .source_config import load_plugin_sources
 from .tool_registry import ExtensionToolRegistry
 from .workflow_provisioning import provision_plugin_workflows
+from .executor_plane import ExtensionExecutorPlaneMixin
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class _ResourceOnlyExtension:
         return None
 
 
-class ExtensionManager:
+class ExtensionManager(ExtensionExecutorPlaneMixin):
     """Owns discovery, dependency ordering, registration and lifecycle."""
 
     def __init__(
@@ -174,6 +175,10 @@ class ExtensionManager:
         self._started_extensions: set[str] = set()
         self._starting_extensions: dict[str, asyncio.Event] = {}
         self._degrading_extensions: set[str] = set()
+        self._executor_active_owners: set[str] = set()
+        self._executor_runtime_owners: set[str] = set()
+        self._executor_started_extensions: set[str] = set()
+        self._executor_registered_tool_owners: set[str] = set()
         self._stopping = False
         self._strict_startup = False
         self._configured_enabled: list[str] = []
@@ -959,7 +964,7 @@ class ExtensionManager:
     async def build_prompt_context(self, request: PromptContextRequest) -> str:
         contributions: list[PromptContribution] = []
         for owner, provider in self.contributions.prompt_context_providers:
-            if self._states.get(owner, {}).get("status") != "running":
+            if not self._runtime_hooks_enabled(owner):
                 continue
             try:
                 value = await provider.provide(request)
@@ -975,7 +980,7 @@ class ExtensionManager:
     async def notify_session_end(self, session: Any) -> None:
         calls = []
         for owner, hook in self.contributions.session_hooks:
-            if self._states.get(owner, {}).get("status") != "running":
+            if not self._runtime_hooks_enabled(owner):
                 continue
             async def invoke(current_owner: str = owner, current_hook: Any = hook) -> None:
                 try:
