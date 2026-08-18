@@ -280,6 +280,21 @@ def test_workflow_task_main_takeover_defaults_off_and_round_trips():
     assert WorkflowTask.from_dict(takeover.to_dict()).main_takeover is True
 
 
+def test_workflow_task_executor_owner_round_trips_and_legacy_defaults_empty():
+    legacy = WorkflowTask.from_dict({"task_id": "task-legacy"})
+    assigned = WorkflowTask(
+        task_id="task-owned",
+        executor_id="workflow-executor-0",
+        executor_epoch="epoch-1",
+    )
+
+    assert legacy.executor_id is None
+    assert legacy.executor_epoch is None
+    restored = WorkflowTask.from_dict(assigned.to_dict())
+    assert restored.executor_id == "workflow-executor-0"
+    assert restored.executor_epoch == "epoch-1"
+
+
 def test_legacy_agent_waiting_approval_preserves_main_takeover():
     restored = WorkflowTask.from_dict({
         "task_id": "task-waiting",

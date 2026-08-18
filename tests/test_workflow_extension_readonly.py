@@ -122,7 +122,7 @@ def test_disabled_extension_workflow_history_is_read_only(tmp_path, monkeypatch)
     assert not manager.approve_node(
         workflow_id, task.task_id, "approval", True,
     )["success"]
-    assert manager.delete_workflow(workflow_id) is False
+    assert asyncio.run(manager.delete_workflow(workflow_id)) is False
 
     script_dir = workflow_dir / "script"
     script_dir.mkdir()

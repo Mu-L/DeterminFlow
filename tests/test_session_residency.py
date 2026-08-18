@@ -154,6 +154,79 @@ def test_startup_indexes_history_without_hydrating_terminal_workflow_sessions(
     assert [child["session_id"] for child in tree["children"]] == ["sub-finished"]
 
 
+def test_external_workflow_session_refresh_discovers_and_invalidates_cold_copy(
+    isolated_sessions,
+):
+    manager = SessionManager(cold_cache_max_entries=2)
+    manager.load_sessions(hot_runtime_scope="interactive")
+    _write_session(
+        isolated_sessions,
+        "wf-external",
+        session_type="sub",
+        workflow_id="wf-example",
+        task_id="task-live",
+        content="first",
+    )
+
+    assert manager.refresh_external_session("wf-external") is True
+    first = manager.get_session("wf-external")
+    assert first is not None
+    assert first.get_last_assistant_message() == "first"
+
+    _write_session(
+        isolated_sessions,
+        "wf-external",
+        session_type="sub",
+        workflow_id="wf-example",
+        task_id="task-live",
+        content="second",
+    )
+    assert manager.refresh_external_session("wf-external") is True
+    refreshed = manager.get_session("wf-external")
+    assert refreshed is not None
+    assert refreshed is not first
+    assert refreshed.get_last_assistant_message() == "second"
+
+
+def test_external_session_refresh_never_displaces_hot_runtime_owner(
+    isolated_sessions,
+):
+    _write_session(
+        isolated_sessions,
+        "chat-main",
+        session_type="main",
+        runtime_scope="interactive",
+        content="owned",
+    )
+    manager = SessionManager()
+    manager.load_sessions(hot_runtime_scope="interactive")
+    owned = manager.sessions["chat-main"]
+
+    assert manager.refresh_external_session("chat-main") is False
+    assert manager.sessions["chat-main"] is owned
+
+
+def test_split_controller_cold_read_preserves_live_workflow_sub_status(
+    isolated_sessions,
+):
+    _write_session(
+        isolated_sessions,
+        "workflow-live-sub",
+        session_type="sub",
+        status="streaming",
+        workflow_id="wf-example",
+        task_id="task-live",
+        runtime_scope="workflow",
+    )
+    manager = SessionManager()
+    manager.load_sessions(hot_runtime_scope="interactive")
+
+    session = manager.get_session("workflow-live-sub")
+
+    assert session is not None
+    assert session.status == "streaming"
+
+
 def test_deleting_historical_main_cascades_sessions_and_workflow_tasks(
     isolated_sessions,
     tmp_path,

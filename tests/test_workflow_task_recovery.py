@@ -23,6 +23,7 @@ from src.workflow.definition import (
 )
 from src.workflow.failure_policy import AUTO_RETRY_TRIGGER
 from src.workflow.manager import WorkflowManager
+from src.workflow.executor_protocol import ExecutorIdentity
 from src.workflow.nodes import BaseNodePlugin, NodeContext, NodeResult, registry
 
 
@@ -103,6 +104,54 @@ def _save_task(
     )
     manager._save_task(task)
     return task
+
+
+def test_recovery_scope_does_not_touch_live_sibling_executor(
+    tmp_path, monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    owned = _save_task(
+        manager,
+        workflow_id="wf-pool",
+        task_id="task-owned",
+        task_status="running",
+        node_status="running",
+    )
+    sibling = _save_task(
+        manager,
+        workflow_id="wf-pool",
+        task_id="task-sibling",
+        task_status="running",
+        node_status="running",
+    )
+    owned.executor_id = "workflow-executor-0"
+    owned.executor_epoch = "new-0"
+    sibling.executor_id = "workflow-executor-1"
+    sibling.executor_epoch = "live-1"
+    manager._save_task(owned)
+    manager._save_task(sibling)
+    recovered = []
+
+    async def fake_recover(task):
+        recovered.append(task.task_id)
+        return "resumed"
+
+    manager._recover_task = fake_recover
+    summary = asyncio.run(manager.recover_workflow_tasks(
+        executor_identity=ExecutorIdentity("workflow-executor-0", "new-0"),
+    ))
+
+    assert recovered == ["task-owned"]
+    assert summary == {
+        "scanned": 1,
+        "resumed": 1,
+        "scheduled": 0,
+        "failed": 0,
+        "errors": 0,
+    }
+    untouched = manager._load_task("wf-pool", "task-sibling")
+    assert untouched.executor_epoch == "live-1"
+    assert untouched.node_states["writer"].status == "running"
 
 
 def test_manual_retry_preserves_task_snapshot_and_parameters(

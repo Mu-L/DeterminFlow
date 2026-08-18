@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import json
+import os
+import shlex
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +22,11 @@ from src.workflow.definition import (
 from src.workflow.engine import WorkflowEngine
 from src.workflow.failure_policy import activate_scheduled_retry
 from src.workflow.nodes.base import NodeContext
-from src.workflow.nodes.script import ScriptNode, _parse_reject_upstream
+from src.workflow.nodes.script import (
+    ScriptNode,
+    _parse_reject_upstream,
+    _terminate_process_tree,
+)
 from src.workflow.token_usage import aggregate_token_usage
 
 
@@ -29,6 +36,59 @@ def test_parse_reject_upstream_with_target():
     )
 
     assert parsed == ("字段缺失", "agent_l1")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix process-group assertion")
+def test_script_process_tree_is_terminated_on_task_cancel(tmp_path):
+    async def scenario():
+        child_pid_file = tmp_path / "child.pid"
+        process = await asyncio.create_subprocess_exec(
+            "bash",
+            "-c",
+            f"sleep 60 & echo $! > {shlex.quote(str(child_pid_file))}; wait",
+            start_new_session=True,
+        )
+        for _ in range(100):
+            if child_pid_file.exists():
+                break
+            await asyncio.sleep(0.01)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        await _terminate_process_tree(process, grace_seconds=0.1)
+
+        assert process.returncode is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix process-tree assertion")
+def test_executor_script_tree_is_terminated_without_killing_executor_group(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("DETERMINFLOW_RUNTIME_ROLE", "workflow-executor")
+
+    async def scenario():
+        child_pid_file = tmp_path / "executor-child.pid"
+        process = await asyncio.create_subprocess_exec(
+            "bash",
+            "-c",
+            f"sleep 60 & echo $! > {shlex.quote(str(child_pid_file))}; wait",
+        )
+        for _ in range(100):
+            if child_pid_file.exists():
+                break
+            await asyncio.sleep(0.01)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        await _terminate_process_tree(process, grace_seconds=0.1)
+
+        assert process.returncode is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+
+    asyncio.run(scenario())
 
 
 def test_script_node_reject_protocol_calls_callback(tmp_path, monkeypatch):
