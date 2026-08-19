@@ -179,16 +179,30 @@ class WorkflowExecutorSupervisor:
         self._set_status(STATUS_STARTING)
         self._runtime_dir = Path(tempfile.mkdtemp(prefix="determinflow-executor-"))
         restrict_private_path(self._runtime_dir, 0o700)
-        if self.event_handler is not None:
-            initial_identity = ExecutorIdentity(self.executor_id, uuid.uuid4().hex)
-            self._auth_token = generate_auth_token()
-            self._event_receiver = ControllerEventReceiver(
-                initial_identity,
-                self.event_handler,
-                auth_token=self._auth_token,
-            )
-            await self._event_receiver.start()
-        await self._spawn()
+        try:
+            if self.event_handler is not None:
+                initial_identity = ExecutorIdentity(
+                    self.executor_id, uuid.uuid4().hex,
+                )
+                self._auth_token = generate_auth_token()
+                self._event_receiver = ControllerEventReceiver(
+                    initial_identity,
+                    self.event_handler,
+                    auth_token=self._auth_token,
+                )
+                await self._event_receiver.start()
+            await self._spawn()
+        except Exception:
+            self._process = None
+            if self._event_receiver is not None:
+                await self._event_receiver.close()
+                self._event_receiver = None
+            if self._runtime_dir is not None:
+                shutil.rmtree(self._runtime_dir, ignore_errors=True)
+                self._runtime_dir = None
+            self._auth_token = None
+            self._set_status(STATUS_STOPPED)
+            raise
         self._mark_ready_if_open()
         self._monitor_task = asyncio.create_task(
             self._monitor(), name=f"{self.executor_id}-supervisor"
@@ -372,4 +386,5 @@ class WorkflowExecutorSupervisor:
                 self._event_receiver = None
             shutil.rmtree(self._runtime_dir, ignore_errors=True)
             self._runtime_dir = None
+        self._auth_token = None
         self._set_status(STATUS_STOPPED)

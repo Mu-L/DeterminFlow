@@ -7,6 +7,8 @@ import logging
 import os
 import signal
 import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -27,6 +29,7 @@ TH32CS_SNAPTHREAD = 0x00000004
 WAIT_OBJECT_0 = 0
 WAIT_TIMEOUT = 258
 INFINITE_PROBE_MS = 1000
+RESUME_FAILED = 0xFFFFFFFF
 
 
 def process_is_alive(pid: int) -> bool:
@@ -39,6 +42,15 @@ def process_is_alive(pid: int) -> bool:
             return False
         except PermissionError:
             return True
+        if sys.platform.startswith("linux"):
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text(
+                    encoding="utf-8", errors="replace",
+                )
+                if stat[stat.rfind(")") + 2:].split()[0] == "Z":
+                    return False
+            except (OSError, IndexError):
+                pass
         return True
     api = _windows_api()
     handle = api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
@@ -67,7 +79,7 @@ def force_kill_pid(pid: int) -> None:
 
 
 def forced_exit_code() -> int:
-    return 1 if os.name == "nt" else -signal.SIGKILL
+    return signal.SIGTERM if os.name == "nt" else -signal.SIGKILL
 
 
 class ExecutorProcessTree:
@@ -76,19 +88,12 @@ class ExecutorProcessTree:
     def __init__(self) -> None:
         self._pgid: int | None = None
         self._job: Any = None
-        self._fallback_pid: int | None = None
-        self._use_suspend = os.name == "nt"
 
     def spawn_options(self) -> dict[str, Any]:
         if os.name != "nt":
             return {"start_new_session": True}
-        flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        if self._use_suspend:
-            flags |= CREATE_SUSPENDED
+        flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_SUSPENDED
         return {"creationflags": flags}
-
-    def disable_suspend(self) -> None:
-        self._use_suspend = False
 
     def attach(self, pid: int) -> None:
         if pid <= 0:
@@ -97,18 +102,19 @@ class ExecutorProcessTree:
             self._pgid = pid
             return
         job = _WindowsJobObject.create()
-        assigned = job is not None and job.assign(pid)
-        if self._use_suspend:
-            _resume_process_threads(pid)
-        if assigned:
-            self._job = job
-            return
-        if job is not None:
+        if job is None:
+            raise RuntimeError("Workflow Executor Job Object creation failed")
+        if not job.assign(pid):
             job.close()
-        logger.warning(
-            "Workflow Executor Job Object unavailable; falling back to taskkill"
-        )
-        self._fallback_pid = pid
+            raise RuntimeError("Workflow Executor Job Object assignment failed")
+        self._job = job
+        try:
+            _resume_process_threads(pid)
+        except Exception:
+            self._job = None
+            job.terminate()
+            job.close()
+            raise
 
     def reap(self) -> None:
         if os.name != "nt":
@@ -126,11 +132,6 @@ class ExecutorProcessTree:
         if job is not None:
             job.terminate()
             job.close()
-            return
-        pid = self._fallback_pid
-        self._fallback_pid = None
-        if pid is not None:
-            _taskkill_tree(pid)
 
     def close(self) -> None:
         """Release the job handle. KILL_ON_JOB_CLOSE reaps leftovers."""
@@ -227,6 +228,7 @@ class _WindowsApi:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.kernel32 = kernel32
         self.get_last_error = ctypes.get_last_error
+        self.INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
         class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
             _fields_ = [
@@ -352,12 +354,13 @@ def _windows_api() -> _WindowsApi:
 def _resume_process_threads(pid: int) -> None:
     api = _windows_api()
     snapshot = api.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
-    if not snapshot:
+    if not snapshot or snapshot == api.INVALID_HANDLE_VALUE:
         raise RuntimeError("CreateToolhelp32Snapshot failed")
     try:
         entry = api.THREADENTRY32()
         entry.dwSize = api.sizeof(entry)
         more = api.Thread32First(snapshot, api.byref(entry))
+        resumed = 0
         while more:
             if int(entry.th32OwnerProcessID) == pid:
                 thread = api.OpenThread(
@@ -365,24 +368,17 @@ def _resume_process_threads(pid: int) -> None:
                 )
                 if thread:
                     try:
-                        api.ResumeThread(thread)
+                        previous = api.ResumeThread(thread)
+                        if previous == RESUME_FAILED:
+                            raise RuntimeError("ResumeThread failed")
+                        resumed += 1
                     finally:
                         api.CloseHandle(thread)
             more = api.Thread32Next(snapshot, api.byref(entry))
+        if resumed == 0:
+            raise RuntimeError("Workflow Executor suspended thread was not found")
     finally:
         api.CloseHandle(snapshot)
-
-
-def _taskkill_tree(pid: int) -> None:
-    try:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError:
-        force_kill_pid(pid)
 
 
 async def _watch_parent_windows(parent_pid: int, stop_event: asyncio.Event) -> None:

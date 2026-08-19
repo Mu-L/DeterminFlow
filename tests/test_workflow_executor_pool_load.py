@@ -102,12 +102,23 @@ def test_process_sample_sets_pss_null_off_linux():
 def test_overlapping_executions_ignore_sequential_restart():
     events = [
         {"event": "start", "task_id": "t1", "pid": 11, "ts": 1.0},
+        {"event": "complete", "task_id": "t1", "pid": 11, "ts": 1.5},
         {"event": "start", "task_id": "t1", "pid": 12, "ts": 2.0},
         {"event": "complete", "task_id": "t1", "pid": 12, "ts": 3.0},
         {"event": "start", "task_id": "t2", "pid": 21, "ts": 1.0},
         {"event": "complete", "task_id": "t2", "pid": 21, "ts": 2.0},
     ]
     assert overlapping_task_ids(events) == []
+
+
+def test_overlapping_executions_detect_completed_intervals_that_intersect():
+    events = [
+        {"event": "start", "task_id": "t1", "pid": 11, "ts": 1.0},
+        {"event": "start", "task_id": "t1", "pid": 12, "ts": 2.0},
+        {"event": "complete", "task_id": "t1", "pid": 11, "ts": 3.0},
+        {"event": "complete", "task_id": "t1", "pid": 12, "ts": 4.0},
+    ]
+    assert overlapping_task_ids(events) == ["t1"]
 
 
 def test_cli_requires_explicit_matrix_or_counts():

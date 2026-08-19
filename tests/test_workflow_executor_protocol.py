@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import src.workflow.executor_process as executor_process_module
 import src.workflow.manager as workflow_manager_module
 import src.workflow.executor_supervisor as executor_supervisor_module
 from src.workflow.manager import WorkflowManager
@@ -418,6 +419,67 @@ def test_supervisor_reaps_executor_descendants_without_touching_siblings(tmp_pat
                 await victim.wait()
 
     asyncio.run(scenario())
+
+
+def test_windows_process_tree_fails_closed_when_job_assignment_fails(monkeypatch):
+    closed = False
+
+    class FakeJob:
+        def assign(self, _pid):
+            return False
+
+        def close(self):
+            nonlocal closed
+            closed = True
+
+    monkeypatch.setattr(executor_process_module.os, "name", "nt")
+    monkeypatch.setattr(
+        executor_process_module._WindowsJobObject,
+        "create",
+        classmethod(lambda _cls: FakeJob()),
+    )
+    tree = ExecutorProcessTree()
+
+    with pytest.raises(RuntimeError, match="assignment failed"):
+        tree.attach(12345)
+
+    assert closed is True
+
+
+def test_windows_process_tree_closes_job_when_thread_resume_fails(monkeypatch):
+    terminated = False
+    closed = False
+
+    class FakeJob:
+        def assign(self, _pid):
+            return True
+
+        def terminate(self):
+            nonlocal terminated
+            terminated = True
+
+        def close(self):
+            nonlocal closed
+            closed = True
+
+    monkeypatch.setattr(executor_process_module.os, "name", "nt")
+    monkeypatch.setattr(
+        executor_process_module._WindowsJobObject,
+        "create",
+        classmethod(lambda _cls: FakeJob()),
+    )
+
+    def fail_resume(_pid):
+        raise RuntimeError("resume failed")
+
+    monkeypatch.setattr(executor_process_module, "_resume_process_threads", fail_resume)
+    tree = ExecutorProcessTree()
+
+    with pytest.raises(RuntimeError, match="resume failed"):
+        tree.attach(12345)
+
+    assert terminated is True
+    assert closed is True
 
 
 def test_real_executor_process_restarts_with_new_pid_and_epoch(

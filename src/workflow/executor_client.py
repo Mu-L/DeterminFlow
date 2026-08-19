@@ -85,6 +85,7 @@ class WorkflowExecutorClient:
 
     async def _call(self, operation: str, arguments: dict[str, Any]) -> Any:
         request = self._request(operation, arguments)
+        writer: asyncio.StreamWriter | None = None
         try:
             reader, writer = await open_loopback_connection(
                 self.endpoint,
@@ -93,10 +94,15 @@ class WorkflowExecutorClient:
             writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
             await writer.drain()
             raw = await reader.readline()
-            writer.close()
-            await writer.wait_closed()
         except (OSError, asyncio.TimeoutError) as exc:
             raise ExecutorUnavailable(f"Workflow Executor unavailable: {exc}") from exc
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
         if not raw or len(raw) > MAX_FRAME_BYTES:
             raise ExecutorUnavailable("Executor returned an empty or oversized response")
         try:
