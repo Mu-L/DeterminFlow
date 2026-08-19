@@ -23,13 +23,13 @@ class ExecutorProcessLease:
             raise ExecutorLeaseUnavailable("Executor lease path must not be a symlink")
         handle = self.path.open("a+b")
         os.chmod(self.path, 0o600)
-        handle.seek(0)
-        if handle.read(1) == b"":
-            handle.write(b"0")
-            handle.flush()
         deadline = time.monotonic() + timeout
         while True:
             try:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
                 self._lock(handle)
                 self._handle = handle
                 return

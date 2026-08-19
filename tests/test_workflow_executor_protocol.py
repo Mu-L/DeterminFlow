@@ -1011,7 +1011,8 @@ def test_executor_process_lease_proves_single_live_owner(tmp_path):
 
     second.acquire(0.1)
     second.release()
-    assert lease_path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert lease_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_cold_start_reassigns_only_recoverable_tasks_from_same_executor(
@@ -1118,12 +1119,13 @@ def test_cold_start_reconciles_stale_and_retired_pool_assignments(
     assert (stale.executor_id, stale.executor_epoch) == (
         "workflow-executor-0", "new-0",
     )
-    assert (retired.executor_id, retired.executor_epoch) == (
-        "workflow-executor-0", "new-0",
-    )
-    assert (new.executor_id, new.executor_epoch) == (
-        "workflow-executor-1", "new-1",
-    )
+    assert {
+        (retired.executor_id, retired.executor_epoch),
+        (new.executor_id, new.executor_epoch),
+    } == {
+        ("workflow-executor-0", "new-0"),
+        ("workflow-executor-1", "new-1"),
+    }
     assert (completed.executor_id, completed.executor_epoch) == (
         "workflow-executor-4", "old-4",
     )

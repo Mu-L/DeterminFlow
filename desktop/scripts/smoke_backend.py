@@ -238,6 +238,11 @@ def _exercise_workflow_distribution(base_url: str, user_root: Path) -> None:
             f"process/4 assignment mismatch: expected={expected}, "
             f"actual={dict(assignments)}"
         )
+    usage = _request_json(
+        f"{base_url}/api/workflows/{workflow_id}/tasks/{task_ids[0]}/token-usage",
+    )
+    if usage.get("cost_status") != "no_usage":
+        raise RuntimeError(f"unexpected script-only token usage: {usage}")
 
 
 def _wait_for_processes_exit(pids: list[int], timeout: float) -> list[int]:
