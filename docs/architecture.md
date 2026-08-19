@@ -88,11 +88,11 @@ detached Workflow Task 在活着且 `ready` 的成员之间轮询分配，并持
 
 成员状态为 `starting`、`ready`、`restarting`、`stopping`、`stopped`。新 Task
 只路由到 `ready` 成员；sticky 控制仍按持久 `executor_id` 返回原成员，不因临时
-未就绪改绑。Executor 通过有版本、白名单和世代校验的本机 IPC 转发事件并接收
-控制命令。`/api/system/status` 的 `workflow_executor` 字段只公开模式、配置数、
-成员/ready/可达数、PID/epoch/uptime、活跃 Task 数、重启和 RPC/Event 计数；不
-暴露 socket、环境变量、凭据或 Task 正文。单成员不可达时返回降级快照，不把整
-个系统状态接口升级为 500。
+未就绪改绑。Executor 通过有版本、白名单、世代校验和本机 loopback 令牌的 IPC
+转发事件并接收控制命令。`/api/system/status` 的 `workflow_executor` 字段只公开
+模式、配置数、成员/ready/可达数、PID/epoch/uptime、活跃 Task 数、重启和
+RPC/Event 计数；不暴露 endpoint、令牌、环境变量、凭据或 Task 正文。单成员
+不可达时返回降级快照，不把整个系统状态接口升级为 500。
 
 需要单进程回退时设置 `DETERMINFLOW_WORKFLOW_EXECUTOR_MODE=inline` 和
 `DETERMINFLOW_WORKFLOW_EXECUTOR_COUNT=1`。process/inline 切换前必须先证明上一

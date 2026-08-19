@@ -5,12 +5,8 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
-import os
-import signal
 import sys
 from pathlib import Path
-
-import pytest
 
 
 def _load_harness():
@@ -49,7 +45,6 @@ def _identities(pool):
     return {identity.executor_id: identity for identity in pool.identities}
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix socket and process-group scenario")
 def test_real_pool_distributes_script_tasks_and_keeps_sticky_binding(
     tmp_path, monkeypatch,
 ):
@@ -147,7 +142,6 @@ def test_real_pool_distributes_script_tasks_and_keeps_sticky_binding(
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix SIGKILL and process-group scenario")
 def test_real_pool_sigkill_recovers_only_victim_and_reaps_old_script_tree(
     tmp_path, monkeypatch,
 ):
@@ -245,7 +239,7 @@ def test_real_pool_sigkill_recovers_only_victim_and_reaps_old_script_tree(
             tracker.add_pid(sibling_script_pid)
             tracker.add_pid(sibling_child_pid)
 
-            os.kill(original_pids["workflow-executor-0"], signal.SIGKILL)
+            _harness.force_kill_pid(original_pids["workflow-executor-0"])
             await wait_until(
                 lambda: (
                     pool.member_pids.get("workflow-executor-0")

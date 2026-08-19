@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
 import uuid
-from pathlib import Path
 from typing import Any
 
 from .executor_protocol import (
+    AUTH_TOKEN_FIELD,
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
     RPC_TIMEOUT_SECONDS,
     ExecutorIdentity,
+)
+from .executor_transport import (
+    LoopbackEndpoint,
+    open_loopback_connection,
+    open_loopback_socket_sync,
+    require_auth_token,
 )
 
 
@@ -22,14 +27,29 @@ class ExecutorUnavailable(RuntimeError):
 
 
 class WorkflowExecutorClient:
-    def __init__(self, socket_path: Path, identity: ExecutorIdentity):
-        self.socket_path = Path(socket_path)
+    def __init__(
+        self,
+        endpoint: LoopbackEndpoint,
+        identity: ExecutorIdentity,
+        *,
+        auth_token: str,
+    ):
+        self.endpoint = endpoint
         self.identity = identity
+        self.auth_token = require_auth_token(auth_token)
 
     def update_identity(self, identity: ExecutorIdentity) -> None:
         if identity.executor_id != self.identity.executor_id:
             raise ValueError("cannot change executor_id on a live client")
         self.identity = identity
+
+    def update_transport(
+        self,
+        endpoint: LoopbackEndpoint,
+        auth_token: str,
+    ) -> None:
+        self.endpoint = endpoint
+        self.auth_token = require_auth_token(auth_token)
 
     def _request(self, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -37,6 +57,7 @@ class WorkflowExecutorClient:
             "request_id": uuid.uuid4().hex,
             "executor_id": self.identity.executor_id,
             "executor_epoch": self.identity.epoch,
+            AUTH_TOKEN_FIELD: self.auth_token,
             "operation": operation,
             "arguments": arguments,
         }
@@ -65,8 +86,8 @@ class WorkflowExecutorClient:
     async def _call(self, operation: str, arguments: dict[str, Any]) -> Any:
         request = self._request(operation, arguments)
         try:
-            reader, writer = await asyncio.open_unix_connection(
-                self.socket_path,
+            reader, writer = await open_loopback_connection(
+                self.endpoint,
                 limit=MAX_FRAME_BYTES + 1,
             )
             writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
@@ -87,9 +108,7 @@ class WorkflowExecutorClient:
     def call_sync(self, operation: str, **arguments: Any) -> Any:
         request = self._request(operation, arguments)
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(10.0)
-                client.connect(str(self.socket_path))
+            with open_loopback_socket_sync(self.endpoint, timeout=10.0) as client:
                 client.sendall(
                     json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n"
                 )

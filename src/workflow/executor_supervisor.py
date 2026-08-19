@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import shutil
 import sys
 import tempfile
@@ -17,8 +16,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .executor_client import ExecutorUnavailable, WorkflowExecutorClient
-from .executor_protocol import ExecutorIdentity
 from .executor_events import ControllerEventReceiver, EventHandler
+from .executor_process import ExecutorProcessTree
+from .executor_protocol import ExecutorIdentity
+from .executor_transport import (
+    AUTH_TOKEN_ENV,
+    LOOPBACK_HOST,
+    generate_auth_token,
+    restrict_private_path,
+    wait_for_endpoint_file,
+)
 from src.config import DATA_DIR
 
 
@@ -73,10 +80,12 @@ class WorkflowExecutorSupervisor:
         self.event_handler = event_handler
         self._runtime_dir: Path | None = None
         self._process: asyncio.subprocess.Process | None = None
+        self._process_tree: ExecutorProcessTree | None = None
         self._monitor_task: asyncio.Task | None = None
         self._closing = False
         self.client: WorkflowExecutorClient | None = None
         self._event_receiver: ControllerEventReceiver | None = None
+        self._auth_token: str | None = None
         self._state_lock = threading.Lock()
         self._status = STATUS_STOPPED
         self._restart_count = 0
@@ -157,15 +166,11 @@ class WorkflowExecutorSupervisor:
         if not self._closing:
             self._set_status(STATUS_READY)
 
-    @staticmethod
-    def _kill_remaining_process_group(pid: int) -> None:
-        """Reap descendants that survived the Executor process itself."""
-        if os.name == "nt":
-            return
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    def _reap_process_tree(self) -> None:
+        tree = self._process_tree
+        self._process_tree = None
+        if tree is not None:
+            tree.reap()
 
     async def start(self) -> WorkflowExecutorClient:
         if self._process is not None:
@@ -173,13 +178,14 @@ class WorkflowExecutorSupervisor:
         self._closing = False
         self._set_status(STATUS_STARTING)
         self._runtime_dir = Path(tempfile.mkdtemp(prefix="determinflow-executor-"))
-        os.chmod(self._runtime_dir, 0o700)
+        restrict_private_path(self._runtime_dir, 0o700)
         if self.event_handler is not None:
             initial_identity = ExecutorIdentity(self.executor_id, uuid.uuid4().hex)
+            self._auth_token = generate_auth_token()
             self._event_receiver = ControllerEventReceiver(
-                self._runtime_dir / "events.sock",
                 initial_identity,
                 self.event_handler,
+                auth_token=self._auth_token,
             )
             await self._event_receiver.start()
         await self._spawn()
@@ -192,20 +198,29 @@ class WorkflowExecutorSupervisor:
 
     async def _spawn(self) -> None:
         assert self._runtime_dir is not None
-        socket_path = self._runtime_dir / "rpc.sock"
-        socket_path.unlink(missing_ok=True)
+        endpoint_path = self._runtime_dir / "rpc.endpoint"
+        endpoint_path.unlink(missing_ok=True)
         identity = ExecutorIdentity(self.executor_id, uuid.uuid4().hex)
+        auth_token = generate_auth_token()
+        self._auth_token = auth_token
         if self._event_receiver is not None:
             self._event_receiver.update_identity(identity)
+            self._event_receiver.update_auth_token(auth_token)
         environment = os.environ.copy()
         environment["DETERMINFLOW_RUNTIME_ROLE"] = "workflow-executor"
-        process_options = {"start_new_session": True} if os.name != "nt" else {}
+        environment[AUTH_TOKEN_ENV] = auth_token
+        event_host = LOOPBACK_HOST
+        event_port = 1
+        if self._event_receiver is not None:
+            event_host = self._event_receiver.endpoint.host
+            event_port = self._event_receiver.endpoint.port
+        process_tree = ExecutorProcessTree()
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
             "src.workflow.executor_worker",
-            "--socket-path",
-            str(socket_path),
+            "--rpc-endpoint-path",
+            str(endpoint_path),
             "--executor-id",
             identity.executor_id,
             "--executor-epoch",
@@ -214,20 +229,39 @@ class WorkflowExecutorSupervisor:
             str(os.getpid()),
             "--lease-path",
             str(self.lease_path),
-            "--event-socket-path",
-            str(self._runtime_dir / "events.sock"),
+            "--event-host",
+            event_host,
+            "--event-port",
+            str(event_port),
             env=environment,
-            **process_options,
+            **process_tree.spawn_options(),
         )
         self._process = process
+        self._process_tree = process_tree
+        try:
+            process_tree.attach(process.pid)
+        except Exception:
+            await self._abort_process(process)
+            raise
+        deadline = asyncio.get_running_loop().time() + self.startup_timeout
+        try:
+            endpoint = await wait_for_endpoint_file(
+                endpoint_path, process, deadline=deadline,
+            )
+        except Exception:
+            await self._abort_process(process)
+            raise
         if self.client is None:
-            self.client = WorkflowExecutorClient(socket_path, identity)
+            self.client = WorkflowExecutorClient(
+                endpoint, identity, auth_token=auth_token,
+            )
         else:
             self.client.update_identity(identity)
-        deadline = asyncio.get_running_loop().time() + self.startup_timeout
+            self.client.update_transport(endpoint, auth_token)
         while True:
             if process.returncode is not None:
                 self._record_exit_code(process.returncode)
+                self._reap_process_tree()
                 raise RuntimeError(
                     f"Workflow Executor exited during startup: {process.returncode}"
                 )
@@ -236,16 +270,20 @@ class WorkflowExecutorSupervisor:
                 return
             except ExecutorUnavailable:
                 if asyncio.get_running_loop().time() >= deadline:
-                    process.terminate()
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        process.kill()
-                        await process.wait()
-                    self._kill_remaining_process_group(process.pid)
-                    self._record_exit_code(process.returncode)
+                    await self._abort_process(process)
                     raise TimeoutError("Workflow Executor startup timed out")
                 await asyncio.sleep(0.1)
+
+    async def _abort_process(self, process: asyncio.subprocess.Process) -> None:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        self._record_exit_code(process.returncode)
+        self._reap_process_tree()
 
     async def _monitor(self) -> None:
         while not self._closing:
@@ -253,7 +291,7 @@ class WorkflowExecutorSupervisor:
             if process is None:
                 return
             return_code = await process.wait()
-            self._kill_remaining_process_group(process.pid)
+            self._reap_process_tree()
             if self._closing:
                 self._record_exit_code(return_code)
                 return
@@ -322,7 +360,7 @@ class WorkflowExecutorSupervisor:
                     await process.wait()
         if process is not None and process.returncode is not None:
             self._record_exit_code(process.returncode)
-            self._kill_remaining_process_group(process.pid)
+            self._reap_process_tree()
         self._process = None
         if self._monitor_task is not None:
             if self._monitor_task is not asyncio.current_task():

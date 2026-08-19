@@ -1,11 +1,10 @@
 import asyncio
 import json
 import os
-import signal
+import socket
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,14 @@ from src.workflow.executor_client import (
     ExecutorUnavailable,
     WorkflowExecutorClient,
 )
+from src.workflow.executor_process import (
+    ExecutorProcessTree,
+    force_kill_pid,
+    forced_exit_code,
+    process_is_alive,
+)
 from src.workflow.executor_protocol import (
+    AUTH_TOKEN_FIELD,
     PROTOCOL_VERSION,
     ExecutorIdentity,
     ExecutorProtocolError,
@@ -42,6 +48,15 @@ from src.workflow.executor_events import (
     ExecutorEventForwarder,
 )
 from src.workflow.executor_supervisor import WorkflowExecutorSupervisor
+from src.workflow.executor_transport import (
+    LOOPBACK_HOST,
+    LoopbackEndpoint,
+    parse_loopback_endpoint,
+    start_loopback_server,
+)
+
+
+TEST_AUTH_TOKEN = "test-auth-token"
 
 
 def _request(identity: ExecutorIdentity, **overrides):
@@ -50,11 +65,27 @@ def _request(identity: ExecutorIdentity, **overrides):
         "request_id": "request-1",
         "executor_id": identity.executor_id,
         "executor_epoch": identity.epoch,
+        AUTH_TOKEN_FIELD: TEST_AUTH_TOKEN,
         "operation": "run_task",
         "arguments": {"workflow_id": "wf-1", "task_id": "task-1"},
     }
     request.update(overrides)
     return request
+
+
+def _unused_endpoint() -> LoopbackEndpoint:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind((LOOPBACK_HOST, 0))
+        port = listener.getsockname()[1]
+    return LoopbackEndpoint(LOOPBACK_HOST, port)
+
+
+def _client(identity: ExecutorIdentity, endpoint=None, token=TEST_AUTH_TOKEN):
+    return WorkflowExecutorClient(
+        endpoint or _unused_endpoint(),
+        identity,
+        auth_token=token,
+    )
 
 
 def test_community_defaults_to_process_pool_and_allows_inline_rollback():
@@ -132,18 +163,59 @@ def test_protocol_rejects_stale_epoch_and_unknown_operation():
         validate_request(
             _request(identity, executor_epoch="epoch-1"),
             expected_identity=identity,
+            expected_auth_token=TEST_AUTH_TOKEN,
         )
 
     with pytest.raises(ExecutorProtocolError, match="operation"):
         validate_request(
             _request(identity, operation="arbitrary_python"),
             expected_identity=identity,
+            expected_auth_token=TEST_AUTH_TOKEN,
         )
 
 
-def test_client_round_trip_preserves_executor_identity(tmp_path):
+def test_protocol_rejects_missing_and_wrong_auth_token_before_epoch():
+    identity = ExecutorIdentity("workflow-executor-0", "epoch-2")
+
+    with pytest.raises(ExecutorProtocolError, match="auth_token"):
+        validate_request(
+            _request(identity, **{AUTH_TOKEN_FIELD: "wrong-token"}),
+            expected_identity=identity,
+            expected_auth_token=TEST_AUTH_TOKEN,
+        )
+    with pytest.raises(ExecutorProtocolError, match="auth_token"):
+        payload = _request(identity)
+        payload.pop(AUTH_TOKEN_FIELD)
+        validate_request(
+            payload,
+            expected_identity=identity,
+            expected_auth_token=TEST_AUTH_TOKEN,
+        )
+    with pytest.raises(ExecutorProtocolError, match="auth_token"):
+        validate_request(
+            _request(
+                identity,
+                executor_epoch="epoch-1",
+                **{AUTH_TOKEN_FIELD: "wrong-token"},
+            ),
+            expected_identity=identity,
+            expected_auth_token=TEST_AUTH_TOKEN,
+        )
+
+
+def test_loopback_endpoint_rejects_non_loopback_hosts():
+    with pytest.raises(ExecutorProtocolError, match="loopback"):
+        parse_loopback_endpoint({"host": "0.0.0.0", "port": 8080})
+    with pytest.raises(ExecutorProtocolError, match="loopback"):
+        parse_loopback_endpoint({"host": "8.8.8.8", "port": 53})
+    with pytest.raises(ExecutorProtocolError, match="port"):
+        parse_loopback_endpoint({"host": LOOPBACK_HOST, "port": 0})
+    parsed = parse_loopback_endpoint({"host": LOOPBACK_HOST, "port": 4321})
+    assert parsed == LoopbackEndpoint(LOOPBACK_HOST, 4321)
+
+
+def test_client_round_trip_preserves_executor_identity():
     async def scenario():
-        socket_path = Path(tempfile.mkdtemp(prefix="df-executor-test-")) / "rpc.sock"
         identity = ExecutorIdentity("workflow-executor-0", "epoch-1")
         received = []
 
@@ -160,33 +232,60 @@ def test_client_round_trip_preserves_executor_identity(tmp_path):
             writer.close()
             await writer.wait_closed()
 
-        server = await asyncio.start_unix_server(handle, socket_path)
+        server = await start_loopback_server(handle)
         try:
-            client = WorkflowExecutorClient(socket_path, identity)
+            client = WorkflowExecutorClient(
+                LoopbackEndpoint(LOOPBACK_HOST, server.sockets[0].getsockname()[1]),
+                identity,
+                auth_token=TEST_AUTH_TOKEN,
+            )
             result = await client.call(
                 "run_task", workflow_id="wf-1", task_id="task-1"
             )
         finally:
             server.close()
             await server.wait_closed()
-            socket_path.unlink(missing_ok=True)
-            socket_path.parent.rmdir()
 
         assert result == {"success": True}
         assert received[0]["executor_id"] == identity.executor_id
         assert received[0]["executor_epoch"] == identity.epoch
+        assert received[0][AUTH_TOKEN_FIELD] == TEST_AUTH_TOKEN
 
     asyncio.run(scenario())
 
 
-def test_client_fails_closed_when_executor_is_absent(tmp_path):
+def test_client_fails_closed_when_executor_is_absent():
     async def scenario():
-        client = WorkflowExecutorClient(
-            tmp_path / "missing.sock",
-            ExecutorIdentity("workflow-executor-0", "epoch-1"),
-        )
+        client = _client(ExecutorIdentity("workflow-executor-0", "epoch-1"))
         with pytest.raises(ExecutorUnavailable, match="unavailable"):
             await client.call("ping")
+        with pytest.raises(ExecutorUnavailable, match="unavailable"):
+            client.call_sync("ping")
+
+    asyncio.run(scenario())
+
+
+def test_client_call_sync_round_trip_on_live_server():
+    async def scenario():
+        identity = ExecutorIdentity("workflow-executor-0", "epoch-1")
+
+        class Manager:
+            def ping(self):
+                raise AssertionError("status/ping must not reach the manager")
+
+        server = WorkflowExecutorServer(identity, Manager(), auth_token=TEST_AUTH_TOKEN)
+        await server.start()
+        try:
+            client = WorkflowExecutorClient(
+                server.endpoint, identity, auth_token=TEST_AUTH_TOKEN,
+            )
+            result = await asyncio.to_thread(client.call_sync, "ping")
+        finally:
+            await server.close()
+
+        assert result["executor_id"] == identity.executor_id
+        assert result["executor_epoch"] == identity.epoch
+        assert result["pid"] == os.getpid()
 
     asyncio.run(scenario())
 
@@ -209,8 +308,7 @@ def test_supervisor_retries_spawn_and_generation_handoff_failures(tmp_path):
     async def scenario():
         handoffs = []
         supervisor = WorkflowExecutorSupervisor(restart_backoff_max=0.001)
-        supervisor.client = WorkflowExecutorClient(
-            tmp_path / "rpc.sock",
+        supervisor.client = _client(
             ExecutorIdentity("workflow-executor-0", "epoch-old"),
         )
         supervisor._process = ExitedProcess()
@@ -245,38 +343,83 @@ def test_supervisor_retries_spawn_and_generation_handoff_failures(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix process-group assertion")
-def test_supervisor_reaps_executor_process_group_descendants(tmp_path):
-    async def scenario():
-        child_pid_file = tmp_path / "executor-group-child.pid"
-        process = await asyncio.create_subprocess_exec(
-            "bash",
-            "-c",
-            f"sleep 60 & echo $! > {child_pid_file}; wait",
-            start_new_session=True,
-        )
-        for _ in range(100):
-            if child_pid_file.exists():
-                break
-            await asyncio.sleep(0.01)
-        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-        os.kill(process.pid, signal.SIGKILL)
-        await process.wait()
+def _spawn_descendant_group(pid_file: Path) -> tuple[ExecutorProcessTree, asyncio.subprocess.Process]:
+    tree = ExecutorProcessTree()
+    script = (
+        "import os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(180)'])\n"
+        f"Path({str(pid_file)!r}).write_text("
+        "f'{os.getpid()} {child.pid}', encoding='utf-8')\n"
+        "try:\n"
+        "    time.sleep(180)\n"
+        "finally:\n"
+        "    if child.poll() is None:\n"
+        "        child.kill()\n"
+    )
+    return tree, script
 
-        WorkflowExecutorSupervisor._kill_remaining_process_group(process.pid)
-        for _ in range(100):
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
-                break
-            await asyncio.sleep(0.01)
-        else:
-            pytest.fail("Executor process-group descendant survived reap")
+
+async def _start_descendant_group(tmp_path: Path, name: str):
+    pid_file = tmp_path / f"{name}.pids"
+    tree, script = _spawn_descendant_group(pid_file)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        **tree.spawn_options(),
+    )
+    tree.attach(process.pid)
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while asyncio.get_running_loop().time() < deadline:
+        if pid_file.is_file():
+            text = pid_file.read_text(encoding="utf-8").strip()
+            if text:
+                leader_text, child_text = text.split()
+                return tree, process, int(leader_text), int(child_text)
+        if process.returncode is not None:
+            break
+        await asyncio.sleep(0.02)
+    tree.reap()
+    raise AssertionError(f"{name} descendant group did not publish pids")
+
+
+def test_supervisor_reaps_executor_descendants_without_touching_siblings(tmp_path):
+    async def scenario():
+        victim_tree, victim, victim_leader, victim_child = await _start_descendant_group(
+            tmp_path, "victim",
+        )
+        sibling_tree, sibling, sibling_leader, sibling_child = await _start_descendant_group(
+            tmp_path, "sibling",
+        )
+        try:
+            assert process_is_alive(victim_child)
+            assert process_is_alive(sibling_child)
+            force_kill_pid(victim_leader)
+            await victim.wait()
+            victim_tree.reap()
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while asyncio.get_running_loop().time() < deadline:
+                if not process_is_alive(victim_child):
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                pytest.fail("Executor descendant survived process-tree reap")
+            assert process_is_alive(sibling_leader)
+            assert process_is_alive(sibling_child)
+            assert process_is_alive(os.getpid())
+        finally:
+            sibling_tree.reap()
+            if sibling.returncode is None:
+                force_kill_pid(sibling.pid)
+                await sibling.wait()
+            if victim.returncode is None:
+                force_kill_pid(victim.pid)
+                await victim.wait()
 
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix socket and SIGKILL integration")
 def test_real_executor_process_restarts_with_new_pid_and_epoch(
     tmp_path, monkeypatch,
 ):
@@ -308,7 +451,7 @@ def test_real_executor_process_restarts_with_new_pid_and_epoch(
             old_identity = supervisor.identity
             assert old_process is not None
             old_pid = old_process.pid
-            os.kill(old_pid, signal.SIGKILL)
+            force_kill_pid(old_pid)
 
             deadline = asyncio.get_running_loop().time() + 30.0
             while asyncio.get_running_loop().time() < deadline:
@@ -332,7 +475,7 @@ def test_real_executor_process_restarts_with_new_pid_and_epoch(
         finally:
             await supervisor.stop()
 
-        assert old_process.returncode == -signal.SIGKILL
+        assert old_process.returncode == forced_exit_code()
         assert supervisor._process is None
 
     asyncio.run(scenario())
@@ -703,26 +846,32 @@ def test_executor_server_dispatches_allowlisted_operation_and_rejects_old_epoch(
             return {"success": True}
 
     async def scenario():
-        runtime_dir = Path(tempfile.mkdtemp(prefix="df-executor-server-"))
-        socket_path = runtime_dir / "rpc.sock"
         identity = ExecutorIdentity("workflow-executor-0", "epoch-2")
         manager = Manager()
-        server = WorkflowExecutorServer(socket_path, identity, manager)
+        server = WorkflowExecutorServer(identity, manager, auth_token=TEST_AUTH_TOKEN)
         await server.start()
         try:
-            current = WorkflowExecutorClient(socket_path, identity)
+            assert server.endpoint.host == LOOPBACK_HOST
+            current = WorkflowExecutorClient(
+                server.endpoint, identity, auth_token=TEST_AUTH_TOKEN,
+            )
             result = await current.call(
                 "stop_task", workflow_id="wf-1", task_id="task-1"
             )
             stale = WorkflowExecutorClient(
-                socket_path,
+                server.endpoint,
                 ExecutorIdentity("workflow-executor-0", "epoch-1"),
+                auth_token=TEST_AUTH_TOKEN,
             )
             with pytest.raises(ExecutorUnavailable, match="stale"):
                 await stale.call("stop_task", workflow_id="wf-1", task_id="task-1")
+            wrong_token = WorkflowExecutorClient(
+                server.endpoint, identity, auth_token="wrong-token",
+            )
+            with pytest.raises(ExecutorUnavailable, match="auth_token"):
+                await wrong_token.call("stop_task", workflow_id="wf-1", task_id="task-1")
         finally:
             await server.close()
-            runtime_dir.rmdir()
         assert result == {"success": True}
         assert manager.calls == [("wf-1", "task-1")]
 
@@ -739,18 +888,17 @@ def test_executor_server_runs_recovery_inside_owning_executor():
             return {"scanned": 2, "resumed": 1}
 
     async def scenario():
-        runtime_dir = Path(tempfile.mkdtemp(prefix="df-executor-recovery-"))
-        socket_path = runtime_dir / "rpc.sock"
         identity = ExecutorIdentity("workflow-executor-1", "epoch-2")
         manager = Manager()
-        server = WorkflowExecutorServer(socket_path, identity, manager)
+        server = WorkflowExecutorServer(identity, manager, auth_token=TEST_AUTH_TOKEN)
         await server.start()
         try:
-            client = WorkflowExecutorClient(socket_path, identity)
+            client = WorkflowExecutorClient(
+                server.endpoint, identity, auth_token=TEST_AUTH_TOKEN,
+            )
             result = await client.call("recover_owned_tasks")
         finally:
             await server.close()
-            runtime_dir.rmdir()
 
         assert result == {"scanned": 2, "resumed": 1}
         assert manager.identity == identity
@@ -758,21 +906,32 @@ def test_executor_server_runs_recovery_inside_owning_executor():
     asyncio.run(scenario())
 
 
-def test_executor_socket_is_owner_only():
+def test_executor_transport_binds_loopback_and_restricts_endpoint_file(tmp_path):
     async def scenario():
-        runtime_dir = Path(tempfile.mkdtemp(prefix="df-executor-mode-"))
-        socket_path = runtime_dir / "rpc.sock"
+        endpoint_path = tmp_path / "rpc.endpoint"
         server = WorkflowExecutorServer(
-            socket_path,
             ExecutorIdentity("workflow-executor-0", "epoch-1"),
             object(),
+            auth_token=TEST_AUTH_TOKEN,
+            endpoint_path=endpoint_path,
         )
         await server.start()
         try:
-            assert socket_path.stat().st_mode & 0o777 == 0o600
+            assert server.endpoint.host == LOOPBACK_HOST
+            bound_host, bound_port = server._server.sockets[0].getsockname()[:2]
+            assert bound_host == LOOPBACK_HOST
+            assert bound_port == server.endpoint.port
+            published = json.loads(endpoint_path.read_text(encoding="utf-8"))
+            assert published == {
+                "host": LOOPBACK_HOST,
+                "port": server.endpoint.port,
+            }
+            assert AUTH_TOKEN_FIELD not in published
+            if os.name != "nt":
+                assert endpoint_path.stat().st_mode & 0o777 == 0o600
         finally:
             await server.close()
-            runtime_dir.rmdir()
+        assert not endpoint_path.exists()
 
     asyncio.run(scenario())
 
@@ -956,7 +1115,6 @@ def test_inline_lease_group_blocks_every_recorded_pool_member(tmp_path):
         group.release()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix socket and SIGKILL integration")
 def test_real_executor_pool_starts_two_members_and_restarts_only_failed_member(
     tmp_path, monkeypatch,
 ):
@@ -998,7 +1156,7 @@ def test_real_executor_pool_starts_two_members_and_restarts_only_failed_member(
             assert len(set(original_pids.values())) == 2
             victim = pool._supervisors["workflow-executor-0"]
             assert victim.pid is not None
-            os.kill(victim.pid, signal.SIGKILL)
+            force_kill_pid(victim.pid)
 
             deadline = asyncio.get_running_loop().time() + 30.0
             while asyncio.get_running_loop().time() < deadline:
@@ -1038,51 +1196,61 @@ def test_real_executor_pool_starts_two_members_and_restarts_only_failed_member(
 
 def test_event_bridge_forwards_current_epoch_and_drops_stale_epoch():
     async def scenario():
-        runtime_dir = Path(tempfile.mkdtemp(prefix="df-executor-events-"))
-        socket_path = runtime_dir / "events.sock"
         received = []
         current_identity = ExecutorIdentity("workflow-executor-0", "epoch-2")
 
         async def handler(channel, event):
             received.append((channel, event))
 
-        receiver = ControllerEventReceiver(socket_path, current_identity, handler)
-        await receiver.start()
-        current = ExecutorEventForwarder(socket_path, current_identity)
+        receiver = ControllerEventReceiver(
+            current_identity, handler, auth_token=TEST_AUTH_TOKEN,
+        )
+        endpoint = await receiver.start()
+        current = ExecutorEventForwarder(
+            endpoint, current_identity, auth_token=TEST_AUTH_TOKEN,
+        )
         stale = ExecutorEventForwarder(
-            socket_path,
+            endpoint,
             ExecutorIdentity("workflow-executor-0", "epoch-1"),
+            auth_token=TEST_AUTH_TOKEN,
+        )
+        wrong_token = ExecutorEventForwarder(
+            endpoint, current_identity, auth_token="wrong-token",
         )
         try:
             await current.emit("events", {"type": "wf_task_update", "task_id": "t1"})
             await stale.emit("events", {"type": "wf_task_update", "task_id": "old"})
+            await wrong_token.emit("events", {"type": "wf_task_update", "task_id": "bad"})
             await asyncio.sleep(0.05)
         finally:
             await current.close()
             await stale.close()
+            await wrong_token.close()
             await receiver.close()
-            runtime_dir.rmdir()
 
         assert received == [
             ("events", {"type": "wf_task_update", "task_id": "t1"})
         ]
+        assert receiver.stats()["malformed_or_stale"] >= 2
 
     asyncio.run(scenario())
 
 
 def test_event_bridge_accepts_frame_larger_than_default_stream_limit():
     async def scenario():
-        runtime_dir = Path(tempfile.mkdtemp(prefix="df-executor-large-event-"))
-        socket_path = runtime_dir / "events.sock"
         received = []
         identity = ExecutorIdentity("workflow-executor-0", "epoch-1")
 
         async def handler(_channel, event):
             received.append(event)
 
-        receiver = ControllerEventReceiver(socket_path, identity, handler)
-        await receiver.start()
-        forwarder = ExecutorEventForwarder(socket_path, identity)
+        receiver = ControllerEventReceiver(
+            identity, handler, auth_token=TEST_AUTH_TOKEN,
+        )
+        endpoint = await receiver.start()
+        forwarder = ExecutorEventForwarder(
+            endpoint, identity, auth_token=TEST_AUTH_TOKEN,
+        )
         event = {"type": "wf_task_update", "stdout": "x" * (128 * 1024)}
         try:
             await forwarder.emit("events", event)
@@ -1090,7 +1258,6 @@ def test_event_bridge_accepts_frame_larger_than_default_stream_limit():
         finally:
             await forwarder.close()
             await receiver.close()
-            runtime_dir.rmdir()
 
         assert received == [event]
 

@@ -158,7 +158,7 @@ def test_benchmark_cli_help_and_invalid_args_json():
         assert report["pss_available"] is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix socket and process-group scenario")
+@pytest.mark.skipif(os.name == "nt", reason="Load harness scripts use POSIX fcntl")
 def test_load_report_two_members_four_tasks(tmp_path, monkeypatch):
     result = asyncio.run(run_load_scenario(
         tmp_path=tmp_path,
@@ -188,7 +188,7 @@ def test_load_report_two_members_four_tasks(tmp_path, monkeypatch):
         )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix SIGKILL and process-group scenario")
+@pytest.mark.skipif(os.name == "nt", reason="Load harness scripts use POSIX fcntl")
 def test_fault_sigkill_keeps_identity_and_rejects_double_execution(
     tmp_path, monkeypatch,
 ):
