@@ -1,0 +1,22 @@
+{
+  "desktop_version": "1.0.10",
+  "plugins": [
+    {
+      "id": "bishu-novel",
+      "subdirectory": "plugins/bishu-novel",
+      "version": "0.2.2"
+    },
+    {
+      "id": "public-api",
+      "subdirectory": "plugins/public-api",
+      "version": "0.1.33"
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "commit": "fe920926ff79efefd819ff02cce5bdecb0bf36e5",
+    "id": "determinflow-official",
+    "ref": "main",
+    "url": "https://github.com/alikon-art/DeterminFlow-Plugins.git"
+  }
+}

@@ -61,6 +61,10 @@ jobs:
       - name: Test desktop packaging contracts
         run: python -m pytest tests/test_desktop_packaging.py -q
 
+      - name: Verify latest official Plugin lock for Full candidate
+        if: matrix.flavor == 'full' && github.ref_type != 'tag'
+        run: python desktop/scripts/refresh_official_plugin_lock.py --check
+
       - name: Test Windows Workflow Executor process pool
         if: matrix.flavor == 'core'
         timeout-minutes: 12
