@@ -42,6 +42,7 @@ def test_desktop_backend_bundles_anthropic_provider() -> None:
     assert '    "langchain-anthropic",' in spec
     assert 'collect_submodules("anthropic")' in spec
     assert 'collect_submodules("langchain_anthropic")' in spec
+    assert 'hiddenimports += ["src.workflow.executor_worker"]' in spec
 
 
 def test_tauri_bundle_is_a_per_user_nsis_installer() -> None:
@@ -226,6 +227,9 @@ def test_desktop_workflow_builds_candidates_and_publishes_tags() -> None:
     assert "matrix.flavor" in workflow
     assert "--flavor ${{ matrix.flavor }}" in workflow
     assert "desktop/scripts/smoke_backend.py" in workflow
+    assert "Test Windows Workflow Executor process pool" in workflow
+    assert "tests/test_workflow_executor_pool_scenarios.py" in workflow
+    assert "--timeout 180" in workflow
     assert "desktop/scripts/smoke_installer.ps1" in workflow
     assert '-Flavor "${{ matrix.flavor }}"' in workflow
     assert "--expected-flavor ${{ matrix.flavor }}" in workflow
@@ -244,7 +248,9 @@ def test_desktop_workflow_builds_candidates_and_publishes_tags() -> None:
         REPO_ROOT / "desktop" / "scripts" / "smoke_installer.ps1"
     ).read_text(encoding="utf-8")
     assert "CloseMainWindow" in installer_smoke
-    assert "Second launch created duplicate backends" in installer_smoke
+    assert "Second launch created duplicate Controllers" in installer_smoke
+    assert "Assert-WorkflowExecutorPool" in installer_smoke
+    assert "Get-InstalledWorkflowExecutors" in installer_smoke
     assert "NSIS reinstall with a stale backend" in installer_smoke
 
 

@@ -37,6 +37,7 @@ for distribution in (
     datas += copy_metadata(distribution)
 
 hiddenimports = []
+hiddenimports += ["src.workflow.executor_worker"]
 hiddenimports += collect_submodules("anthropic")
 hiddenimports += collect_submodules("langchain_anthropic")
 hiddenimports += collect_submodules("langchain_core")

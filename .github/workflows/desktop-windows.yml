@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - codex/desktop-tauri-poc
     tags:
       - "v*"
@@ -26,7 +27,7 @@ jobs:
   build:
     name: Build ${{ matrix.flavor }} NSIS installer
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +61,17 @@ jobs:
       - name: Test desktop packaging contracts
         run: python -m pytest tests/test_desktop_packaging.py -q
 
+      - name: Test Windows Workflow Executor process pool
+        if: matrix.flavor == 'core'
+        timeout-minutes: 12
+        run: |
+          python -m pytest -q --tb=short `
+            tests/test_workflow_executor_protocol.py `
+            tests/test_workflow_executor_readiness.py `
+            tests/test_workflow_executor_observability.py `
+            tests/test_workflow_executor_pool_scenarios.py `
+            tests/test_workflow_script_reject.py
+
       - name: Build web application
         working-directory: web
         run: |
@@ -69,7 +81,7 @@ jobs:
       - name: Build and smoke-test frozen backend
         run: |
           python desktop/scripts/build_backend.py --flavor ${{ matrix.flavor }}
-          python desktop/scripts/smoke_backend.py
+          python desktop/scripts/smoke_backend.py --timeout 180
           python desktop/scripts/verify_bundle.py --expected-flavor ${{ matrix.flavor }}
 
       - name: Install desktop build dependencies
