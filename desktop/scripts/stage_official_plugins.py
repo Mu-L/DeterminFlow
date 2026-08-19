@@ -12,6 +12,11 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from desktop.scripts.official_plugin_lock import (
+    load_official_plugin_lock,
+    pin_official_sources,
+    validate_locked_catalog,
+)
 from src.extension_host.plugin_preflight import validate_plugin_checkout
 from src.extension_host.source_config import (
     fetch_plugin_catalog,
@@ -24,31 +29,17 @@ from src.plugin_system.store import PluginStore
 def stage_official_plugins(repo_root: Path, output_dir: Path) -> dict[str, object]:
     """Resolve the current official catalog and stage exact immutable revisions."""
     source_file = (
-        repo_root
-        / "desktop"
-        / "generated"
-        / "default-config"
-        / "plugin-sources.json"
+        repo_root / "desktop" / "generated" / "default-config" / "plugin-sources.json"
     )
-    sources = tuple(
+    configured_sources = tuple(
         source
         for source in load_plugin_sources(source_file)
         if source.kind == "official"
     )
-    if not sources:
-        raise RuntimeError("桌面 Full 构建没有配置官方 Plugin 仓库")
-
+    lock = load_official_plugin_lock(repo_root)
+    sources = pin_official_sources(configured_sources, lock)
     catalog = fetch_plugin_catalog(sources)
-    errors = [
-        f"{source['name']}: {source['error']}"
-        for source in catalog["sources"]
-        if source["error"]
-    ]
-    if errors:
-        raise RuntimeError("官方 Plugin Catalog 获取失败: " + "; ".join(errors))
-    entries = catalog["plugins"]
-    if not entries:
-        raise RuntimeError("官方 Plugin Catalog 不包含可安装 Plugin")
+    entries = validate_locked_catalog(catalog, lock)
 
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temporary_root = Path(
@@ -59,6 +50,7 @@ def stage_official_plugins(repo_root: Path, output_dir: Path) -> dict[str, objec
         store = PluginStore(
             store_root,
             official_sources=(source.url for source in sources),
+            official_source_mirrors={source.url: source.mirrors for source in sources},
         )
         for entry in entries:
             store.install(
@@ -88,6 +80,7 @@ def stage_official_plugins(repo_root: Path, output_dir: Path) -> dict[str, objec
                 for source in catalog["sources"]
             ]
         }
+        metadata["build_lock"] = lock
         (snapshot / "release-plugins.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -110,10 +103,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     options = parser.parse_args()
     repo_root = options.repo_root.resolve()
-    output = (
-        options.output
-        or repo_root / "desktop" / "generated" / "bundled-plugins"
-    )
+    output = options.output or repo_root / "desktop" / "generated" / "bundled-plugins"
     stage_official_plugins(repo_root, output.resolve())
     return 0
 

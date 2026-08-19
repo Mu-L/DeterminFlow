@@ -24,6 +24,13 @@ from .executor_protocol import (
     response_frame,
     validate_request,
 )
+from .executor_transport import (
+    LoopbackEndpoint,
+    bound_endpoint,
+    require_auth_token,
+    start_loopback_server,
+    write_endpoint_file,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -32,41 +39,49 @@ logger = logging.getLogger(__name__)
 class WorkflowExecutorServer:
     def __init__(
         self,
-        socket_path: Path,
         identity: ExecutorIdentity,
         workflow_manager: Any,
         *,
+        auth_token: str,
+        endpoint_path: Path | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         event_forwarder: Any | None = None,
     ):
-        self.socket_path = Path(socket_path)
         self.identity = identity
         self.workflow_manager = workflow_manager
+        self.auth_token = require_auth_token(auth_token)
+        self.endpoint_path = Path(endpoint_path) if endpoint_path is not None else None
         self.shutdown_callback = shutdown_callback
         self.event_forwarder = event_forwarder
         self.rpc_counters = RpcCallCounters()
         self._started_monotonic = time.monotonic()
         self._server: asyncio.AbstractServer | None = None
+        self._endpoint: LoopbackEndpoint | None = None
 
-    async def start(self) -> None:
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if self.socket_path.exists():
-            if not self.socket_path.is_socket():
-                raise RuntimeError("Executor socket path is not a socket")
-            self.socket_path.unlink()
-        self._server = await asyncio.start_unix_server(
+    @property
+    def endpoint(self) -> LoopbackEndpoint:
+        if self._endpoint is None:
+            raise RuntimeError("Workflow Executor server has not started")
+        return self._endpoint
+
+    async def start(self) -> LoopbackEndpoint:
+        self._server = await start_loopback_server(
             self._handle_connection,
-            self.socket_path,
             limit=MAX_FRAME_BYTES + 1,
         )
-        os.chmod(self.socket_path, 0o600)
+        self._endpoint = bound_endpoint(self._server)
+        if self.endpoint_path is not None:
+            write_endpoint_file(self.endpoint_path, self._endpoint)
+        return self._endpoint
 
     async def close(self) -> None:
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-        self.socket_path.unlink(missing_ok=True)
+        self._endpoint = None
+        if self.endpoint_path is not None:
+            self.endpoint_path.unlink(missing_ok=True)
 
     def runtime_status(self) -> dict[str, Any]:
         event_bridge = {}
@@ -129,7 +144,11 @@ class WorkflowExecutorServer:
             request = json.loads(raw)
             if isinstance(request, dict) and isinstance(request.get("request_id"), str):
                 request_id = request["request_id"]
-            validated = validate_request(request, expected_identity=self.identity)
+            validated = validate_request(
+                request,
+                expected_identity=self.identity,
+                expected_auth_token=self.auth_token,
+            )
             request_id = validated["request_id"]
             operation = validated["operation"]
             self.rpc_counters.record_received(operation)

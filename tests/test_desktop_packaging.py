@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +15,7 @@ from desktop.python.runtime import (
     seed_bundled_plugins,
     seed_user_config,
 )
+from desktop.scripts import official_plugin_lock as plugin_lock_module
 from desktop.scripts import stage_defaults as defaults_module
 from desktop.scripts.create_update_manifest import create_manifest
 from desktop.scripts.verify_bundle import (
@@ -24,7 +25,7 @@ from desktop.scripts.verify_bundle import (
     verify_windows_gui_executable,
     write_checksum,
 )
-
+from src.extension_host.source_config import PluginSourceConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,6 +43,7 @@ def test_desktop_backend_bundles_anthropic_provider() -> None:
     assert '    "langchain-anthropic",' in spec
     assert 'collect_submodules("anthropic")' in spec
     assert 'collect_submodules("langchain_anthropic")' in spec
+    assert 'hiddenimports += ["src.workflow.executor_worker"]' in spec
 
 
 def test_tauri_bundle_is_a_per_user_nsis_installer() -> None:
@@ -226,9 +228,14 @@ def test_desktop_workflow_builds_candidates_and_publishes_tags() -> None:
     assert "matrix.flavor" in workflow
     assert "--flavor ${{ matrix.flavor }}" in workflow
     assert "desktop/scripts/smoke_backend.py" in workflow
+    assert "Test Windows Workflow Executor process pool" in workflow
+    assert "tests/test_workflow_executor_pool_scenarios.py" in workflow
+    assert "--timeout 180" in workflow
     assert "desktop/scripts/smoke_installer.ps1" in workflow
     assert '-Flavor "${{ matrix.flavor }}"' in workflow
     assert "--expected-flavor ${{ matrix.flavor }}" in workflow
+    assert "refresh_official_plugin_lock.py --check" in workflow
+    assert "github.ref_type != 'tag'" in workflow
     assert "--desktop-executable" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "actions/download-artifact@v4" in workflow
@@ -244,7 +251,9 @@ def test_desktop_workflow_builds_candidates_and_publishes_tags() -> None:
         REPO_ROOT / "desktop" / "scripts" / "smoke_installer.ps1"
     ).read_text(encoding="utf-8")
     assert "CloseMainWindow" in installer_smoke
-    assert "Second launch created duplicate backends" in installer_smoke
+    assert "Second launch created duplicate Controllers" in installer_smoke
+    assert "Assert-WorkflowExecutorPool" in installer_smoke
+    assert "Get-InstalledWorkflowExecutors" in installer_smoke
     assert "NSIS reinstall with a stale backend" in installer_smoke
 
 
@@ -449,6 +458,166 @@ def test_bundled_plugin_verifier_rejects_empty_snapshot(tmp_path: Path) -> None:
         verify_bundled_plugins(tmp_path)
 
 
+def _write_official_plugin_lock_fixture(
+    repo_root: Path,
+    *,
+    desktop_version: str = "1.0.10",
+) -> dict:
+    tauri = repo_root / "desktop" / "src-tauri" / "tauri.conf.json"
+    tauri.parent.mkdir(parents=True, exist_ok=True)
+    tauri.write_text(json.dumps({"version": "1.0.10"}), encoding="utf-8")
+    lock = {
+        "schema_version": 1,
+        "desktop_version": desktop_version,
+        "source": {
+            "id": "determinflow-official",
+            "url": "https://github.com/alikon-art/DeterminFlow-Plugins.git",
+            "ref": "main",
+            "commit": "a" * 40,
+        },
+        "plugins": [
+            {
+                "id": "bishu-novel",
+                "version": "0.2.2",
+                "subdirectory": "plugins/bishu-novel",
+            },
+            {
+                "id": "public-api",
+                "version": "0.1.33",
+                "subdirectory": "plugins/public-api",
+            },
+        ],
+    }
+    lock_path = repo_root / plugin_lock_module.LOCK_RELATIVE_PATH
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+    return lock
+
+
+def test_full_plugin_lock_is_bound_to_desktop_version(tmp_path: Path) -> None:
+    expected = _write_official_plugin_lock_fixture(tmp_path)
+
+    assert plugin_lock_module.load_official_plugin_lock(tmp_path) == expected
+
+    _write_official_plugin_lock_fixture(tmp_path, desktop_version="1.0.9")
+    with pytest.raises(RuntimeError, match="桌面版本与"):
+        plugin_lock_module.load_official_plugin_lock(tmp_path)
+
+
+def test_full_plugin_catalog_must_match_the_exact_build_lock(
+    tmp_path: Path,
+) -> None:
+    lock = _write_official_plugin_lock_fixture(tmp_path)
+    source = PluginSourceConfig(
+        id="determinflow-official",
+        name="DeterminFlow Official Plugins",
+        url=lock["source"]["url"],
+        ref="main",
+        mirrors=("https://gitee.com/alikon/DeterminFlow-Plugins.git",),
+    )
+    pinned = plugin_lock_module.pin_official_sources((source,), lock)
+
+    assert pinned[0].ref == "a" * 40
+    assert pinned[0].url == source.url
+    catalog = {
+        "sources": [
+            {
+                "id": source.id,
+                "name": source.name,
+                "error": "",
+                "ref": "a" * 40,
+                "resolved_commit": "a" * 40,
+            }
+        ],
+        "plugins": [
+            {
+                **plugin,
+                "source_id": source.id,
+                "source": source.url,
+                "ref": "a" * 40,
+                "resolved_commit": "a" * 40,
+            }
+            for plugin in lock["plugins"]
+        ],
+    }
+    entries = plugin_lock_module.validate_locked_catalog(catalog, lock)
+    assert [entry["id"] for entry in entries] == ["bishu-novel", "public-api"]
+
+    catalog["plugins"][1]["version"] = "0.1.34"
+    with pytest.raises(RuntimeError, match="条目与构建锁不一致"):
+        plugin_lock_module.validate_locked_catalog(catalog, lock)
+
+    catalog["plugins"][1]["version"] = "0.1.33"
+    catalog["plugins"][1]["ref"] = "main"
+    with pytest.raises(RuntimeError, match="未锁定到构建锁 Commit"):
+        plugin_lock_module.validate_locked_catalog(catalog, lock)
+
+
+def test_full_plugin_lock_refresh_captures_latest_public_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_official_plugin_lock_fixture(tmp_path)
+    source_file = tmp_path / "config" / "plugin-sources.json"
+    source_file.parent.mkdir()
+    source_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "official_sources": [
+                    {
+                        "id": "determinflow-official",
+                        "name": "DeterminFlow Official Plugins",
+                        "url": "https://github.com/alikon-art/DeterminFlow-Plugins.git",
+                        "ref": "main",
+                    }
+                ],
+                "custom_sources": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    commit = "b" * 40
+
+    def fake_catalog(sources: tuple[PluginSourceConfig, ...]) -> dict:
+        source = sources[0]
+        return {
+            "sources": [
+                {
+                    "id": source.id,
+                    "name": source.name,
+                    "error": "",
+                    "resolved_commit": commit,
+                }
+            ],
+            "plugins": [
+                {
+                    "id": "public-api",
+                    "version": "0.1.33",
+                    "subdirectory": "plugins/public-api",
+                    "source_id": source.id,
+                    "resolved_commit": commit,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(plugin_lock_module, "fetch_plugin_catalog", fake_catalog)
+
+    refreshed = plugin_lock_module.resolve_latest_official_plugin_lock(
+        tmp_path, source_file
+    )
+
+    assert refreshed["desktop_version"] == "1.0.10"
+    assert refreshed["source"]["commit"] == commit
+    assert refreshed["plugins"] == [
+        {
+            "id": "public-api",
+            "version": "0.1.33",
+            "subdirectory": "plugins/public-api",
+        }
+    ]
+
+
 def test_desktop_versions_are_consistent() -> None:
     tauri = json.loads(
         (REPO_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
@@ -462,7 +631,7 @@ def test_desktop_versions_are_consistent() -> None:
         encoding="utf-8"
     )
 
-    assert tauri["version"] == "1.0.9"
+    assert tauri["version"] == "1.0.10"
     assert package["version"] == tauri["version"]
     assert f'version = "{tauri["version"]}"' in cargo
 

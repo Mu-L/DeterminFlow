@@ -21,6 +21,7 @@ import src.workflow.executor_supervisor as executor_supervisor_module
 import src.workflow.manager as workflow_manager_module
 import src.workflow.task_recovery as task_recovery_module
 from src.workflow.executor_pool import WorkflowExecutorPool
+from src.workflow.executor_process import force_kill_pid, process_is_alive
 from src.workflow.manager import WorkflowManager
 
 
@@ -59,6 +60,7 @@ print("<script_out>ok</script_out>")
 HOLD_SCRIPT = """\
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -66,7 +68,7 @@ task_id = os.environ["TASK_ID"]
 root = Path(os.environ["DETERMINFLOW_HOLD_DIR"]) / task_id
 root.mkdir(parents=True, exist_ok=True)
 (root / "script.pid").write_text(str(os.getpid()), encoding="utf-8")
-child = subprocess.Popen(["sleep", "180"])
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(180)"])
 (root / "child.pid").write_text(str(child.pid), encoding="utf-8")
 (root / "ready").write_text("1", encoding="utf-8")
 try:
@@ -116,21 +118,14 @@ class ProcessTracker:
 
     def live(self) -> list[int]:
         live = {pid for pid in self.pids if process_alive(pid)}
-        for group_id in self.group_ids:
-            live.update(pids_with_pgid(group_id))
+        if os.name != "nt":
+            for group_id in self.group_ids:
+                live.update(pids_with_pgid(group_id))
         return sorted(live)
 
 
 def process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return process_is_alive(pid)
 
 
 def pids_with_pgid(pgid: int) -> set[int]:
@@ -402,10 +397,9 @@ def release_hold(runtime: IsolatedExecutorRuntime, task_id: str | None = None) -
 
 def force_kill_pids(pids: list[int]) -> None:
     for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        force_kill_pid(pid)
+        if os.name == "nt":
+            continue
         try:
             os.killpg(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):

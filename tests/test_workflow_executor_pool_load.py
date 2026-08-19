@@ -102,12 +102,23 @@ def test_process_sample_sets_pss_null_off_linux():
 def test_overlapping_executions_ignore_sequential_restart():
     events = [
         {"event": "start", "task_id": "t1", "pid": 11, "ts": 1.0},
+        {"event": "complete", "task_id": "t1", "pid": 11, "ts": 1.5},
         {"event": "start", "task_id": "t1", "pid": 12, "ts": 2.0},
         {"event": "complete", "task_id": "t1", "pid": 12, "ts": 3.0},
         {"event": "start", "task_id": "t2", "pid": 21, "ts": 1.0},
         {"event": "complete", "task_id": "t2", "pid": 21, "ts": 2.0},
     ]
     assert overlapping_task_ids(events) == []
+
+
+def test_overlapping_executions_detect_completed_intervals_that_intersect():
+    events = [
+        {"event": "start", "task_id": "t1", "pid": 11, "ts": 1.0},
+        {"event": "start", "task_id": "t1", "pid": 12, "ts": 2.0},
+        {"event": "complete", "task_id": "t1", "pid": 11, "ts": 3.0},
+        {"event": "complete", "task_id": "t1", "pid": 12, "ts": 4.0},
+    ]
+    assert overlapping_task_ids(events) == ["t1"]
 
 
 def test_cli_requires_explicit_matrix_or_counts():
@@ -158,7 +169,7 @@ def test_benchmark_cli_help_and_invalid_args_json():
         assert report["pss_available"] is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix socket and process-group scenario")
+@pytest.mark.skipif(os.name == "nt", reason="Load harness scripts use POSIX fcntl")
 def test_load_report_two_members_four_tasks(tmp_path, monkeypatch):
     result = asyncio.run(run_load_scenario(
         tmp_path=tmp_path,
@@ -188,7 +199,7 @@ def test_load_report_two_members_four_tasks(tmp_path, monkeypatch):
         )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix SIGKILL and process-group scenario")
+@pytest.mark.skipif(os.name == "nt", reason="Load harness scripts use POSIX fcntl")
 def test_fault_sigkill_keeps_identity_and_rejects_double_execution(
     tmp_path, monkeypatch,
 ):

@@ -7,7 +7,6 @@ import asyncio
 import importlib.util
 import json
 import os
-import signal
 import sys
 import tempfile
 import time
@@ -51,6 +50,7 @@ controller_manager = _base.controller_manager
 expected_executor_ids = _base.expected_executor_ids
 install_script_workflow = _base.install_script_workflow
 isolate_executor_runtime = _base.isolate_executor_runtime
+force_kill_pid = _base.force_kill_pid
 process_alive = _base.process_alive
 read_int_file = _base.read_int_file
 release_hold = _base.release_hold
@@ -588,7 +588,7 @@ async def run_fault_scenario(
                 tracker.add_pid(script_pid)
                 tracker.add_pid(child_pid)
 
-            os.kill(original_pids[victim_id], signal.SIGKILL)
+            force_kill_pid(original_pids[victim_id])
             await await_until(
                 lambda: (
                     pool.member_pids.get(victim_id)

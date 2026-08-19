@@ -1,16 +1,12 @@
-"""Phase 2 real-scenario tests for a two-member WorkflowExecutorPool."""
+"""Real process/4 distribution and focused member-recovery scenarios."""
 
 from __future__ import annotations
 
 import asyncio
 import importlib.util
 import json
-import os
-import signal
 import sys
 from pathlib import Path
-
-import pytest
 
 
 def _load_harness():
@@ -45,12 +41,92 @@ wait_processes_dead = _harness.wait_processes_dead
 wait_until = _harness.wait_until
 
 
+FAIL_SCRIPT = """\
+import os
+import sys
+from pathlib import Path
+
+path = Path(os.environ["DETERMINFLOW_MARKER_DIR"]) / (os.environ["TASK_ID"] + "-attempts")
+with path.open("a", encoding="utf-8") as handle:
+    handle.write(str(os.getppid()) + "\\n")
+sys.exit(7)
+"""
+
+REJECT_UPSTREAM_SCRIPT = """\
+import os
+from pathlib import Path
+
+path = Path(os.environ["DETERMINFLOW_MARKER_DIR"]) / (os.environ["TASK_ID"] + "-reject")
+with path.open("a", encoding="utf-8") as handle:
+    handle.write(str(os.getppid()) + "\\n")
+print("<script_out>candidate</script_out>")
+"""
+
+REJECT_VALIDATOR_SCRIPT = """\
+print('<WF_REJECT_UPSTREAM target="producer">[invalid] retry producer</WF_REJECT_UPSTREAM>')
+"""
+
+
 def _identities(pool):
     return {identity.executor_id: identity for identity in pool.identities}
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix socket and process-group scenario")
-def test_real_pool_distributes_script_tasks_and_keeps_sticky_binding(
+def _read_pid_lines(path: Path) -> list[int]:
+    return [
+        int(line) for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _install_reject_workflow(manager, runtime, workflow_id: str) -> None:
+    created = manager.create_workflow({
+        "workflow_id": workflow_id,
+        "name": workflow_id,
+        "nodes": [
+            {
+                "id": "producer",
+                "label": "producer",
+                "node_type": "script",
+                "node_params": {
+                    "script_source": "inline",
+                    "script_type": "python",
+                    "script_name": "producer",
+                    "timeout": "30",
+                },
+            },
+            {
+                "id": "validator",
+                "label": "validator",
+                "node_type": "script",
+                "enable_reject_upstream": True,
+                "max_reject_count": 1,
+                "node_params": {
+                    "script_source": "inline",
+                    "script_type": "python",
+                    "script_name": "validator",
+                    "timeout": "30",
+                    "enable_reject_upstream": True,
+                },
+            },
+        ],
+        "edges": [{
+            "id": "producer-validator",
+            "source": "producer",
+            "target": "validator",
+        }],
+    })
+    assert "definition" in created, created
+    script_dir = runtime.workflows_dir / workflow_id / "script"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    (script_dir / "producer.py").write_text(
+        REJECT_UPSTREAM_SCRIPT, encoding="utf-8",
+    )
+    (script_dir / "validator.py").write_text(
+        REJECT_VALIDATOR_SCRIPT, encoding="utf-8",
+    )
+
+
+def test_real_default_pool_distributes_twenty_tasks_and_keeps_sticky_binding(
     tmp_path, monkeypatch,
 ):
     runtime = isolate_executor_runtime(tmp_path, monkeypatch)
@@ -60,8 +136,8 @@ def test_real_pool_distributes_script_tasks_and_keeps_sticky_binding(
         tracker = ProcessTracker()
         leftover = []
         try:
-            pool = await start_real_pool(runtime)
-            member_pids = assert_distinct_member_pids(pool)
+            pool = await start_real_pool(runtime, executor_count=4)
+            member_pids = assert_distinct_member_pids(pool, expected_count=4)
             tracker.add_pool(pool)
             identities = _identities(pool)
 
@@ -103,8 +179,7 @@ def test_real_pool_distributes_script_tasks_and_keeps_sticky_binding(
                 executor_id: assigned_ids.count(executor_id)
                 for executor_id in set(assigned_ids)
             } == {
-                "workflow-executor-0": 10,
-                "workflow-executor-1": 10,
+                f"workflow-executor-{index}": 5 for index in range(4)
             }
             for task in persisted:
                 identity = identities[task.executor_id]
@@ -147,7 +222,140 @@ def test_real_pool_distributes_script_tasks_and_keeps_sticky_binding(
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix SIGKILL and process-group scenario")
+def test_real_pool_routes_retry_and_skip_to_original_executor(
+    tmp_path, monkeypatch,
+):
+    runtime = isolate_executor_runtime(tmp_path, monkeypatch)
+
+    async def scenario():
+        pool = None
+        tracker = ProcessTracker()
+        try:
+            pool = await start_real_pool(runtime)
+            member_pids = assert_distinct_member_pids(pool)
+            tracker.add_pool(pool)
+            manager = controller_manager()
+            manager.attach_execution_delegate(pool)
+            workflow_id = "wf-pool-sticky-controls"
+            install_script_workflow(
+                manager,
+                runtime,
+                workflow_id=workflow_id,
+                script_name="fail",
+                source=FAIL_SCRIPT,
+            )
+            task_id = manager.create_task(workflow_id)["task_id"]
+            started = await manager.run_task(workflow_id, task_id)
+            assert started.get("success") is True, started
+
+            await wait_until(
+                lambda: (
+                    (task := manager._load_task(workflow_id, task_id)) is not None
+                    and task.status == "failed"
+                ),
+                timeout=TASK_WAIT_TIMEOUT,
+                message="initial Script failure",
+            )
+            initial = manager._load_task(workflow_id, task_id)
+            binding = (initial.executor_id, initial.executor_epoch)
+            first_attempt = initial.node_states["fail"].attempt_count
+
+            retried = await manager.retry_node(
+                workflow_id, task_id, "fail", first_attempt,
+            )
+            assert retried.get("success") is True, retried
+            await wait_until(
+                lambda: (
+                    (task := manager._load_task(workflow_id, task_id)) is not None
+                    and task.status == "failed"
+                    and task.node_states["fail"].attempt_count > first_attempt
+                ),
+                timeout=TASK_WAIT_TIMEOUT,
+                message="manual retry to fail on its second attempt",
+            )
+            after_retry = manager._load_task(workflow_id, task_id)
+            assert (after_retry.executor_id, after_retry.executor_epoch) == binding
+            second_attempt = after_retry.node_states["fail"].attempt_count
+
+            skipped = await manager.skip_node(
+                workflow_id, task_id, "fail", second_attempt,
+            )
+            assert skipped.get("success") is True, skipped
+            await wait_until(
+                lambda: (
+                    (task := manager._load_task(workflow_id, task_id)) is not None
+                    and task.status == "completed"
+                ),
+                timeout=TASK_WAIT_TIMEOUT,
+                message="skipped Task to complete",
+            )
+            final = manager._load_task(workflow_id, task_id)
+            assert (final.executor_id, final.executor_epoch) == binding
+            assert final.node_states["fail"].status == "skipped"
+            attempt_pids = _read_pid_lines(
+                runtime.marker_dir / f"{task_id}-attempts",
+            )
+            assert len(attempt_pids) == 2
+            assert set(attempt_pids) == {member_pids[binding[0]]}
+            assert pool.member_pids == member_pids
+        finally:
+            leftover = await stop_pool_and_collect_leftovers(
+                pool, tracker, runtime,
+            )
+        assert leftover == []
+
+    asyncio.run(scenario())
+
+
+def test_real_pool_reject_upstream_retries_inside_original_executor(
+    tmp_path, monkeypatch,
+):
+    runtime = isolate_executor_runtime(tmp_path, monkeypatch)
+
+    async def scenario():
+        pool = None
+        tracker = ProcessTracker()
+        try:
+            pool = await start_real_pool(runtime)
+            member_pids = assert_distinct_member_pids(pool)
+            tracker.add_pool(pool)
+            manager = controller_manager()
+            manager.attach_execution_delegate(pool)
+            workflow_id = "wf-pool-sticky-reject"
+            _install_reject_workflow(manager, runtime, workflow_id)
+            task_id = manager.create_task(workflow_id)["task_id"]
+            started = await manager.run_task(workflow_id, task_id)
+            assert started.get("success") is True, started
+
+            await wait_until(
+                lambda: (
+                    (task := manager._load_task(workflow_id, task_id)) is not None
+                    and task.status in {"failed", "completed"}
+                ),
+                timeout=TASK_WAIT_TIMEOUT,
+                message="reject_upstream scenario to reach a terminal state",
+            )
+            task = manager._load_task(workflow_id, task_id)
+            assert task.status == "failed", task_binding(task)
+            binding = (task.executor_id, task.executor_epoch)
+            producer = task.node_states["producer"]
+            assert producer.attempt_count == 2
+            assert producer.reject_upstream_count == 1
+            producer_pids = _read_pid_lines(
+                runtime.marker_dir / f"{task_id}-reject",
+            )
+            assert len(producer_pids) == 2
+            assert set(producer_pids) == {member_pids[binding[0]]}
+            assert pool.member_pids == member_pids
+        finally:
+            leftover = await stop_pool_and_collect_leftovers(
+                pool, tracker, runtime,
+            )
+        assert leftover == []
+
+    asyncio.run(scenario())
+
+
 def test_real_pool_sigkill_recovers_only_victim_and_reaps_old_script_tree(
     tmp_path, monkeypatch,
 ):
@@ -245,7 +453,7 @@ def test_real_pool_sigkill_recovers_only_victim_and_reaps_old_script_tree(
             tracker.add_pid(sibling_script_pid)
             tracker.add_pid(sibling_child_pid)
 
-            os.kill(original_pids["workflow-executor-0"], signal.SIGKILL)
+            _harness.force_kill_pid(original_pids["workflow-executor-0"])
             await wait_until(
                 lambda: (
                     pool.member_pids.get("workflow-executor-0")

@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +19,7 @@ from src.workflow.executor_observability import (
     sanitize_member_status,
 )
 from src.workflow.executor_protocol import (
+    AUTH_TOKEN_FIELD,
     PROTOCOL_VERSION,
     READONLY_OPERATIONS,
     STATUS_OPERATION,
@@ -30,7 +29,11 @@ from src.workflow.executor_protocol import (
     validate_request,
 )
 from src.workflow.executor_server import WorkflowExecutorServer
+from src.workflow.executor_transport import LOOPBACK_HOST, LoopbackEndpoint
 from src.web.api_routes import router
+
+
+TEST_AUTH_TOKEN = "test-auth-token"
 
 
 def _request(identity: ExecutorIdentity, **overrides):
@@ -39,6 +42,7 @@ def _request(identity: ExecutorIdentity, **overrides):
         "request_id": "request-1",
         "executor_id": identity.executor_id,
         "executor_epoch": identity.epoch,
+        AUTH_TOKEN_FIELD: TEST_AUTH_TOKEN,
         "operation": STATUS_OPERATION,
         "arguments": {},
     }
@@ -168,7 +172,11 @@ def test_status_is_readonly_allowlisted_and_generation_checked():
     identity = ExecutorIdentity("workflow-executor-0", "epoch-2")
 
     assert STATUS_OPERATION in READONLY_OPERATIONS
-    validated = validate_request(_request(identity), expected_identity=identity)
+    validated = validate_request(
+        _request(identity),
+        expected_identity=identity,
+        expected_auth_token=TEST_AUTH_TOKEN,
+    )
     assert validated["operation"] == STATUS_OPERATION
 
     with pytest.raises(ExecutorProtocolError, match="epoch"):
@@ -180,11 +188,13 @@ def test_status_is_readonly_allowlisted_and_generation_checked():
         validate_request(
             _request(identity, executor_epoch="epoch-1"),
             expected_identity=identity,
+            expected_auth_token=TEST_AUTH_TOKEN,
         )
     with pytest.raises(ExecutorProtocolError, match="operation"):
         validate_request(
             _request(identity, operation="dump_env"),
             expected_identity=identity,
+            expected_auth_token=TEST_AUTH_TOKEN,
         )
 
 
@@ -196,7 +206,13 @@ def test_runtime_status_counts_live_tasks_and_omits_private_fields():
         started_monotonic=100.0,
         workflow_manager=manager,
         rpc_counts={"received": 2, "succeeded": 2, "failed": 0, "by_operation": {"ping": 2}},
-        event_bridge={"forwarded": 1, "socket_path": "/tmp/events.sock"},
+        event_bridge={
+            "forwarded": 1,
+            "socket_path": "/tmp/events.sock",
+            "host": "127.0.0.1",
+            "port": 54321,
+            AUTH_TOKEN_FIELD: "secret-token",
+        },
         now_monotonic=103.25,
         pid=99,
     )
@@ -211,6 +227,10 @@ def test_runtime_status_counts_live_tasks_and_omits_private_fields():
     assert snapshot["event_bridge"]["forwarded"] == 1
     assert "socket_path" not in snapshot
     assert "socket_path" not in snapshot["event_bridge"]
+    assert "host" not in snapshot
+    assert "port" not in snapshot
+    assert AUTH_TOKEN_FIELD not in snapshot
+    assert AUTH_TOKEN_FIELD not in snapshot["event_bridge"]
 
 
 def test_sanitize_member_status_strips_socket_env_credentials_and_task_body():
@@ -221,6 +241,10 @@ def test_sanitize_member_status_strips_socket_env_credentials_and_task_body():
         "uptime_seconds": 9,
         "active_task_count": 1,
         "socket_path": "/tmp/determinflow-executor/rpc.sock",
+        "host": "127.0.0.1",
+        "port": 54321,
+        "endpoint": "127.0.0.1:54321",
+        AUTH_TOKEN_FIELD: "secret-token",
         "env": {"DETERMINFLOW_API_KEY": "super-secret", "PATH": "/usr/bin"},
         "password": "hunter2",
         "task": {"prompt": "chapter text that must not leak", "task_id": "task-9"},
@@ -233,26 +257,32 @@ def test_sanitize_member_status_strips_socket_env_credentials_and_task_body():
     assert clean["uptime"] == 9.0
     assert "/tmp" not in dumped
     assert "rpc.sock" not in dumped
+    assert "127.0.0.1" not in dumped
+    assert "54321" not in dumped
+    assert "secret-token" not in dumped
     assert "super-secret" not in dumped
     assert "hunter2" not in dumped
     assert "chapter text" not in dumped
     assert "task-9" not in dumped
     assert "reason" not in clean
+    assert AUTH_TOKEN_FIELD not in clean
+    assert "endpoint" not in clean
 
 
 def test_executor_server_status_rpc_is_generation_checked_and_not_delegated():
     async def scenario():
-        runtime_dir = Path(tempfile.mkdtemp(prefix="df-executor-status-"))
-        socket_path = runtime_dir / "rpc.sock"
         identity = ExecutorIdentity("workflow-executor-0", "epoch-2")
         manager = _Manager()
-        server = WorkflowExecutorServer(socket_path, identity, manager)
+        server = WorkflowExecutorServer(identity, manager, auth_token=TEST_AUTH_TOKEN)
         await server.start()
         try:
-            client = WorkflowExecutorClient(socket_path, identity)
+            client = WorkflowExecutorClient(
+                server.endpoint, identity, auth_token=TEST_AUTH_TOKEN,
+            )
             stale = WorkflowExecutorClient(
-                socket_path,
+                server.endpoint,
                 ExecutorIdentity("workflow-executor-0", "epoch-1"),
+                auth_token=TEST_AUTH_TOKEN,
             )
             await client.call("ping")
             with pytest.raises(ExecutorUnavailable, match="stale"):
@@ -260,7 +290,6 @@ def test_executor_server_status_rpc_is_generation_checked_and_not_delegated():
             status = await client.call(STATUS_OPERATION)
         finally:
             await server.close()
-            runtime_dir.rmdir()
 
         assert manager.status_called is False
         assert status["executor_id"] == identity.executor_id
@@ -273,6 +302,10 @@ def test_executor_server_status_rpc_is_generation_checked_and_not_delegated():
         assert status["rpc"]["by_operation"]["ping"] == 1
         assert status["rpc"]["by_operation"][STATUS_OPERATION] == 1
         assert status["rpc"]["protocol_errors"] == 1
+        assert AUTH_TOKEN_FIELD not in status
+        assert "host" not in status
+        assert "port" not in status
+        assert "endpoint" not in status
         assert set(status["event_bridge"]) == {
             "forwarded", "reconnect", "failure", "oversized", "malformed_or_stale",
         }
@@ -286,22 +319,27 @@ def test_event_bridge_records_applicable_counters(monkeypatch):
     async def scenario():
         import src.workflow.executor_events as events_module
 
-        runtime_dir = Path(tempfile.mkdtemp(prefix="df-executor-obs-events-"))
-        socket_path = runtime_dir / "events.sock"
         received = []
         identity = ExecutorIdentity("workflow-executor-0", "epoch-2")
 
         async def handler(channel, event):
             received.append((channel, event))
 
-        receiver = ControllerEventReceiver(socket_path, identity, handler)
-        await receiver.start()
-        current = ExecutorEventForwarder(socket_path, identity)
-        stale = ExecutorEventForwarder(
-            socket_path,
-            ExecutorIdentity("workflow-executor-0", "epoch-1"),
+        receiver = ControllerEventReceiver(
+            identity, handler, auth_token=TEST_AUTH_TOKEN,
         )
-        missing = ExecutorEventForwarder(runtime_dir / "missing.sock", identity)
+        endpoint = await receiver.start()
+        current = ExecutorEventForwarder(
+            endpoint, identity, auth_token=TEST_AUTH_TOKEN,
+        )
+        stale = ExecutorEventForwarder(
+            endpoint,
+            ExecutorIdentity("workflow-executor-0", "epoch-1"),
+            auth_token=TEST_AUTH_TOKEN,
+        )
+        missing = ExecutorEventForwarder(
+            LoopbackEndpoint(LOOPBACK_HOST, 9), identity, auth_token=TEST_AUTH_TOKEN,
+        )
         try:
             await current.emit("events", {"type": "wf_task_update", "task_id": "t1"})
             await current.close()
@@ -320,7 +358,9 @@ def test_event_bridge_records_applicable_counters(monkeypatch):
             await current.emit("events", {"type": "wf_task_update", "stdout": "x" * 128})
             writer = None
             try:
-                _, writer = await asyncio.open_unix_connection(socket_path)
+                _, writer = await asyncio.open_connection(
+                    endpoint.host, endpoint.port,
+                )
                 writer.write(b"x" * 80 + b"\n")
                 await writer.drain()
             finally:
@@ -333,7 +373,6 @@ def test_event_bridge_records_applicable_counters(monkeypatch):
             await stale.close()
             await missing.close()
             await receiver.close()
-            runtime_dir.rmdir()
 
         assert current.stats()["malformed_or_stale"] == 1
         assert current.stats()["oversized"] == 1

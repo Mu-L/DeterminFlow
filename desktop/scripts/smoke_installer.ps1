@@ -13,6 +13,7 @@ $Uninstaller = $null
 $Installed = $false
 $BackendBaseUrl = $null
 $BackendProcessId = $null
+$WorkflowExecutorPids = @()
 $SecondAppProcess = $null
 $OrphanBackendProcess = $null
 
@@ -59,8 +60,52 @@ function Get-InstalledBackendProcesses([string]$BackendExecutable) {
     )
 }
 
+function Get-InstalledBackendControllers([string]$BackendExecutable) {
+    return @(
+        Get-InstalledBackendProcesses $BackendExecutable |
+            Where-Object {
+                $_.CommandLine -match '(?i)(^|\s)--port(\s|=)' -and
+                $_.CommandLine -match '(?i)(^|\s)--user-data-dir(\s|=)' -and
+                $_.CommandLine -notmatch '(?i)-m\s+src\.workflow\.executor_worker'
+            }
+    )
+}
+
+function Get-InstalledWorkflowExecutors([string]$BackendExecutable) {
+    return @(
+        Get-InstalledBackendProcesses $BackendExecutable |
+            Where-Object {
+                $_.CommandLine -match '(?i)-m\s+src\.workflow\.executor_worker'
+            }
+    )
+}
+
+function Assert-WorkflowExecutorPool([string]$BaseUrl) {
+    $Status = Invoke-RestMethod -Uri "$BaseUrl/api/system/status" -TimeoutSec 5
+    $Pool = $Status.workflow_executor
+    if (-not $Pool) {
+        throw "Status did not include workflow_executor"
+    }
+    if (
+        $Pool.mode -ne "process" -or
+        $Pool.configured_count -ne 4 -or
+        $Pool.member_count -ne 4 -or
+        $Pool.ready_count -ne 4 -or
+        $Pool.reachable_count -ne 4 -or
+        -not $Pool.available -or
+        $Pool.degraded
+    ) {
+        throw "Workflow Executor pool is not healthy: $($Pool | ConvertTo-Json -Compress -Depth 5)"
+    }
+    $MemberPids = @($Pool.members | ForEach-Object { [int]$_.pid })
+    if ($MemberPids.Count -ne 4 -or @($MemberPids | Select-Object -Unique).Count -ne 4) {
+        throw "Workflow Executor PIDs are not four distinct processes: $($MemberPids -join ', ')"
+    }
+    return $MemberPids
+}
+
 function Wait-InstalledBackendExit([string]$BackendExecutable) {
-    $Deadline = (Get-Date).AddSeconds(15)
+    $Deadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $Deadline) {
         if (@(Get-InstalledBackendProcesses $BackendExecutable).Count -eq 0) {
             return
@@ -78,7 +123,7 @@ function Start-TestBackend([string]$BackendExecutable, [string]$UserData) {
         -FilePath $BackendExecutable `
         -ArgumentList $Arguments `
         -PassThru
-    $Deadline = (Get-Date).AddSeconds(60)
+    $Deadline = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $Deadline) {
         if ($Process.HasExited) {
             throw "Standalone backend exited before becoming ready"
@@ -89,6 +134,7 @@ function Start-TestBackend([string]$BackendExecutable, [string]$UserData) {
                 -UseBasicParsing `
                 -TimeoutSec 2
             if ($Response.StatusCode -eq 200) {
+                Assert-WorkflowExecutorPool "http://127.0.0.1:$Port" | Out-Null
                 return $Process
             }
         }
@@ -124,7 +170,7 @@ try {
     }
 
     $AppProcess = Start-Process -FilePath $Application.FullName -PassThru
-    $Deadline = (Get-Date).AddSeconds(60)
+    $Deadline = (Get-Date).AddSeconds(180)
     $Ready = $false
     while ((Get-Date) -lt $Deadline -and -not $Ready) {
         if ($AppProcess.HasExited) {
@@ -145,9 +191,12 @@ try {
                         -UseBasicParsing `
                         -TimeoutSec 2
                     if ($Response.StatusCode -eq 200) {
+                        $CandidateBaseUrl = "http://127.0.0.1:$($Listener.LocalPort)"
+                        $CandidatePids = @(Assert-WorkflowExecutorPool $CandidateBaseUrl)
                         $Ready = $true
-                        $BackendBaseUrl = "http://127.0.0.1:$($Listener.LocalPort)"
+                        $BackendBaseUrl = $CandidateBaseUrl
                         $BackendProcessId = $Backend.ProcessId
+                        $WorkflowExecutorPids = $CandidatePids
                         break
                     }
                 }
@@ -198,12 +247,25 @@ try {
         throw "Second DeterminFlow instance did not exit"
     }
     Start-Sleep -Milliseconds 500
-    $BackendsAfterSecondLaunch = @(Get-InstalledBackendProcesses $BackendExecutable)
-    if ($BackendsAfterSecondLaunch.Count -ne 1) {
-        throw "Second launch created duplicate backends: $($BackendsAfterSecondLaunch.ProcessId -join ', ')"
+    $ControllersAfterSecondLaunch = @(Get-InstalledBackendControllers $BackendExecutable)
+    if ($ControllersAfterSecondLaunch.Count -ne 1) {
+        throw "Second launch created duplicate Controllers: $($ControllersAfterSecondLaunch.ProcessId -join ', ')"
     }
-    if ($BackendsAfterSecondLaunch[0].ProcessId -ne $BackendProcessId) {
+    if ($ControllersAfterSecondLaunch[0].ProcessId -ne $BackendProcessId) {
         throw "Second launch replaced the original backend unexpectedly"
+    }
+    $ExecutorsAfterSecondLaunch = @(Get-InstalledWorkflowExecutors $BackendExecutable)
+    $ExecutorPidsAfterSecondLaunch = @($ExecutorsAfterSecondLaunch.ProcessId | Sort-Object)
+    $ExpectedExecutorPids = @($WorkflowExecutorPids | Sort-Object)
+    if (
+        $ExecutorPidsAfterSecondLaunch.Count -ne 4 -or
+        (Compare-Object $ExpectedExecutorPids $ExecutorPidsAfterSecondLaunch)
+    ) {
+        throw "Second launch changed Workflow Executors: expected=$($ExpectedExecutorPids -join ', '); actual=$($ExecutorPidsAfterSecondLaunch -join ', ')"
+    }
+    $StatusExecutorPids = @(Assert-WorkflowExecutorPool $BackendBaseUrl | Sort-Object)
+    if (Compare-Object $ExpectedExecutorPids $StatusExecutorPids) {
+        throw "Status changed Workflow Executors after second launch"
     }
     Write-Output "Single-instance backend ownership verified"
 
@@ -244,7 +306,7 @@ finally {
         if ($UninstallResult.ExitCode -ne 0) {
             throw "NSIS uninstaller exited with code $($UninstallResult.ExitCode)"
         }
-        $UninstallDeadline = (Get-Date).AddSeconds(15)
+        $UninstallDeadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $UninstallDeadline -and (Get-UninstallEntry)) {
             Start-Sleep -Milliseconds 250
         }

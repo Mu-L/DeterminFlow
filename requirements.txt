@@ -11,6 +11,7 @@ uvicorn[standard]==0.50.2
 websockets==15.0.1
 watchdog==6.0.0
 croniter==6.2.3
+tzdata==2026.3
 aiofiles==25.1.0
 gunicorn==26.0.0
 httpx==0.28.1

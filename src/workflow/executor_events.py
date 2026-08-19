@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .executor_observability import (
@@ -14,9 +12,18 @@ from .executor_observability import (
     controller_event_bridge_counters,
 )
 from .executor_protocol import (
+    AUTH_TOKEN_FIELD,
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
     ExecutorIdentity,
+    auth_token_matches,
+)
+from .executor_transport import (
+    LoopbackEndpoint,
+    bound_endpoint,
+    open_loopback_connection,
+    require_auth_token,
+    start_loopback_server,
 )
 
 
@@ -27,15 +34,23 @@ EventHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 class ControllerEventReceiver:
     def __init__(
         self,
-        socket_path: Path,
         identity: ExecutorIdentity,
         handler: EventHandler,
+        *,
+        auth_token: str,
     ):
-        self.socket_path = Path(socket_path)
         self.identity = identity
         self.handler = handler
+        self.auth_token = require_auth_token(auth_token)
         self.counters = EventBridgeCounters()
         self._server: asyncio.AbstractServer | None = None
+        self._endpoint: LoopbackEndpoint | None = None
+
+    @property
+    def endpoint(self) -> LoopbackEndpoint:
+        if self._endpoint is None:
+            raise RuntimeError("event receiver has not started")
+        return self._endpoint
 
     def stats(self) -> dict[str, int]:
         return self.counters.snapshot()
@@ -49,21 +64,23 @@ class ControllerEventReceiver:
             raise ValueError("cannot change event bridge executor_id")
         self.identity = identity
 
-    async def start(self) -> None:
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.socket_path.unlink(missing_ok=True)
-        self._server = await asyncio.start_unix_server(
-            self._handle_connection, self.socket_path,
+    def update_auth_token(self, auth_token: str) -> None:
+        self.auth_token = require_auth_token(auth_token)
+
+    async def start(self) -> LoopbackEndpoint:
+        self._server = await start_loopback_server(
+            self._handle_connection,
             limit=MAX_FRAME_BYTES + 1,
         )
-        os.chmod(self.socket_path, 0o600)
+        self._endpoint = bound_endpoint(self._server)
+        return self._endpoint
 
     async def close(self) -> None:
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-        self.socket_path.unlink(missing_ok=True)
+        self._endpoint = None
 
     async def _handle_connection(self, reader, writer) -> None:
         try:
@@ -98,6 +115,7 @@ class ControllerEventReceiver:
         return (
             isinstance(envelope, dict)
             and envelope.get("protocol_version") == PROTOCOL_VERSION
+            and auth_token_matches(envelope, self.auth_token)
             and envelope.get("executor_id") == self.identity.executor_id
             and envelope.get("executor_epoch") == self.identity.epoch
             and envelope.get("channel") in {"chat", "events"}
@@ -106,9 +124,16 @@ class ControllerEventReceiver:
 
 
 class ExecutorEventForwarder:
-    def __init__(self, socket_path: Path, identity: ExecutorIdentity):
-        self.socket_path = Path(socket_path)
+    def __init__(
+        self,
+        endpoint: LoopbackEndpoint,
+        identity: ExecutorIdentity,
+        *,
+        auth_token: str,
+    ):
+        self.endpoint = endpoint
         self.identity = identity
+        self.auth_token = require_auth_token(auth_token)
         self.counters = EventBridgeCounters()
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
@@ -122,6 +147,7 @@ class ExecutorEventForwarder:
             "protocol_version": PROTOCOL_VERSION,
             "executor_id": self.identity.executor_id,
             "executor_epoch": self.identity.epoch,
+            AUTH_TOKEN_FIELD: self.auth_token,
             "channel": channel,
             "event": event,
         }
@@ -143,8 +169,8 @@ class ExecutorEventForwarder:
             for attempt in range(2):
                 try:
                     if self._writer is None or self._writer.is_closing():
-                        _, self._writer = await asyncio.open_unix_connection(
-                            self.socket_path,
+                        _, self._writer = await open_loopback_connection(
+                            self.endpoint,
                             limit=MAX_FRAME_BYTES + 1,
                         )
                         if self._connected_once:

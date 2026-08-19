@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import os
 import shutil
-import signal
 from pathlib import Path
 
 import pytest
@@ -17,7 +15,9 @@ from src.workflow.executor_client import (
     WorkflowExecutorClient,
 )
 from src.workflow.executor_pool import WorkflowExecutorPool
+from src.workflow.executor_process import force_kill_pid, forced_exit_code
 from src.workflow.executor_protocol import ExecutorIdentity
+from src.workflow.executor_transport import LOOPBACK_HOST, LoopbackEndpoint
 from src.workflow.executor_supervisor import (
     STATUS_READY,
     STATUS_RESTARTING,
@@ -59,8 +59,9 @@ class _FakeMember:
         self.executor_id = executor_id
         self.is_ready = ready
         self.client = WorkflowExecutorClient(
-            Path(f"/tmp/{executor_id}.sock"),
+            LoopbackEndpoint(LOOPBACK_HOST, 1),
             ExecutorIdentity(executor_id, epoch),
+            auth_token="test-auth-token",
         )
 
 
@@ -122,7 +123,7 @@ def test_supervisor_state_machine_covers_start_crash_restart_and_stop(tmp_path):
             lease_path=tmp_path / "workflow-executor.lock",
             restart_backoff_max=0.001,
         )
-        supervisor._kill_remaining_process_group = lambda _pid: None
+        supervisor._reap_process_tree = lambda: None
         process = None
         spawn_count = 0
         first_spawn_started = asyncio.Event()
@@ -158,8 +159,9 @@ def test_supervisor_state_machine_covers_start_crash_restart_and_stop(tmp_path):
             identity = ExecutorIdentity(supervisor.executor_id, f"epoch-{spawn_count}")
             if supervisor.client is None:
                 supervisor.client = WorkflowExecutorClient(
-                    tmp_path / "rpc.sock",
+                    LoopbackEndpoint(LOOPBACK_HOST, 1),
                     identity,
+                    auth_token="test-auth-token",
                 )
             else:
                 supervisor.client.update_identity(identity)
@@ -321,7 +323,6 @@ def test_select_client_resumes_round_robin_after_member_becomes_ready(tmp_path):
     assert any(identity.epoch == "new-ready-epoch" for identity in recovered)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix socket and SIGKILL integration")
 def test_real_pool_does_not_bind_before_restart_ping(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     config_dir = tmp_path / "config"
@@ -376,7 +377,7 @@ def test_real_pool_does_not_bind_before_restart_ping(tmp_path, monkeypatch):
 
             victim.client.call = gated_call
             assert victim.pid is not None
-            os.kill(victim.pid, signal.SIGKILL)
+            force_kill_pid(victim.pid)
 
             await _wait_until(
                 lambda: (
@@ -389,7 +390,7 @@ def test_real_pool_does_not_bind_before_restart_ping(tmp_path, monkeypatch):
                 message="restarting member to rotate identity before ping succeeds",
             )
             assert victim.restart_count == 1
-            assert victim.last_exit_code == -signal.SIGKILL
+            assert victim.last_exit_code == forced_exit_code()
             assert victim.last_ready_at == first_ready_at
 
             assigned = [

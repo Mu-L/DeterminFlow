@@ -64,6 +64,7 @@ import fcntl
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -94,7 +95,7 @@ def _log(event):
 
 _log("start")
 (root / "script.pid").write_text(str(os.getpid()), encoding="utf-8")
-child = subprocess.Popen(["sleep", "180"])
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(180)"])
 (root / "child.pid").write_text(str(child.pid), encoding="utf-8")
 (root / "ready").write_text("1", encoding="utf-8")
 try:

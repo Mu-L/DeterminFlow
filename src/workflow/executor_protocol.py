@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +11,7 @@ PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 1024 * 1024
 RPC_TIMEOUT_SECONDS = 30.0
 STATUS_OPERATION = "status"
+AUTH_TOKEN_FIELD = "auth_token"
 
 ASYNC_OPERATIONS = frozenset({
     "run_task",
@@ -37,6 +39,33 @@ class ExecutorIdentity:
             raise ExecutorProtocolError("executor identity must be non-empty")
 
 
+def validate_auth_token(raw: Any, *, expected_token: str) -> None:
+    """Reject frames that do not present the live generation token."""
+    if not isinstance(raw, dict):
+        raise ExecutorProtocolError("request must be an object")
+    token = raw.get(AUTH_TOKEN_FIELD)
+    if not isinstance(token, str) or not expected_token:
+        raise ExecutorProtocolError("auth_token invalid")
+    try:
+        matched = hmac.compare_digest(token, expected_token)
+    except (TypeError, ValueError):
+        matched = False
+    if not matched:
+        raise ExecutorProtocolError("auth_token invalid")
+
+
+def auth_token_matches(raw: Any, expected_token: str) -> bool:
+    if not isinstance(raw, dict) or not expected_token:
+        return False
+    token = raw.get(AUTH_TOKEN_FIELD)
+    if not isinstance(token, str):
+        return False
+    try:
+        return hmac.compare_digest(token, expected_token)
+    except (TypeError, ValueError):
+        return False
+
+
 def validate_executor_generation(
     raw: Any,
     *,
@@ -55,11 +84,13 @@ def validate_request(
     raw: Any,
     *,
     expected_identity: ExecutorIdentity,
+    expected_auth_token: str,
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ExecutorProtocolError("request must be an object")
     if raw.get("protocol_version") != PROTOCOL_VERSION:
         raise ExecutorProtocolError("unsupported protocol_version")
+    validate_auth_token(raw, expected_token=expected_auth_token)
     validate_executor_generation(raw, expected_identity=expected_identity)
     request_id = raw.get("request_id")
     if not isinstance(request_id, str) or not request_id:

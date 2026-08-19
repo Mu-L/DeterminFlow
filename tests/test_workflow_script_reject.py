@@ -4,7 +4,7 @@ import asyncio
 from copy import deepcopy
 import json
 import os
-import shlex
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -27,6 +27,7 @@ from src.workflow.nodes.script import (
     _parse_reject_upstream,
     _terminate_process_tree,
 )
+from src.workflow.executor_process import process_is_alive
 from src.workflow.token_usage import aggregate_token_usage
 
 
@@ -38,15 +39,24 @@ def test_parse_reject_upstream_with_target():
     assert parsed == ("字段缺失", "agent_l1")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix process-group assertion")
 def test_script_process_tree_is_terminated_on_task_cancel(tmp_path):
     async def scenario():
         child_pid_file = tmp_path / "child.pid"
+        code = (
+            "import subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(60)'])\n"
+            f"Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+            "child.wait()\n"
+        )
+        process_options = (
+            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            if sys.platform == "win32"
+            else {"start_new_session": True}
+        )
         process = await asyncio.create_subprocess_exec(
-            "bash",
-            "-c",
-            f"sleep 60 & echo $! > {shlex.quote(str(child_pid_file))}; wait",
-            start_new_session=True,
+            sys.executable, "-c", code, **process_options,
         )
         for _ in range(100):
             if child_pid_file.exists():
@@ -57,13 +67,16 @@ def test_script_process_tree_is_terminated_on_task_cancel(tmp_path):
         await _terminate_process_tree(process, grace_seconds=0.1)
 
         assert process.returncode is not None
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
+        for _ in range(100):
+            if not process_is_alive(child_pid):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("Script descendant survived cancellation")
 
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix process-tree assertion")
 def test_executor_script_tree_is_terminated_without_killing_executor_group(
     tmp_path, monkeypatch,
 ):
@@ -71,10 +84,21 @@ def test_executor_script_tree_is_terminated_without_killing_executor_group(
 
     async def scenario():
         child_pid_file = tmp_path / "executor-child.pid"
+        code = (
+            "import subprocess, sys\n"
+            "from pathlib import Path\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(60)'])\n"
+            f"Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+            "child.wait()\n"
+        )
+        process_options = (
+            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            if sys.platform == "win32"
+            else {}
+        )
         process = await asyncio.create_subprocess_exec(
-            "bash",
-            "-c",
-            f"sleep 60 & echo $! > {shlex.quote(str(child_pid_file))}; wait",
+            sys.executable, "-c", code, **process_options,
         )
         for _ in range(100):
             if child_pid_file.exists():
@@ -85,8 +109,12 @@ def test_executor_script_tree_is_terminated_without_killing_executor_group(
         await _terminate_process_tree(process, grace_seconds=0.1)
 
         assert process.returncode is not None
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
+        for _ in range(100):
+            if not process_is_alive(child_pid):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("Executor Script descendant survived cancellation")
 
     asyncio.run(scenario())
 

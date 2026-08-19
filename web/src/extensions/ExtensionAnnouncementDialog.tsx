@@ -23,6 +23,9 @@ const LEVEL_CLASSES = {
   warning: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
 } as const;
 
+export const EXTENSION_ANNOUNCEMENT_DIALOG_CLASS_NAME =
+  "flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-background text-foreground shadow-2xl sm:max-h-[42rem]";
+
 function formatPublishedAt(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -99,7 +102,7 @@ export function ExtensionAnnouncementDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
-        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-border bg-background text-foreground shadow-2xl sm:max-h-[42rem]"
+        className={EXTENSION_ANNOUNCEMENT_DIALOG_CLASS_NAME}
       >
         <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4 sm:px-6">
           <div className="min-w-0">

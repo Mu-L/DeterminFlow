@@ -9,7 +9,9 @@ import os
 import signal
 from pathlib import Path
 
+from .executor_process import watch_parent_exit
 from .executor_protocol import ExecutorIdentity
+from .executor_transport import LoopbackEndpoint, take_auth_token_from_env
 
 
 logger = logging.getLogger(__name__)
@@ -17,30 +19,20 @@ logger = logging.getLogger(__name__)
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--socket-path", type=Path, required=True)
+    parser.add_argument("--rpc-endpoint-path", type=Path, required=True)
     parser.add_argument("--executor-id", required=True)
     parser.add_argument("--executor-epoch", required=True)
     parser.add_argument("--parent-pid", type=int, required=True)
     parser.add_argument("--lease-path", type=Path, required=True)
-    parser.add_argument("--event-socket-path", type=Path, required=True)
+    parser.add_argument("--event-host", required=True)
+    parser.add_argument("--event-port", type=int, required=True)
     return parser
-
-
-async def _watch_parent(parent_pid: int, stop_event: asyncio.Event) -> None:
-    while not stop_event.is_set():
-        if os.getppid() != parent_pid:
-            logger.error("Controller parent exited; stopping Workflow Executor")
-            stop_event.set()
-            return
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            continue
 
 
 async def _run(args: argparse.Namespace) -> None:
     if os.getenv("DETERMINFLOW_RUNTIME_ROLE") != "workflow-executor":
         raise RuntimeError("Workflow Executor runtime role is not set")
+    auth_token = take_auth_token_from_env()
 
     # Import only after the role is fixed. web_server creates its application at
     # module import time and the lifespan uses this role to disable Controller
@@ -52,6 +44,7 @@ async def _run(args: argparse.Namespace) -> None:
     from src.workflow.executor_server import WorkflowExecutorServer
 
     identity = ExecutorIdentity(args.executor_id, args.executor_epoch)
+    event_endpoint = LoopbackEndpoint(args.event_host, args.event_port)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -62,22 +55,25 @@ async def _run(args: argparse.Namespace) -> None:
 
     lease = ExecutorProcessLease(args.lease_path)
     await asyncio.to_thread(lease.acquire, 55.0)
-    event_forwarder = ExecutorEventForwarder(args.event_socket_path, identity)
+    event_forwarder = ExecutorEventForwarder(
+        event_endpoint, identity, auth_token=auth_token,
+    )
     event_bus.set_process_forwarder(event_forwarder.emit)
     try:
         async with lifespan(app):
             manager = app.state.workflow_manager
             manager.set_local_executor_identity(identity)
             server = WorkflowExecutorServer(
-                args.socket_path,
                 identity,
                 manager,
+                auth_token=auth_token,
+                endpoint_path=args.rpc_endpoint_path,
                 shutdown_callback=stop_event.set,
                 event_forwarder=event_forwarder,
             )
             await server.start()
             parent_watch = asyncio.create_task(
-                _watch_parent(args.parent_pid, stop_event),
+                watch_parent_exit(args.parent_pid, stop_event),
                 name="workflow-executor-parent-watch",
             )
             logger.info(

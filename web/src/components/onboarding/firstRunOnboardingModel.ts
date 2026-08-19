@@ -4,6 +4,8 @@ import type { ModelProvider, ProviderSchema } from "@/types";
 
 export const DESKTOP_ONBOARDING_PENDING_VALUE = "pending";
 export const DESKTOP_ONBOARDING_COMPLETE_VALUE = "complete";
+export const ANONYMOUS_MANAGED_MODEL = "auto";
+export const ANONYMOUS_MANAGED_MODEL_NOTE = "为避免滥用，仅提供 auto（自动选择）";
 
 type ProviderMap = Record<string, Omit<ModelProvider, "id">>;
 
