@@ -31,6 +31,8 @@ import {
 } from "@/lib/api";
 import type { ModelProvider, ProviderSchema } from "@/types";
 import {
+  ANONYMOUS_MANAGED_MODEL,
+  ANONYMOUS_MANAGED_MODEL_NOTE,
   buildCredentialSignature,
   buildProviderChoices,
   chooseInitialProviderId,
@@ -58,8 +60,6 @@ interface FirstRunModelScreenProps {
   onNext: () => void;
   onManagedProviderChange: (pluginId: string | null) => void;
 }
-
-const ANONYMOUS_PUBLIC_MODEL = "deepseek-v4-flash";
 
 async function requestManagedModelStatus(
   endpoint: string,
@@ -162,7 +162,7 @@ export function FirstRunModelScreen({
   const [managedStatus, setManagedStatus] = useState<ManagedModelStatus | null>(null);
   const [managedLoading, setManagedLoading] = useState(Boolean(managedExtension));
   const [loginLoading, setLoginLoading] = useState(false);
-  const [selectedPublicModel, setSelectedPublicModel] = useState(ANONYMOUS_PUBLIC_MODEL);
+  const [selectedPublicModel, setSelectedPublicModel] = useState(ANONYMOUS_MANAGED_MODEL);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [managedConfirmationOpen, setManagedConfirmationOpen] = useState(false);
@@ -181,7 +181,7 @@ export function FirstRunModelScreen({
     && validatedSignature === credentialSignature;
   const publicModels = managedStatus?.signedIn
     ? managedStatus.models
-    : [ANONYMOUS_PUBLIC_MODEL];
+    : [ANONYMOUS_MANAGED_MODEL];
   const publicReady = Boolean(
     managedStatus?.serviceEnabled
       && (!managedStatus.signedIn || (
@@ -221,7 +221,7 @@ export function FirstRunModelScreen({
   useEffect(() => {
     const nextModels = managedStatus?.signedIn
       ? managedStatus.models
-      : [ANONYMOUS_PUBLIC_MODEL];
+      : [ANONYMOUS_MANAGED_MODEL];
     setSelectedPublicModel((current) => (
       nextModels.includes(current) ? current : nextModels[0] || ""
     ));
@@ -459,7 +459,7 @@ export function FirstRunModelScreen({
                 ) : (
                   <>
                     <strong>匿名用户</strong>
-                    <small>为避免滥用，仅提供 DeepSeek V4 Flash</small>
+                    <small>{ANONYMOUS_MANAGED_MODEL_NOTE}</small>
                   </>
                 )}
               </div>

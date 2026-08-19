@@ -5,6 +5,8 @@ import type { PluginRecord } from "@/extensions/plugin-types";
 import type { ExtensionStatus } from "@/extensions/types";
 import type { ModelProvider, ProviderSchema } from "@/types";
 import {
+  ANONYMOUS_MANAGED_MODEL,
+  ANONYMOUS_MANAGED_MODEL_NOTE,
   buildCredentialSignature,
   buildProviderChoices,
   chooseInitialModel,
@@ -129,6 +131,12 @@ test("anonymous managed models require an explicit confirmation before first use
     signedIn: true,
     confirmationAccepted: false,
   }), false);
+});
+
+test("anonymous managed model contract exposes only auto", () => {
+  assert.equal(ANONYMOUS_MANAGED_MODEL, "auto");
+  assert.match(ANONYMOUS_MANAGED_MODEL_NOTE, /auto（自动选择）/);
+  assert.doesNotMatch(ANONYMOUS_MANAGED_MODEL_NOTE, /DeepSeek/i);
 });
 
 test("provider choices combine schemas and installed providers without duplicates", () => {

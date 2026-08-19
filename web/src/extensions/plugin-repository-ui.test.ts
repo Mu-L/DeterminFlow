@@ -9,6 +9,7 @@ import {
 } from "../components/extensions/PluginInstallForm.tsx";
 import { PluginLifecycleList } from "../components/extensions/PluginLifecycleList.tsx";
 import { PluginRepositoryDialog } from "../components/extensions/PluginRepositoryDialog.tsx";
+import { EXTENSION_ANNOUNCEMENT_DIALOG_CLASS_NAME } from "./ExtensionAnnouncementDialog.tsx";
 import type {
   PluginCatalogEntry,
   PluginCatalogSource,
@@ -174,4 +175,14 @@ test("installed plugins expose one dedicated description column", () => {
 
   assert.match(markup, />说明</);
   assert.match(markup, /由笔枢写作免费提供的模型体验服务/);
+});
+
+test("announcement dialog is wide on desktop and bounded on small screens", () => {
+  const classes = new Set(EXTENSION_ANNOUNCEMENT_DIALOG_CLASS_NAME.split(/\s+/));
+
+  assert.equal(classes.has("w-full"), true);
+  assert.equal(classes.has("max-w-2xl"), true);
+  assert.equal(classes.has("max-w-lg"), false);
+  assert.equal(classes.has("max-h-[calc(100dvh-2rem)]"), true);
+  assert.equal(classes.has("overflow-hidden"), true);
 });
