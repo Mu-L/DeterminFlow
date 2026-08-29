@@ -126,6 +126,32 @@ fragment 的 HTTPS。安装和更新在 Registry 命中后仍锁定清单中的�
 内容 SHA256；请求的 ref 为 `HEAD`、清单 ref 或该 Plugin 的 ref 时使用当前快照，
 请求完整 commit 时只有清单提供同一 commit 的包才会走 Registry。
 
+Core 提供 `registry_release` 构建/发布工具。构建只读取 Git 中的精确 commit，拒绝
+符号链接、非普通文件、Python bytecode 和超限包；ZIP 时间戳与权限固定，因此相同
+commit 会得到相同包摘要。签名私钥只从环境变量读取，不写入仓库或命令参数：
+
+```bash
+PLUGIN_REGISTRY_SIGNING_KEY='<base64-32-byte-seed>' \
+python -m src.plugin_system.registry_release build \
+  --repository /path/to/DeterminFlow-Plugins \
+  --source-url https://github.com/alikon-art/DeterminFlow-Plugins.git \
+  --ref main \
+  --output /tmp/determinflow-plugin-registry \
+  --public-base-url https://downloads.determinflow.com/plugins/v1
+```
+
+发布时先上传并公开校验 `packages/` 和 `snapshots/<commit>/` 不可变对象，再更新
+`manifest.json.sig`，最后更新 `manifest.json`。不可变 Key 已存在但内容不同会失败关闭：
+
+```bash
+python -m src.plugin_system.registry_release publish \
+  --registry-dir /tmp/determinflow-plugin-registry \
+  --prefix plugins/v1 \
+  --bucket "$R2_BUCKET" \
+  --endpoint-url "$R2_ENDPOINT_URL" \
+  --public-base-url https://downloads.determinflow.com
+```
+
 ## extension.toml
 
 ```toml

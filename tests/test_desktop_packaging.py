@@ -288,6 +288,10 @@ def test_stage_defaults_uses_sanitized_overrides(
         "https://gitee.com/alikon/DeterminFlow-Plugins.git"
     ]
     assert plugin_source["official_sources"][0]["ref"] == "main"
+    assert plugin_source["official_sources"][0]["registry"] == {
+        "url": "https://downloads.determinflow.com/plugins/v1",
+        "public_key": "C4oDxekhIr8Czlx0zpkRx46k26KK3d1T3HIZGsIxIr0=",
+    }
     assert (output / "models_config.json").read_text() == (
         output / "models_config.example.json"
     ).read_text()

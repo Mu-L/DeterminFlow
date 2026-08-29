@@ -72,8 +72,9 @@ GitHub 临时分支 `codex/desktop-tauri-poc` 会运行 `.github/workflows/deskt
 
 Full 构建从官方 Plugin 仓库的 `main` Catalog 解析当时全部公开 Plugin，执行声明式资源
 预检后锁定精确 Commit 与内容摘要，再写入安装包。Core 自动更新不重置 Plugin 状态。
-当前 Plugin 在线安装和后续更新仍调用系统 Git；没有 Git 的用户可以使用 Full 的内置
-快照，但要从 UI 更新到未来 Plugin 版本仍需先安装 Git。
+官方 Plugin 在线安装和后续更新优先使用独立签名的 R2 Registry，不要求系统安装 Git；
+R2 不可用、签名或内容校验失败时回退 GitHub/Gitee Git 源。自定义第三方 Plugin 来源
+仍使用系统 Git。Full 的内置快照和 Core 自动更新都不会重置用户的 Plugin 状态。
 
 服务版仍按原入口运行，不初始化 Tauri 更新插件，也不显示更新 UI。若 R2、GitHub 与 Gitee 都没有可用 `latest.json`，桌面端会保留当前版本并提示更新服务尚未发布，不影响应用本身使用。
 
