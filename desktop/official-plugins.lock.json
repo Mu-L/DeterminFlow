@@ -14,7 +14,7 @@
   ],
   "schema_version": 1,
   "source": {
-    "commit": "fe920926ff79efefd819ff02cce5bdecb0bf36e5",
+    "commit": "7577b43084a06761d01a95e60a3167c5ea65b36b",
     "id": "determinflow-official",
     "ref": "main",
     "url": "https://github.com/alikon-art/DeterminFlow-Plugins.git"
