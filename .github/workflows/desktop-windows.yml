@@ -181,3 +181,24 @@ jobs:
               --title "DeterminFlow $RELEASE_TAG" \
               --notes-file "desktop/release-notes/$RELEASE_TAG.md"
           fi
+
+      - name: Publish verified release assets to R2
+        if: vars.R2_DISTRIBUTION_ENABLED == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          RELEASE_TAG: ${{ github.ref_name }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          aws --version
+          python desktop/scripts/publish_r2_release.py \
+            --assets-dir release-assets \
+            --version "$version" \
+            --notes-file "desktop/release-notes/$RELEASE_TAG.md" \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --bucket "$R2_BUCKET" \
+            --endpoint-url "$R2_ENDPOINT_URL" \
+            --public-base-url "https://downloads.determinflow.com"

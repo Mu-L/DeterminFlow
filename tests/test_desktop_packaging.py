@@ -18,6 +18,12 @@ from desktop.python.runtime import (
 from desktop.scripts import official_plugin_lock as plugin_lock_module
 from desktop.scripts import stage_defaults as defaults_module
 from desktop.scripts.create_update_manifest import create_manifest
+from desktop.scripts.publish_r2_release import (
+    IMMUTABLE_CACHE_CONTROL,
+    LATEST_CACHE_CONTROL,
+    R2Publisher,
+    publish_release,
+)
 from desktop.scripts.verify_bundle import (
     verify_bundled_plugins,
     verify_defaults,
@@ -73,7 +79,7 @@ def test_tauri_bundle_is_a_per_user_nsis_installer() -> None:
     )
     updater = config["plugins"]["updater"]
     assert updater["endpoints"] == [
-        "https://github.com/alikon-art/DeterminFlow/releases/latest/download/latest.json"
+        "https://downloads.determinflow.com/desktop/stable/latest.json"
     ]
     assert len(updater["pubkey"]) > 100
     assert b"minisign public key" in base64.b64decode(
@@ -199,8 +205,9 @@ def test_desktop_lifecycle_cleans_up_the_backend_before_every_exit() -> None:
     assert "prepare_for_update," in main_source
     assert "updater::check_update_sources," in main_source
     assert "releases/latest/download/latest.json" in updater_source
+    assert "downloads.determinflow.com/desktop/stable/latest.json" in updater_source
     assert "gitee.com/api/v5/repos/alikon/DeterminFlow/releases/latest" in updater_source
-    assert "github_version > gitee_version" in updater_source
+    assert "join3(r2, github, gitee)" in updater_source
     assert "primary: UpdateSource::Gitee" in updater_source
     assert "fallback: Some(UpdateSource::Github)" in updater_source
     assert "fallback_rid" in updater_source
@@ -246,6 +253,8 @@ def test_desktop_workflow_builds_candidates_and_publishes_tags() -> None:
     assert "gh release create" in workflow.lower()
     assert "contents: write" in workflow
     assert "release-assets/latest.json" in workflow
+    assert "desktop/scripts/publish_r2_release.py" in workflow
+    assert "R2_DISTRIBUTION_ENABLED" in workflow
 
     installer_smoke = (
         REPO_ROOT / "desktop" / "scripts" / "smoke_installer.ps1"
@@ -712,6 +721,68 @@ def test_updater_signature_and_static_manifest(tmp_path: Path) -> None:
     platform = manifest["platforms"]["windows-x86_64"]
     assert platform["url"].endswith("/DeterminFlow%201.1.0-setup.exe")
     assert platform["signature"] == signature.read_text(encoding="utf-8")
+
+
+def test_r2_publisher_rejects_changed_immutable_objects(tmp_path: Path) -> None:
+    asset = tmp_path / "asset.exe"
+    asset.write_bytes(b"new")
+
+    def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {"ContentLength": 3, "Metadata": {"sha256": "different"}}
+            ),
+            stderr="",
+        )
+
+    publisher = R2Publisher(
+        bucket="downloads",
+        endpoint_url="https://example.r2.cloudflarestorage.com",
+        public_base_url="https://downloads.determinflow.com",
+        runner=runner,
+    )
+
+    with pytest.raises(RuntimeError, match="immutable R2 object"):
+        publisher.publish_immutable(asset, "desktop/releases/v1.2.3/asset.exe")
+
+
+def test_r2_release_publishes_latest_only_after_verified_assets(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    installer = assets / "DeterminFlow_1.2.3_x64-setup.exe"
+    installer.write_bytes(b"installer")
+    installer.with_suffix(".exe.sig").write_text("signed", encoding="utf-8")
+    (assets / "DeterminFlow_1.2.3_x64-full-setup.exe").write_bytes(b"full")
+    notes = tmp_path / "notes.md"
+    notes.write_text("R2 release", encoding="utf-8")
+    calls: list[tuple[str, str, str]] = []
+
+    class RecordingPublisher:
+        public_base_url = "https://downloads.determinflow.com"
+
+        def publish_immutable(self, path: Path, key: str) -> None:
+            calls.append(("immutable", key, path.read_text(errors="ignore")))
+
+        def publish_latest(self, path: Path, key: str) -> None:
+            calls.append(("latest", key, path.read_text(encoding="utf-8")))
+
+    publish_release(
+        assets_dir=assets,
+        version="1.2.3",
+        notes_file=notes,
+        pub_date="2026-08-29T00:00:00Z",
+        publisher=RecordingPublisher(),  # type: ignore[arg-type]
+    )
+
+    assert calls[-1][0:2] == ("latest", "desktop/stable/latest.json")
+    assert all(call[0] == "immutable" for call in calls[:-1])
+    assert json.loads(calls[-1][2])["platforms"]["windows-x86_64"][
+        "url"
+    ].startswith("https://downloads.determinflow.com/desktop/releases/v1.2.3/")
+    assert IMMUTABLE_CACHE_CONTROL.endswith("immutable")
+    assert LATEST_CACHE_CONTROL.startswith("no-cache")
 
 
 def test_windows_desktop_executable_must_use_the_gui_subsystem(tmp_path: Path) -> None:
