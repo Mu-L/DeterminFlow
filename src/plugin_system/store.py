@@ -1,8 +1,7 @@
-"""Immutable Git-backed plugin package storage and lock management."""
+"""Immutable plugin package storage and lock management."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -14,9 +13,8 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from urllib.parse import unquote, urlsplit, urlunsplit
-from urllib.request import url2pathname
 
+from .integrity import plugin_content_sha256
 from .models import (
     PluginLockRecord,
     PluginRevision,
@@ -25,12 +23,20 @@ from .models import (
     validate_plugin_subdirectory,
     validate_resource_prefix,
 )
-from .source_selection import select_git_source
+from .registry import (
+    HttpGet,
+    PluginRegistryConfig,
+    PluginRegistryError,
+    download_registry_package,
+    extract_plugin_zip,
+    load_verified_manifest,
+    select_registry_plugin,
+)
+from .source_selection import canonicalize_plugin_source, select_git_source
 
 
 LOCK_SCHEMA_VERSION = 1
 _COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40,64}$")
-_SCP_SOURCE_RE = re.compile(r"^(?P<user>[^/@:\s]+)@(?P<host>[^/:\s]+):(?P<path>.+)$")
 
 
 class PluginStoreError(RuntimeError):
@@ -54,13 +60,16 @@ class PluginStore:
         *,
         official_sources: Iterable[str] = (),
         official_source_mirrors: Mapping[str, Iterable[str]] | None = None,
+        official_registries: Mapping[str, PluginRegistryConfig] | None = None,
         git_binary: str = "git",
+        registry_http_get: HttpGet | None = None,
     ):
         self.root = Path(root).expanduser().resolve()
         self.checkouts_dir = self.root / "checkouts"
         self.staging_dir = self.root / "staging"
         self.lock_path = self.root / "plugins.lock.json"
         self.git_binary = git_binary
+        self._registry_http_get = registry_http_get
         self.root.mkdir(parents=True, exist_ok=True)
         self.checkouts_dir.mkdir(parents=True, exist_ok=True)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +86,11 @@ class PluginStore:
             self._official_source_candidates[canonical] = tuple(
                 dict.fromkeys(candidates)
             )
+        self._official_registries: dict[str, PluginRegistryConfig] = {}
+        for source, registry in (official_registries or {}).items():
+            canonical = self.canonicalize_source(source)[0]
+            if canonical in self._official_sources:
+                self._official_registries[canonical] = registry
 
     def install(
         self,
@@ -396,74 +410,177 @@ class PluginStore:
         preflight: Callable[[Path], None] | None = None,
     ) -> PluginRevision:
         requested_ref = self._validate_ref(ref)
-        stage_root = Path(tempfile.mkdtemp(prefix=f"{plugin_id}-", dir=self.staging_dir))
-        clone_root = stage_root / "repository"
-        prepared = stage_root / "package"
+        stage_root: Path | None = None
         try:
-            candidates = self._official_source_candidates.get(
-                canonical_source,
-                (clone_source,),
-            )
-            selected = select_git_source(
-                candidates,
-                requested_ref,
-                git_binary=self.git_binary,
-            )
-            self._run_git(
-                "clone",
-                "--quiet",
-                "--no-checkout",
-                "--",
-                selected.url,
-                str(clone_root),
-            )
-            commit = self._resolve_ref(clone_root, requested_ref)
-            if selected.commit and commit != selected.commit:
-                raise RuntimeError("Plugin 镜像在拉取期间发生版本漂移")
-            self._run_git(
-                "-C",
-                str(clone_root),
-                "checkout",
-                "--quiet",
-                "--detach",
-                commit,
-            )
-            package_root = clone_root / subdirectory if subdirectory else clone_root
-            self._validate_package_root(plugin_id, clone_root, package_root)
-            shutil.copytree(
-                package_root,
-                prepared,
-                symlinks=True,
-                ignore=shutil.ignore_patterns(".git"),
-            )
-            digest = self._content_sha256(prepared)
-            destination = (
-                self.checkouts_dir
-                / plugin_id
-                / f"{commit}-{digest[:16]}"
-            )
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                if self._content_sha256(destination) != digest:
-                    raise PluginStoreError(
-                        f"content-addressed checkout mismatch: {destination}"
+            registry = self._official_registries.get(canonical_source)
+            if registry is not None:
+                stage_root = Path(
+                    tempfile.mkdtemp(prefix=f"{plugin_id}-", dir=self.staging_dir)
+                )
+                try:
+                    return self._materialize_from_registry(
+                        plugin_id,
+                        canonical_source,
+                        requested_ref,
+                        subdirectory,
+                        registry,
+                        stage_root,
+                        preflight=preflight,
                     )
-            else:
-                os.replace(prepared, destination)
-            if preflight is not None:
-                preflight(destination)
-            return PluginRevision(
-                commit=commit,
-                content_sha256=digest,
-                checkout_path=str(destination.resolve()),
-                requested_ref=requested_ref,
+                except (PluginRegistryError, InvalidPluginPackageError):
+                    shutil.rmtree(stage_root, ignore_errors=True)
+                    stage_root = None
+            stage_root = Path(
+                tempfile.mkdtemp(prefix=f"{plugin_id}-", dir=self.staging_dir)
+            )
+            return self._materialize_from_git(
+                plugin_id,
+                canonical_source,
+                clone_source,
+                requested_ref,
+                subdirectory,
+                stage_root,
+                preflight=preflight,
             )
         except PluginStoreError:
             raise
         except Exception as exc:
-            raise PluginStoreError(f"failed to install plugin {plugin_id}: {exc}") from exc
+            raise PluginStoreError(
+                f"failed to install plugin {plugin_id}: {exc}"
+            ) from exc
         finally:
-            shutil.rmtree(stage_root, ignore_errors=True)
+            if stage_root is not None:
+                shutil.rmtree(stage_root, ignore_errors=True)
+
+    def _materialize_from_registry(
+        self,
+        plugin_id: str,
+        canonical_source: str,
+        requested_ref: str,
+        subdirectory: str,
+        registry: PluginRegistryConfig,
+        stage_root: Path,
+        *,
+        preflight: Callable[[Path], None] | None,
+    ) -> PluginRevision:
+        manifest = load_verified_manifest(
+            registry,
+            canonical_source,
+            http_get=self._registry_http_get,
+        )
+        plugin = select_registry_plugin(manifest, plugin_id, requested_ref)
+        if plugin.subdirectory != subdirectory:
+            raise PluginRegistryError(
+                f"Registry Plugin 子目录与安装请求不一致: {plugin_id}"
+            )
+        payload = download_registry_package(
+            plugin,
+            http_get=self._registry_http_get,
+        )
+        prepared = stage_root / "package"
+        extract_plugin_zip(payload, prepared)
+        self._validate_package_root(plugin_id, prepared, prepared)
+        return self._place_checkout(
+            plugin_id,
+            plugin.commit,
+            prepared,
+            requested_ref,
+            expected_content_sha256=plugin.content_sha256,
+            preflight=preflight,
+        )
+
+    def _materialize_from_git(
+        self,
+        plugin_id: str,
+        canonical_source: str,
+        clone_source: str,
+        requested_ref: str,
+        subdirectory: str,
+        stage_root: Path,
+        *,
+        preflight: Callable[[Path], None] | None,
+    ) -> PluginRevision:
+        clone_root = stage_root / "repository"
+        prepared = stage_root / "package"
+        candidates = self._official_source_candidates.get(
+            canonical_source,
+            (clone_source,),
+        )
+        selected = select_git_source(
+            candidates,
+            requested_ref,
+            git_binary=self.git_binary,
+        )
+        self._run_git(
+            "clone",
+            "--quiet",
+            "--no-checkout",
+            "--",
+            selected.url,
+            str(clone_root),
+        )
+        commit = self._resolve_ref(clone_root, requested_ref)
+        if selected.commit and commit != selected.commit:
+            raise RuntimeError("Plugin 镜像在拉取期间发生版本漂移")
+        self._run_git(
+            "-C",
+            str(clone_root),
+            "checkout",
+            "--quiet",
+            "--detach",
+            commit,
+        )
+        package_root = clone_root / subdirectory if subdirectory else clone_root
+        self._validate_package_root(plugin_id, clone_root, package_root)
+        shutil.copytree(
+            package_root,
+            prepared,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(".git"),
+        )
+        return self._place_checkout(
+            plugin_id,
+            commit,
+            prepared,
+            requested_ref,
+            preflight=preflight,
+        )
+
+    def _place_checkout(
+        self,
+        plugin_id: str,
+        commit: str,
+        prepared: Path,
+        requested_ref: str,
+        *,
+        expected_content_sha256: str | None = None,
+        preflight: Callable[[Path], None] | None,
+    ) -> PluginRevision:
+        digest = plugin_content_sha256(prepared)
+        if (
+            expected_content_sha256 is not None
+            and digest != expected_content_sha256
+        ):
+            raise PluginRegistryError(
+                f"Plugin 内容 SHA256 与签名清单不一致: {plugin_id}"
+            )
+        destination = self.checkouts_dir / plugin_id / f"{commit}-{digest[:16]}"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            if plugin_content_sha256(destination) != digest:
+                raise PluginStoreError(
+                    f"content-addressed checkout mismatch: {destination}"
+                )
+        else:
+            os.replace(prepared, destination)
+        if preflight is not None:
+            preflight(destination)
+        return PluginRevision(
+            commit=commit,
+            content_sha256=digest,
+            checkout_path=str(destination.resolve()),
+            requested_ref=requested_ref,
+        )
 
     def _resolve_ref(self, repository: Path, ref: str) -> str:
         candidates = [ref]
@@ -613,36 +730,7 @@ class PluginStore:
 
     @staticmethod
     def _content_sha256(root: Path) -> str:
-        digest = hashlib.sha256()
-
-        def visit(directory: Path) -> None:
-            for path in sorted(directory.iterdir(), key=lambda item: item.name):
-                if path.name == ".git":
-                    continue
-                if (
-                    path.name == "__pycache__"
-                    and path.is_dir()
-                    and not path.is_symlink()
-                ):
-                    continue
-                relative = path.relative_to(root).as_posix().encode("utf-8")
-                if path.is_symlink():
-                    digest.update(b"L\0" + relative + b"\0")
-                    digest.update(os.readlink(path).encode("utf-8"))
-                    digest.update(b"\0")
-                elif path.is_dir():
-                    digest.update(b"D\0" + relative + b"\0")
-                    visit(path)
-                elif path.is_file():
-                    executable = b"1" if path.stat().st_mode & 0o111 else b"0"
-                    digest.update(b"F\0" + relative + b"\0" + executable + b"\0")
-                    with path.open("rb") as handle:
-                        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                            digest.update(chunk)
-                    digest.update(b"\0")
-
-        visit(root)
-        return digest.hexdigest()
+        return plugin_content_sha256(root)
 
     def _write_records(self, records: dict[str, PluginLockRecord]) -> None:
         document = self._document_from_records(records)
@@ -824,7 +912,7 @@ class PluginStore:
             raise PluginStoreError(
                 f"installed plugin manifest is missing: {plugin_id}"
             )
-        actual_digest = self._content_sha256(checkout)
+        actual_digest = plugin_content_sha256(checkout)
         if actual_digest != revision.content_sha256:
             raise PluginStoreError(
                 f"installed plugin content hash mismatch: {plugin_id}"
@@ -865,51 +953,10 @@ class PluginStore:
 
     @staticmethod
     def canonicalize_source(source: str) -> tuple[str, str, str]:
-        raw = str(source).strip()
-        if not raw:
-            raise PluginStoreError("plugin source cannot be empty")
-        split = urlsplit(raw)
-        if split.scheme == "file":
-            if split.netloc or split.query or split.fragment:
-                raise PluginStoreError(
-                    "file Git URL must not contain authority, query, or fragment"
-                )
-            local = Path(url2pathname(unquote(split.path))).expanduser().resolve()
-            canonical = local.as_uri()
-            return canonical, "local", canonical
-        if split.scheme:
-            scheme = split.scheme.lower()
-            if scheme not in {"git", "http", "https", "ssh"}:
-                raise PluginStoreError("unsupported Git URL scheme")
-            hostname = (split.hostname or "").lower()
-            if not hostname:
-                raise PluginStoreError("invalid Git URL")
-            if split.password is not None:
-                raise PluginStoreError("Git URL must not contain an inline password")
-            if split.query or split.fragment:
-                raise PluginStoreError(
-                    "Git URL must not contain query parameters or fragments"
-                )
-            if split.username and scheme in {"http", "https"}:
-                raise PluginStoreError(
-                    "HTTP Git URL must not contain user credentials"
-                )
-            user = f"{split.username}@" if split.username else ""
-            port = f":{split.port}" if split.port is not None else ""
-            netloc = f"{user}{hostname}{port}"
-            path = split.path.rstrip("/") or "/"
-            canonical = urlunsplit((scheme, netloc, path, "", ""))
-            return canonical, "git", canonical
-        scp_match = _SCP_SOURCE_RE.fullmatch(raw)
-        if scp_match:
-            canonical = (
-                f"{scp_match.group('user')}@{scp_match.group('host').lower()}:"
-                f"{scp_match.group('path').rstrip('/')}"
-            )
-            return canonical, "git", canonical
-        local = Path(raw).expanduser().resolve()
-        canonical = local.as_uri()
-        return canonical, "local", canonical
+        try:
+            return canonicalize_plugin_source(source)
+        except ValueError as exc:
+            raise PluginStoreError(str(exc)) from exc
 
     @staticmethod
     def _validate_subdirectory(subdirectory: str) -> str:

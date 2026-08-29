@@ -7,10 +7,60 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
+from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.request import url2pathname
 
 
 _COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40,64}$")
+_SCP_SOURCE_RE = re.compile(r"^(?P<user>[^/@:\s]+)@(?P<host>[^/:\s]+):(?P<path>.+)$")
+
+
+def canonicalize_plugin_source(source: str) -> tuple[str, str, str]:
+    raw = str(source).strip()
+    if not raw:
+        raise ValueError("plugin source cannot be empty")
+    split = urlsplit(raw)
+    if split.scheme == "file":
+        if split.netloc or split.query or split.fragment:
+            raise ValueError(
+                "file Git URL must not contain authority, query, or fragment"
+            )
+        local = Path(url2pathname(unquote(split.path))).expanduser().resolve()
+        canonical = local.as_uri()
+        return canonical, "local", canonical
+    if split.scheme:
+        scheme = split.scheme.lower()
+        if scheme not in {"git", "http", "https", "ssh"}:
+            raise ValueError("unsupported Git URL scheme")
+        hostname = (split.hostname or "").lower()
+        if not hostname:
+            raise ValueError("invalid Git URL")
+        if split.password is not None:
+            raise ValueError("Git URL must not contain an inline password")
+        if split.query or split.fragment:
+            raise ValueError(
+                "Git URL must not contain query parameters or fragments"
+            )
+        if split.username and scheme in {"http", "https"}:
+            raise ValueError("HTTP Git URL must not contain user credentials")
+        user = f"{split.username}@" if split.username else ""
+        port = f":{split.port}" if split.port is not None else ""
+        netloc = f"{user}{hostname}{port}"
+        path = split.path.rstrip("/") or "/"
+        canonical = urlunsplit((scheme, netloc, path, "", ""))
+        return canonical, "git", canonical
+    scp_match = _SCP_SOURCE_RE.fullmatch(raw)
+    if scp_match:
+        canonical = (
+            f"{scp_match.group('user')}@{scp_match.group('host').lower()}:"
+            f"{scp_match.group('path').rstrip('/')}"
+        )
+        return canonical, "git", canonical
+    local = Path(raw).expanduser().resolve()
+    canonical = local.as_uri()
+    return canonical, "local", canonical
 
 
 @dataclass(frozen=True)

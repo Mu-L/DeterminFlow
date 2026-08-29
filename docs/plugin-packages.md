@@ -5,7 +5,8 @@ Package 是它的 Git 分发、安装、版本锁定和管理层。
 
 ## 边界
 
-- Plugin 从本地或互联网 Git 仓库安装。
+- Plugin 从本地或互联网 Git 仓库安装。官方来源还可以把静态 HTTPS Registry
+  作为传输通道，但持久身份仍是 canonical Git URL。
 - 每次安装、更新和回退都解析为精确 commit，并记录内容 SHA256。
 - 安装、更新、回退、启用、停用、卸载和配置修改都只改变目标状态，重启主进程后生效。
 - Plugin 与 Core 共享 Python 环境和操作系统权限，不提供进程或权限隔离。
@@ -51,10 +52,79 @@ Core 通过 `config/plugin-sources.json` 中的官方 Git 地址按需读取该�
 只允许返回同一 commit 的镜像参与传输，并按 `mirrors` 配置顺序优先使用镜像，避免镜像
 尚未同步时安装旧版本；首选镜像不可用时再回退其他镜像或主地址。Plugin 锁仍记录主地址，
 镜像只作为传输通道。
+官方来源还可以配置独立的静态 HTTPS Registry v1。Registry 只负责传输，不改变
+canonical Git 身份、精确 commit 锁、`restart_required` 或回退语义。清单使用独立
+Ed25519 公钥验签；下载 ZIP 后校验包 SHA256，解压后再校验内容 SHA256。解压会拒绝
+路径穿越、符号链接、加密条目和异常体积。Registry 不可用、签名失败或包校验失败时，
+使用该来源已配置的 Git 主地址与镜像回退。自定义第三方来源保持现有 Git 行为，不能
+配置官方 Registry。
 未提供索引的仓库仍可通过 Plugin ID、Git URL、ref 和 subdirectory 手工安装。
 官方来源在主进程启动时完成 canonicalization（规范化）并冻结；运行中修改来源文件
 不会改变信任判断或 Catalog 响应。Catalog 使用 TTL cache（有效期缓存）和
 single-flight（单次并发刷新），避免一次页面刷新触发多个 Git clone。
+
+## 官方 HTTPS Registry v1
+
+官方 Registry 是一组可缓存的静态 HTTPS 对象，通常托管在对象存储上。来源配置示例：
+
+```json
+{
+  "id": "determinflow-official",
+  "name": "DeterminFlow Official Plugins",
+  "url": "https://github.com/alikon-art/DeterminFlow-Plugins.git",
+  "ref": "main",
+  "mirrors": [
+    "https://gitee.com/alikon/DeterminFlow-Plugins.git"
+  ],
+  "registry": {
+    "url": "https://plugins.example.invalid/v1",
+    "public_key": "<base64-ed25519-public-key>"
+  }
+}
+```
+
+`url` 仍是锁里的持久身份，必须能规范化为 Git 地址。`registry.public_key` 是独立的
+32 字节 Ed25519 公钥，不复用 Git 托管凭据。Registry 根路径提供：
+
+```text
+manifest.json
+manifest.json.sig
+```
+
+`manifest.json.sig` 是对 `manifest.json` 原始字节的 Ed25519 签名，可以是 64 字节
+原始值或 Base64/Hex 文本。清单最小字段：
+
+```json
+{
+  "schema_version": 1,
+  "source": "https://github.com/alikon-art/DeterminFlow-Plugins.git",
+  "ref": "main",
+  "resolved_commit": "0123456789abcdef0123456789abcdef01234567",
+  "plugins": [
+    {
+      "id": "example-plugin",
+      "name": "Example Plugin",
+      "version": "1.0.0",
+      "description": "Example package.",
+      "subdirectory": "plugins/example-plugin",
+      "ref": "main",
+      "commit": "0123456789abcdef0123456789abcdef01234567",
+      "content_sha256": "<64-hex>",
+      "package": {
+        "url": "packages/example-plugin/0123456789abcdef0123456789abcdef01234567.zip",
+        "sha256": "<64-hex>"
+      }
+    }
+  ]
+}
+```
+
+`source` 规范化后必须与官方 Git 身份一致。ZIP 只包含 Plugin 根目录内容，
+`extension.toml` 位于压缩包根；`subdirectory` 写入锁，供 Git 回退时定位同一包。
+相对 `package.url` 相对 Registry 根解析；绝对地址也必须是不含凭据、query 或
+fragment 的 HTTPS。安装和更新在 Registry 命中后仍锁定清单中的精确 commit 与解压后
+内容 SHA256；请求的 ref 为 `HEAD`、清单 ref 或该 Plugin 的 ref 时使用当前快照，
+请求完整 commit 时只有清单提供同一 commit 的包才会走 Registry。
 
 ## extension.toml
 

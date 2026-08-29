@@ -16,6 +16,7 @@ from .models import (
     validate_resource_prefix,
 )
 from .processes import ProcessManager, ProcessManagerError, ProcessStartError
+from .registry import PluginRegistryConfig, PluginRegistryError
 from .store import (
     InvalidPluginPackageError,
     PluginStore,
@@ -27,6 +28,8 @@ __all__ = [
     "InvalidPluginPackageError",
     "PluginLockRecord",
     "PluginDependencyError",
+    "PluginRegistryConfig",
+    "PluginRegistryError",
     "PluginRevision",
     "PluginStore",
     "PluginStoreError",

@@ -155,6 +155,11 @@ class ExtensionManager(ExtensionExecutorPlaneMixin):
                     for source in self.plugin_sources
                     if source.kind == "official"
                 },
+                official_registries={
+                    source.url: source.registry
+                    for source in self.plugin_sources
+                    if source.kind == "official" and source.registry is not None
+                },
             )
         self._applied_plugin_records = self.plugin_store.apply_pending()
         self.plugin_config_store = PluginConfigStore(self.plugins_dir / "config")

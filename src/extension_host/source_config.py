@@ -22,6 +22,13 @@ from src.plugin_system import (
     validate_plugin_ref,
     validate_plugin_subdirectory,
 )
+from src.plugin_system.registry import (
+    PluginRegistryConfig,
+    PluginRegistryError,
+    catalog_plugins_from_manifest,
+    load_verified_manifest,
+    parse_registry_config,
+)
 from src.plugin_system.source_selection import select_git_source
 
 
@@ -34,6 +41,7 @@ class PluginSourceConfig:
     kind: str = "official"
     builtin: bool = True
     mirrors: tuple[str, ...] = ()
+    registry: PluginRegistryConfig | None = None
 
     @property
     def clone_urls(self) -> tuple[str, ...]:
@@ -80,6 +88,12 @@ def _parse_source(item: Any, *, kind: str) -> PluginSourceConfig:
         if mirror == url or mirror in mirrors:
             raise ValueError(f"{label}.mirrors 包含重复地址")
         mirrors.append(mirror)
+    raw_registry = item.get("registry")
+    registry: PluginRegistryConfig | None = None
+    if raw_registry is not None:
+        if kind != "official":
+            raise ValueError("自定义仓库不能配置官方 Registry")
+        registry = parse_registry_config(raw_registry, label=label)
     raw_id = item.get("id")
     if raw_id is None:
         source_id = _source_id(kind, name.strip(), url)
@@ -98,6 +112,7 @@ def _parse_source(item: Any, *, kind: str) -> PluginSourceConfig:
         kind=kind,
         builtin=kind == "official",
         mirrors=tuple(mirrors),
+        registry=registry,
     )
 
 
@@ -154,6 +169,12 @@ def load_official_sources(path: Path) -> list[str]:
 
 
 def source_config_response(source: PluginSourceConfig) -> dict[str, Any]:
+    registry = None
+    if source.registry is not None:
+        registry = {
+            "url": source.registry.url,
+            "public_key": source.registry.public_key_text,
+        }
     return {
         "id": source.id,
         "name": source.name,
@@ -162,6 +183,7 @@ def source_config_response(source: PluginSourceConfig) -> dict[str, Any]:
         "kind": source.kind,
         "builtin": source.builtin,
         "mirrors": list(source.mirrors),
+        "registry": registry,
     }
 
 
@@ -405,10 +427,32 @@ def _manifest_metadata(raw: bytes, expected_id: str) -> dict[str, str]:
     }
 
 
+def _catalog_from_registry(
+    source: PluginSourceConfig,
+    source_result: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if source.registry is None:
+        raise PluginRegistryError("官方来源未配置 Registry")
+    manifest = load_verified_manifest(source.registry, source.url)
+    plugins = catalog_plugins_from_manifest(
+        manifest,
+        canonical_source=source.url,
+        source_id=source.id,
+        source_name=source.name,
+        source_kind=source.kind,
+    )
+    source_result["selected_url"] = source.registry.url
+    source_result["resolved_commit"] = manifest.resolved_commit
+    source_result["plugin_count"] = len(plugins)
+    source_result["transport"] = "registry"
+    source_result["error"] = ""
+    return plugins, source_result
+
+
 def fetch_plugin_catalog(
     configured_sources: Iterable[PluginSourceConfig],
 ) -> dict[str, Any]:
-    """Fetch indexes and installable Plugin metadata from Git sources."""
+    """Fetch official Registry catalogs, with Git fallback and custom Git sources."""
     plugins: list[dict[str, Any]] = []
     sources: list[dict[str, Any]] = []
     for source in tuple(configured_sources):
@@ -418,9 +462,21 @@ def fetch_plugin_catalog(
             "plugin_count": 0,
             "error": "",
             "selected_url": "",
+            "transport": "",
         }
         source_plugins: list[dict[str, Any]] = []
         try:
+            if source.kind == "official" and source.registry is not None:
+                try:
+                    source_plugins, source_result = _catalog_from_registry(
+                        source,
+                        source_result,
+                    )
+                    plugins.extend(source_plugins)
+                    sources.append(source_result)
+                    continue
+                except PluginRegistryError:
+                    source_plugins = []
             with tempfile.TemporaryDirectory(prefix="determinflow-plugin-catalog-") as raw:
                 repository = Path(raw) / "repository"
                 selected = select_git_source(source.clone_urls, source.ref)
@@ -456,6 +512,7 @@ def fetch_plugin_catalog(
                     source_plugins.append(entry)
                 source_result["resolved_commit"] = source_commit
                 source_result["plugin_count"] = len(source_plugins)
+                source_result["transport"] = "git"
                 plugins.extend(source_plugins)
         except ValueError as exc:
             source_result["error"] = str(exc)
