@@ -280,12 +280,12 @@ docker compose -f docker-compose.yml config -q
     <th align="center">WeChat group</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><a href="http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&amp;k=kRVWN5s7xlG8nc_f5fjdrpmd6mucbZoj&amp;authKey=1Xv1LWqUNiW5YgKYPvO8v%2F52s7JxRANMJ17wKrJCQSROw3%2BKf0%2B3BEIxstgEkg%2FM&amp;noverify=0&amp;group_code=945515407"><img src="docs/assets/community/qq-group.jpg" alt="NovelBuilt and DeterminFlow QQ group: 945515407" width="260"></a></td>
-    <td align="center" valign="top"><img src="docs/assets/community/wechat-group.jpg" alt="NovelBuilt and DeterminFlow WeChat group" width="260"></td>
+    <td align="center" valign="top"><a href="http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&amp;k=kRVWN5s7xlG8nc_f5fjdrpmd6mucbZoj&amp;authKey=1Xv1LWqUNiW5YgKYPvO8v%2F52s7JxRANMJ17wKrJCQSROw3%2BKf0%2B3BEIxstgEkg%2FM&amp;noverify=0&amp;group_code=945515407"><img src="https://images.determinflow.com/community/qq-group.jpg" alt="NovelBuilt and DeterminFlow QQ group: 945515407" width="260"></a></td>
+    <td align="center" valign="top"><img src="https://images.determinflow.com/community/wechat-group.jpg" alt="NovelBuilt and DeterminFlow WeChat group" width="260"></td>
   </tr>
   <tr>
     <td align="center"><a href="http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&amp;k=kRVWN5s7xlG8nc_f5fjdrpmd6mucbZoj&amp;authKey=1Xv1LWqUNiW5YgKYPvO8v%2F52s7JxRANMJ17wKrJCQSROw3%2BKf0%2B3BEIxstgEkg%2FM&amp;noverify=0&amp;group_code=945515407">Group ID: <code>945515407</code></a></td>
-    <td align="center">Temporary QR code, valid through August 14, 2026</td>
+    <td align="center">The fixed image URL is updated when the QR code expires</td>
   </tr>
 </table>
 

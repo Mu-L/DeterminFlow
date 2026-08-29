@@ -274,12 +274,12 @@ docker compose -f docker-compose.yml config -q
     <th align="center">微信群</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><a href="http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&amp;k=kRVWN5s7xlG8nc_f5fjdrpmd6mucbZoj&amp;authKey=1Xv1LWqUNiW5YgKYPvO8v%2F52s7JxRANMJ17wKrJCQSROw3%2BKf0%2B3BEIxstgEkg%2FM&amp;noverify=0&amp;group_code=945515407"><img src="docs/assets/community/qq-group.jpg" alt="笔枢写作与 DeterminFlow QQ 交流群：945515407" width="260"></a></td>
-    <td align="center" valign="top"><img src="docs/assets/community/wechat-group.jpg" alt="笔枢 DeterminFlow 交流群 3 群" width="260"></td>
+    <td align="center" valign="top"><a href="http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&amp;k=kRVWN5s7xlG8nc_f5fjdrpmd6mucbZoj&amp;authKey=1Xv1LWqUNiW5YgKYPvO8v%2F52s7JxRANMJ17wKrJCQSROw3%2BKf0%2B3BEIxstgEkg%2FM&amp;noverify=0&amp;group_code=945515407"><img src="https://images.determinflow.com/community/qq-group.jpg" alt="笔枢写作与 DeterminFlow QQ 交流群：945515407" width="260"></a></td>
+    <td align="center" valign="top"><img src="https://images.determinflow.com/community/wechat-group.jpg" alt="笔枢 DeterminFlow 微信交流群" width="260"></td>
   </tr>
   <tr>
     <td align="center"><a href="http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&amp;k=kRVWN5s7xlG8nc_f5fjdrpmd6mucbZoj&amp;authKey=1Xv1LWqUNiW5YgKYPvO8v%2F52s7JxRANMJ17wKrJCQSROw3%2BKf0%2B3BEIxstgEkg%2FM&amp;noverify=0&amp;group_code=945515407">群号：<code>945515407</code></a></td>
-    <td align="center">临时二维码，2026 年 8 月 25 日前有效</td>
+    <td align="center">二维码失效时会在固定地址更新</td>
   </tr>
 </table>
 
